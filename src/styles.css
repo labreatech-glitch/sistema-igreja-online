@@ -5487,3 +5487,35 @@ tbody tr:hover td{background:#eef6fb!important}
 .patrimonioDetailGrid>div.full{grid-column:1/-1}
 .patrimonioDetailGrid span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#64748b;font-weight:900}
 @media(max-width:700px){.patrimonioDetailGrid{grid-template-columns:1fr}.patrimonioDetailGrid>div.full{grid-column:auto}}
+
+
+/* v2.23.9 — refinamento da tela de login e recuperação de senha */
+.loginModern{padding:28px 20px!important}
+.loginShell{width:min(1120px,100%)!important;gap:24px!important}
+.igrejaHeroPanel{min-height:500px!important;padding:34px!important;border-radius:26px!important}
+.igrejaLoginCard{padding:32px 30px!important;border-radius:24px!important;display:flex;flex-direction:column;justify-content:center}
+.loginCardHeader{margin-bottom:24px!important}
+.loginCardHeader h2{font-size:30px!important;letter-spacing:-.02em}
+.igrejaLoginCard .field{margin-bottom:14px!important}
+.igrejaLoginCard .field label{font-size:13px!important;margin-bottom:7px!important;color:#334155!important}
+.igrejaLoginCard input{height:48px!important;border-radius:12px!important;background:#f7faff!important;border:1.5px solid #cbd8e8!important;padding:11px 13px!important}
+.igrejaLoginCard input:focus{outline:0!important;border-color:var(--login-secondary,#1d6fa4)!important;box-shadow:0 0 0 4px color-mix(in srgb,var(--login-secondary,#1d6fa4) 15%,transparent)!important}
+.forgotPasswordRow{display:flex!important;justify-content:flex-end!important;align-items:center!important;margin:-2px 0 14px!important;min-height:24px!important}
+.loginModern .igrejaLoginCard .forgotPasswordLink,
+.loginModern .igrejaLoginCard button.forgotPasswordLink{appearance:none!important;-webkit-appearance:none!important;display:inline-flex!important;align-items:center!important;width:auto!important;min-width:0!important;min-height:24px!important;height:auto!important;margin:0!important;padding:2px 0!important;border:0!important;border-radius:0!important;background:none!important;background-image:none!important;color:#1769d2!important;box-shadow:none!important;font-size:13px!important;line-height:1.3!important;font-weight:800!important;text-decoration:none!important;transform:none!important}
+.loginModern .igrejaLoginCard .forgotPasswordLink:hover,
+.loginModern .igrejaLoginCard .forgotPasswordLink:focus-visible{background:none!important;color:#0f4fa8!important;text-decoration:underline!important;box-shadow:none!important;transform:none!important;outline:none!important}
+.loginActionsStacked{display:grid!important;grid-template-columns:1fr!important;gap:10px!important;margin-top:0!important}
+.loginActionsStacked>button{width:100%!important;min-width:0!important;height:46px!important;border-radius:11px!important}
+.loginActionsStacked>button:not(.secondary){font-size:15px!important}
+.loginActionsStacked>.secondary{background:#fff!important;color:var(--login-primary,#0f2942)!important;border-color:var(--login-secondary,#1d6fa4)!important}
+.loginActionsStacked>.secondary:hover{background:#f0f7ff!important}
+@media(max-width:900px){
+  .loginShell{width:min(680px,100%)!important}
+  .igrejaLoginCard{min-height:auto!important}
+}
+@media(max-width:560px){
+  .loginModern{padding:14px!important}
+  .igrejaLoginCard{padding:24px 20px!important;border-radius:20px!important}
+  .loginCardHeader h2{font-size:25px!important}
+}

@@ -2489,20 +2489,22 @@ function LoginScreen({ onLogged }) {
           )}
 
           {mode === 'login' && (
-            <button
-              type="button"
-              className="forgotPasswordLink"
-              onClick={() => {
-                setMode('recovery');
-                setMsg(null);
-                setSenha('');
-              }}
-            >
-              Esqueci minha senha
-            </button>
+            <div className="forgotPasswordRow">
+              <button
+                type="button"
+                className="forgotPasswordLink"
+                onClick={() => {
+                  setMode('recovery');
+                  setMsg(null);
+                  setSenha('');
+                }}
+              >
+                Esqueci minha senha?
+              </button>
+            </div>
           )}
 
-          <div className="loginActions">
+          <div className="loginActions loginActionsStacked">
             {mode === 'recovery' ? (
               <button disabled={busy || !email} onClick={solicitarRecuperacao}>
                 {busy ? 'Enviando…' : 'Enviar link de recuperação'}
