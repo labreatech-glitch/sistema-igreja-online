@@ -1,0 +1,4 @@
+-- Referência do banco do sistema igreja.
+-- As tabelas principais já foram criadas no Supabase:
+-- congregacoes, usuarios_sistema, perfis, membros, caixas, livro_caixa,
+-- categorias_financeiras, formas_pagamento, turmas_ebd, patrimonio etc.

@@ -1,0 +1,20159 @@
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { supabase, isSupabaseConfigured } from './lib/supabase.js';
+import { isValidCpf, onlyDigits } from './shared/lib/cpf.js';
+import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
+import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
+
+/* =========================================================
+   CONSTANTES
+========================================================= */
+const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
+const APP_VERSION = '2.23.8';
+const ROLE_LABEL = {
+  master: 'Admin Master',
+  admin: 'Administrador',
+  gerente: 'Gerente',
+  operador: 'Operador',
+  consulta: 'Consulta',
+  secretario: 'Secretário',
+  tesoureiro: 'Tesoureiro',
+  membro: 'Membro',
+};
+const DEFAULT_ROLE_LABELS = {
+  admin: 'Administrador',
+  gerente: 'Gerente',
+  operador: 'Operador',
+  consulta: 'Consulta',
+  membro: 'Membro',
+};
+const VALID_EMPRESA_ROLES = new Set(['admin', 'gerente', 'operador', 'consulta', 'secretario', 'tesoureiro', 'membro']);
+function normalizeProfileRole(value, labels = {}) {
+  const raw = String(value || '').trim();
+  if (VALID_EMPRESA_ROLES.has(raw)) return raw;
+  const lower = raw.toLowerCase();
+  const found = Object.entries(labels || {}).find(
+    ([key, label]) =>
+      String(label || '')
+        .trim()
+        .toLowerCase() === lower && VALID_EMPRESA_ROLES.has(key),
+  );
+  if (found) return found[0];
+  const defaultFound = Object.entries(DEFAULT_ROLE_LABELS).find(
+    ([key, label]) =>
+      String(label || '')
+        .trim()
+        .toLowerCase() === lower && VALID_EMPRESA_ROLES.has(key),
+  );
+  if (defaultFound) return defaultFound[0];
+  return 'consulta';
+}
+const DEFAULT_ROLE_DESCRIPTIONS = {
+  admin: 'Acesso total ao sistema, configurações e auditoria da igreja.',
+  gerente: 'Acompanha operação, relatórios, financeiro e fechamento.',
+  operador: 'Executa lançamentos diários e cadastros permitidos.',
+  consulta: 'Somente visualização, sem alterar dados operacionais.',
+  membro: 'Acesso pessoal ao portal, agenda, jornadas e contribuições.',
+};
+const USER_ROLE_ENTRIES = Object.entries(DEFAULT_ROLE_LABELS);
+const ROLE_MODULES = {
+  master: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
+  admin: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
+  gerente: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'cadastros'],
+  operador: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio'],
+  consulta: ['dashboard'],
+  membro: ['portal'],
+};
+const PERMISSION_MENUS = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'financeiro', label: 'Financeiro' },
+  { id: 'secretaria', label: 'Secretaria' },
+  { id: 'ebd', label: 'EBD' },
+  { id: 'patrimonio', label: 'Patrimônio' },
+  { id: 'portal', label: 'Portal do Membro' },
+  { id: 'cadastros', label: 'Cadastros' },
+  { id: 'usuarios', label: 'Usuários' },
+  { id: 'configuracoes', label: 'Configurações' },
+  { id: 'auditoria', label: 'Auditoria' },
+  { id: 'tutorial', label: 'Tutorial' },
+];
+const PERMISSION_ACTIONS = [
+  { id: 'view', label: 'Ver' },
+  { id: 'create', label: 'Criar' },
+  { id: 'update', label: 'Editar' },
+  { id: 'delete', label: 'Excluir' },
+];
+const DASHBOARD_BLOCKS = [
+  {
+    id: 'financeiro_resumo',
+    label: 'Resumo financeiro',
+    desc: 'Saldo geral, entradas e saídas da referência.',
+  },
+  {
+    id: 'saldo_caixa',
+    label: 'Saldo por caixa',
+    desc: 'Saldos por caixa da referência selecionada.',
+  },
+  {
+    id: 'secretaria_membros',
+    label: 'Membros',
+    desc: 'Total de membros cadastrados.',
+  },
+  {
+    id: 'secretaria_aniversariantes',
+    label: 'Aniversariantes',
+    desc: 'Aniversariantes do mês da referência.',
+  },
+  {
+    id: 'ebd_resumo',
+    label: 'EBD',
+    desc: 'Turmas, professores e dados ligados à Escola Bíblica.',
+  },
+  {
+    id: 'patrimonio_resumo',
+    label: 'Patrimônio',
+    desc: 'Resumo dos bens patrimoniais cadastrados.',
+  },
+];
+const PAYMENT_FORMS = ['Dinheiro', 'Pix', 'Cartão', 'Transferência', 'Cheque'];
+
+const FINANCIAL_PERMISSION_ACTIONS = [
+  { id: 'ver_operacoes', label: 'Visualizar operações' },
+  { id: 'ver_valores_registros', label: 'Ver valores dos registros' },
+  { id: 'ver_totais', label: 'Ver totais financeiros' },
+];
+const normalizeKey = (value = '') =>
+  String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+const normalizeText = (value = '') =>
+  String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+const defaultFinancialPermissions = Object.fromEntries(USER_ROLE_ENTRIES.map(([role]) => [role, Object.fromEntries(PAYMENT_FORMS.flatMap((forma) => FINANCIAL_PERMISSION_ACTIONS.map((a) => [`${a.id}_${normalizeKey(forma)}`, role === 'admin' || role === 'gerente'])))]));
+const DEFAULT_PERMISSIONS = {
+  admin: Object.fromEntries(PERMISSION_MENUS.map((m) => [m.id, Object.fromEntries(PERMISSION_ACTIONS.map((a) => [a.id, true]))])),
+  gerente: {
+    dashboard: { view: true },
+    financeiro: { view: true, create: true, update: true, delete: false },
+    secretaria: { view: true, create: true, update: true, delete: false },
+    ebd: { view: true, create: true, update: true, delete: false },
+    patrimonio: { view: true, create: true, update: true, delete: false },
+    configuracoes: { view: false, create: false, update: false, delete: false },
+  },
+  operador: {
+    dashboard: { view: true },
+    financeiro: { view: true, create: true, update: false, delete: false },
+    secretaria: { view: true, create: true, update: false, delete: false },
+    ebd: { view: true, create: true, update: false, delete: false },
+    patrimonio: { view: true, create: true, update: false, delete: false },
+    configuracoes: { view: false, create: false, update: false, delete: false },
+  },
+  consulta: {
+    dashboard: { view: true },
+    financeiro: { view: true, create: false, update: false, delete: false },
+    secretaria: { view: true, create: false, update: false, delete: false },
+    ebd: { view: true, create: false, update: false, delete: false },
+    patrimonio: { view: true, create: false, update: false, delete: false },
+    configuracoes: { view: false, create: false, update: false, delete: false },
+  },
+  membro: {
+    portal: { view: true, create: true, update: true, delete: false },
+    dashboard: { view: false },
+    financeiro: { view: false },
+    secretaria: { view: false },
+    ebd: { view: false },
+    patrimonio: { view: false },
+    configuracoes: { view: false },
+  },
+};
+const DEFAULT_DASHBOARD_PERMISSIONS = {
+  admin: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, true])),
+  // Na implantação padrão do SaaS: gerente costuma ser Tesouraria.
+  gerente: {
+    financeiro_resumo: true,
+    saldo_caixa: true,
+    secretaria_membros: false,
+    secretaria_aniversariantes: false,
+    ebd_resumo: false,
+    patrimonio_resumo: false,
+  },
+  // Operador costuma ser Secretaria/Liderança.
+  operador: {
+    financeiro_resumo: false,
+    saldo_caixa: false,
+    secretaria_membros: true,
+    secretaria_aniversariantes: true,
+    ebd_resumo: false,
+    patrimonio_resumo: false,
+  },
+  // Consulta costuma ser Professor EBD/visualização restrita.
+  consulta: {
+    financeiro_resumo: false,
+    saldo_caixa: false,
+    secretaria_membros: false,
+    secretaria_aniversariantes: false,
+    ebd_resumo: true,
+    patrimonio_resumo: false,
+  },
+};
+const TENANT_TABLES = new Set(['membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
+TENANT_TABLES.add('transferencias_agendadas');
+const TenantContext = React.createContext({ empresaId: null, isMaster: false });
+const FilterContext = React.createContext({
+  referencia: '2026-01',
+  caixaId: '',
+  caixaIds: [],
+  setReferencia: () => {},
+  setCaixaId: () => {},
+  setCaixaIds: () => {},
+  limparFiltros: () => {},
+  salvarPresetCaixas: () => {},
+  presetsCaixas: [],
+});
+
+const SUBSCRIPTION_GRACE_DAYS = 7;
+const SubscriptionAccessContext = React.createContext({
+  loading: false,
+  assinatura: null,
+  mode: 'normal',
+  daysOverdue: 0,
+  graceDaysRemaining: 0,
+  restricted: false,
+  grace: false,
+  readOnlySecretaria: false,
+  readOnlyRestrictedModules: false,
+  canAccessModule: () => true,
+  reload: () => {},
+});
+
+function calculateSubscriptionAccess(assinatura, { isMaster = false, now = new Date() } = {}) {
+  if (isMaster) return { mode: 'normal', daysOverdue: 0, graceDaysRemaining: 0, restricted: false, grace: false };
+  const status = String(assinatura?.status || '').toLowerCase();
+  const vencimentoRaw = assinatura?.vencimento_em;
+  if (!assinatura || !vencimentoRaw) return { mode: 'normal', daysOverdue: 0, graceDaysRemaining: 0, restricted: false, grace: false };
+  const vencimento = new Date(vencimentoRaw);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const due = new Date(vencimento.getFullYear(), vencimento.getMonth(), vencimento.getDate());
+  const daysOverdue = Math.max(0, Math.floor((today.getTime() - due.getTime()) / 86400000));
+  if (['cancelada', 'cancelado'].includes(status)) return { mode: 'restricted', daysOverdue, graceDaysRemaining: 0, restricted: true, grace: false };
+  if (daysOverdue <= 0 || ['ativa', 'teste'].includes(status) && due.getTime() >= today.getTime()) {
+    return { mode: 'normal', daysOverdue: 0, graceDaysRemaining: 0, restricted: false, grace: false };
+  }
+  if (daysOverdue <= SUBSCRIPTION_GRACE_DAYS) {
+    return { mode: 'grace', daysOverdue, graceDaysRemaining: SUBSCRIPTION_GRACE_DAYS - daysOverdue, restricted: false, grace: true };
+  }
+  return { mode: 'restricted', daysOverdue, graceDaysRemaining: 0, restricted: true, grace: false };
+}
+
+function SubscriptionAccessProvider({ profile, empresaId, children }) {
+  const [assinatura, setAssinatura] = useState(null);
+  const [loading, setLoading] = useState(Boolean(empresaId));
+  const isMaster = isMasterProfile(profile);
+  const reload = useCallback(async () => {
+    if (!supabase || !empresaId) {
+      setAssinatura(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.from('assinaturas').select('*').eq('empresa_id', empresaId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      setAssinatura(data || null);
+    } catch (error) {
+      console.error('Falha ao verificar assinatura:', error);
+      setAssinatura(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [empresaId]);
+  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    const handler = (event) => {
+      if (!event?.detail?.table || ['assinaturas', 'assinaturas_pagamentos'].includes(event.detail.table)) reload();
+    };
+    window.addEventListener('igreja:tableRefresh', handler);
+    window.addEventListener('igreja:subscriptionRefresh', handler);
+    return () => {
+      window.removeEventListener('igreja:tableRefresh', handler);
+      window.removeEventListener('igreja:subscriptionRefresh', handler);
+    };
+  }, [reload]);
+  const policy = useMemo(() => calculateSubscriptionAccess(assinatura, { isMaster }), [assinatura, isMaster]);
+  const canAccessModule = useCallback((moduleId) => {
+    if (!policy.restricted) return true;
+    return ['assinatura', 'secretaria', 'usuarios', 'configuracoes', 'tutorial'].includes(moduleId);
+  }, [policy.restricted]);
+  const value = useMemo(() => ({
+    loading,
+    assinatura,
+    ...policy,
+    readOnlySecretaria: policy.restricted,
+    readOnlyRestrictedModules: policy.restricted,
+    canAccessModule,
+    reload,
+  }), [loading, assinatura, policy, canAccessModule, reload]);
+  return <SubscriptionAccessContext.Provider value={value}>{children}</SubscriptionAccessContext.Provider>;
+}
+
+function useSubscriptionAccess() {
+  return React.useContext(SubscriptionAccessContext);
+}
+
+const PermissionContext = React.createContext({
+  loading: false,
+  config: {
+    menus: DEFAULT_PERMISSIONS,
+    nomenclaturas: DEFAULT_ROLE_LABELS,
+    descricoes: DEFAULT_ROLE_DESCRIPTIONS,
+  },
+  can: () => false,
+  canDashboardBlock: () => false,
+  canModule: () => false,
+  allowedModuleIds: ['dashboard'],
+  roleLabels: DEFAULT_ROLE_LABELS,
+  roleDescriptions: DEFAULT_ROLE_DESCRIPTIONS,
+  reload: () => {},
+});
+
+const permissionModuleKey = (moduleId = '') => (moduleId === 'logs' ? 'auditoria' : moduleId);
+const moduleRouteIds = () => ['dashboard', 'assinatura', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'logs', 'tutorial'];
+
+function normalizeMenusConfig(rawMenus = {}) {
+  const menus = {};
+  USER_ROLE_ENTRIES.forEach(([role]) => {
+    menus[role] = {};
+    PERMISSION_MENUS.forEach((menu) => {
+      menus[role][menu.id] = {};
+      PERMISSION_ACTIONS.forEach((action) => {
+        const value = rawMenus?.[role]?.[menu.id]?.[action.id];
+        const fallback = DEFAULT_PERMISSIONS?.[role]?.[menu.id]?.[action.id];
+        menus[role][menu.id][action.id] = role === 'admin' ? true : Boolean(value ?? fallback ?? false);
+      });
+    });
+  });
+  return menus;
+}
+
+function normalizeDashboardPermissionsConfig(rawDashboard = {}) {
+  const dashboard = {};
+  USER_ROLE_ENTRIES.forEach(([role]) => {
+    dashboard[role] = {};
+    DASHBOARD_BLOCKS.forEach((block) => {
+      const value = rawDashboard?.[role]?.[block.id];
+      const fallback = DEFAULT_DASHBOARD_PERMISSIONS?.[role]?.[block.id];
+      dashboard[role][block.id] = role === 'admin' ? true : Boolean(value ?? fallback ?? false);
+    });
+  });
+  return dashboard;
+}
+
+function normalizePermissionsConfig(raw = {}) {
+  return {
+    ...raw,
+    menus: normalizeMenusConfig(raw?.menus || {}),
+    dashboard: normalizeDashboardPermissionsConfig(raw?.dashboard || {}),
+    nomenclaturas: { ...DEFAULT_ROLE_LABELS, ...(raw?.nomenclaturas || {}) },
+    descricoes: { ...DEFAULT_ROLE_DESCRIPTIONS, ...(raw?.descricoes || {}) },
+  };
+}
+
+function defaultPermissionsForRole(role) {
+  return normalizeMenusConfig(DEFAULT_PERMISSIONS)?.[role] || {};
+}
+
+function PermissionsProvider({ profile, empresaId, children }) {
+  const [config, setConfig] = useState(() => normalizePermissionsConfig({ menus: DEFAULT_PERMISSIONS }));
+  const [loading, setLoading] = useState(true);
+  const isMaster = isMasterProfile(profile);
+  const role = normalizeProfileRole(profile?.role || 'consulta');
+  const configKey = `permissoes_usuarios_${empresaId || 'global'}`;
+
+  const reload = useCallback(async () => {
+    if (!supabase || (isMasterProfile(profile) && !empresaId)) {
+      setConfig(normalizePermissionsConfig({ menus: DEFAULT_PERMISSIONS }));
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const keys = [configKey, 'permissoes_usuarios'];
+      const { data, error } = await supabase.from('app_configuracoes').select('chave,valor').in('chave', keys);
+      if (error) throw error;
+      const current = (data || []).find((r) => r.chave === configKey)?.valor;
+      const legacy = (data || []).find((r) => r.chave === 'permissoes_usuarios')?.valor;
+      setConfig(normalizePermissionsConfig(current || legacy || { menus: DEFAULT_PERMISSIONS }));
+    } catch (_) {
+      setConfig(normalizePermissionsConfig({ menus: DEFAULT_PERMISSIONS }));
+    } finally {
+      setLoading(false);
+    }
+  }, [configKey, empresaId, profile?.id, profile?.role, profile?.email]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+  useEffect(() => {
+    const handler = () => reload();
+    window.addEventListener('igreja:permissionsChanged', handler);
+    return () => window.removeEventListener('igreja:permissionsChanged', handler);
+  }, [reload]);
+
+  const can = useCallback(
+    (moduleId, action = 'view') => {
+      const key = permissionModuleKey(moduleId);
+      if (isMasterProfile(profile)) return true;
+      if (role === 'admin') return true;
+      return Boolean(config?.menus?.[role]?.[key]?.[action]);
+    },
+    [config, profile?.id, profile?.role, profile?.email, role],
+  );
+
+  const canDashboardBlock = useCallback(
+    (blockId) => {
+      if (isMasterProfile(profile)) return true;
+      if (role === 'admin') return true;
+      return Boolean(config?.dashboard?.[role]?.[blockId]);
+    },
+    [config, profile?.id, profile?.role, profile?.email, role],
+  );
+
+  const canModule = useCallback(
+    (moduleId) => {
+      if (moduleId === 'admin_master') return isMasterProfile(profile) && !empresaId;
+      if (moduleId === 'assinatura') {
+        return Boolean(empresaId) && (isMasterProfile(profile) || ['admin', 'gerente'].includes(role));
+      }
+      return can(moduleId, 'view');
+    },
+    [can, empresaId, profile?.id, profile?.role, profile?.email, role],
+  );
+
+  const allowedModuleIds = useMemo(() => {
+    if (isMasterProfile(profile)) return moduleRouteIds();
+    const allowed = moduleRouteIds().filter((id) => can(id, 'view'));
+    return allowed.length ? allowed : ['dashboard'];
+  }, [can, profile?.id, profile?.role, profile?.email, config]);
+
+  const value = useMemo(
+    () => ({
+      loading,
+      config,
+      can,
+      canDashboardBlock,
+      canModule,
+      allowedModuleIds,
+      roleLabels: config.nomenclaturas || DEFAULT_ROLE_LABELS,
+      roleDescriptions: config.descricoes || DEFAULT_ROLE_DESCRIPTIONS,
+      reload,
+      rolePermissions: config.menus?.[role] || defaultPermissionsForRole(role),
+    }),
+    [loading, config, can, canDashboardBlock, canModule, allowedModuleIds, reload, role],
+  );
+
+  return <PermissionContext.Provider value={value}>{children}</PermissionContext.Provider>;
+}
+
+function usePermissions() {
+  return React.useContext(PermissionContext);
+}
+
+function tableModuleKey(table) {
+  const map = {
+    lancamentos_financeiros: 'financeiro',
+    despesas: 'financeiro',
+    transferencias_caixas: 'financeiro',
+    fechamentos_mensais: 'financeiro',
+    tipos_caixa: 'financeiro',
+    tipos_receita: 'financeiro',
+    categorias_despesas: 'financeiro',
+    formas_pagamento: 'financeiro',
+    centros_custo: 'financeiro',
+    importacoes_bancarias: 'financeiro',
+    importacao_bancaria_itens: 'financeiro',
+    bancos: 'financeiro',
+    regras_importacao_bancaria: 'financeiro',
+    credores: 'financeiro',
+    prestacao_cofres_missionarios: 'financeiro',
+    prestacao_relatorios: 'financeiro',
+    prestacao_grupos_relatorio: 'financeiro',
+    prestacao_fontes_slide: 'financeiro',
+    membros: 'secretaria',
+    membro_historico: 'secretaria',
+    filhos_dependentes: 'secretaria',
+    familias: 'cadastros',
+    congregacoes: 'cadastros',
+    ministerios: 'cadastros',
+    cargos: 'cadastros',
+    setores: 'cadastros',
+    profissoes: 'cadastros',
+    escolaridades: 'cadastros',
+    turmas_ebd: 'ebd',
+    salas_ebd: 'ebd',
+    professores_ebd: 'ebd',
+    turma_professores_ebd: 'ebd',
+    matriculas_ebd: 'ebd',
+    aulas_ebd: 'ebd',
+    frequencia_ebd: 'ebd',
+    patrimonio: 'patrimonio',
+    patrimonio_categorias: 'patrimonio',
+    patrimonio_locais: 'patrimonio',
+    patrimonio_fornecedores: 'patrimonio',
+    patrimonio_manutencoes: 'patrimonio',
+    profiles: 'usuarios',
+    empresas: 'configuracoes',
+    app_configuracoes: 'configuracoes',
+  };
+  return map[table] || 'cadastros';
+}
+
+function useGlobalFilters() {
+  return React.useContext(FilterContext);
+}
+
+function readStoredCaixaIds(storagePrefix) {
+  const rawMulti = storageGet(`${storagePrefix}:caixaIds`, '');
+  if (rawMulti) {
+    try {
+      const parsed = JSON.parse(rawMulti);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch {}
+  }
+  const legacy = storageGet(`${storagePrefix}:caixaId`, '');
+  return legacy ? [legacy] : [];
+}
+
+function GlobalFiltersProvider({ empresaId, children }) {
+  const storagePrefix = `igreja:${empresaId || 'global'}:filtros`;
+  const [referencia, setReferenciaState] = useState(() => storageGet(`${storagePrefix}:referencia`, currentReferencia()));
+  const [caixaIds, setCaixaIdsState] = useState(() => readStoredCaixaIds(storagePrefix));
+  const [presetsCaixas, setPresetsCaixas] = useState(() => {
+    try {
+      return JSON.parse(storageGet(`${storagePrefix}:caixaPresets`, '[]')) || [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    setReferenciaState(storageGet(`${storagePrefix}:referencia`, currentReferencia()));
+    setCaixaIdsState(readStoredCaixaIds(storagePrefix));
+    try {
+      setPresetsCaixas(JSON.parse(storageGet(`${storagePrefix}:caixaPresets`, '[]')) || []);
+    } catch {
+      setPresetsCaixas([]);
+    }
+  }, [storagePrefix]);
+
+  const setReferencia = useCallback(
+    (value) => {
+      const next = ensureReferencia(value || currentReferencia());
+      setReferenciaState(next);
+      storageSet(`${storagePrefix}:referencia`, next);
+    },
+    [storagePrefix],
+  );
+
+  const setCaixaIds = useCallback(
+    (values) => {
+      const next = Array.isArray(values) ? values.filter(Boolean) : [];
+      setCaixaIdsState(next);
+      storageSet(`${storagePrefix}:caixaIds`, JSON.stringify(next));
+      storageSet(`${storagePrefix}:caixaId`, next.length === 1 ? next[0] : '');
+    },
+    [storagePrefix],
+  );
+
+  const setCaixaId = useCallback(
+    (value) => {
+      setCaixaIds(value ? [value] : []);
+    },
+    [setCaixaIds],
+  );
+
+  const salvarPresetCaixas = useCallback(
+    (nome, ids) => {
+      const cleanName = String(nome || '').trim();
+      const nextIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
+      if (!cleanName || nextIds.length === 0) return;
+      const next = [{ nome: cleanName, ids: nextIds }, ...presetsCaixas.filter((p) => p.nome !== cleanName)].slice(0, 8);
+      setPresetsCaixas(next);
+      storageSet(`${storagePrefix}:caixaPresets`, JSON.stringify(next));
+    },
+    [presetsCaixas, storagePrefix],
+  );
+
+  const limparFiltros = useCallback(() => {
+    setReferencia(currentReferencia());
+    setCaixaIds([]);
+  }, [setReferencia, setCaixaIds]);
+
+  const caixaId = caixaIds.length === 1 ? caixaIds[0] : '';
+  return (
+    <FilterContext.Provider
+      value={{
+        referencia,
+        caixaId,
+        caixaIds,
+        setReferencia,
+        setCaixaId,
+        setCaixaIds,
+        limparFiltros,
+        salvarPresetCaixas,
+        presetsCaixas,
+      }}
+    >
+      {children}
+    </FilterContext.Provider>
+  );
+}
+
+function usePersistentPage(moduleKey, initial = 'home') {
+  const { empresaId } = React.useContext(TenantContext);
+  const storageKey = `igreja:${empresaId || 'global'}:${moduleKey}:page`;
+  const [page, setPageState] = useState(() => storageGet(storageKey, initial));
+
+  useEffect(() => {
+    const next = storageGet(storageKey, initial);
+    setPageState(next || initial);
+  }, [storageKey, initial]);
+
+  const setPage = useCallback(
+    (next) => {
+      setPageState(next);
+      storageSet(storageKey, next);
+    },
+    [storageKey],
+  );
+
+  useEffect(() => {
+    const handler = (event) => {
+      if (event?.detail?.moduleKey === moduleKey) {
+        setPageState(initial);
+        storageSet(storageKey, initial);
+      }
+    };
+    window.addEventListener('igreja:modulePageReset', handler);
+    return () => window.removeEventListener('igreja:modulePageReset', handler);
+  }, [moduleKey, storageKey, initial]);
+
+  return [page, setPage];
+}
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('Erro no módulo:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="card alert" style={{ margin: 16 }}>
+          <b>Erro no módulo atual.</b>
+          <br />
+          O sistema preservou sua sessão e não voltou para a tela inicial. Tente recarregar apenas o módulo.
+          <br />
+          <small>{this.state.error?.message || 'Erro desconhecido'}</small>
+          <div style={{ marginTop: 12 }}>
+            <button onClick={() => this.setState({ error: null })}>Recarregar módulo</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const storageGet = (key, fallback = '') => {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null || raw === '') return fallback;
+    try { return JSON.parse(raw); } catch { return raw; }
+  } catch {
+    return fallback;
+  }
+};
+const storageSet = (key, value) => {
+  try {
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+    window.localStorage.setItem(key, serialized ?? '');
+  } catch {}
+};
+const storageRemove = (key) => {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {}
+};
+const isMasterProfile = (p) => p?.role === 'master' || MASTER_EMAILS.includes(String(p?.email || '').toLowerCase());
+const isMasterEmail = (email) => MASTER_EMAILS.includes(String(email || '').toLowerCase());
+const navText = (label = '') => String(label).replace(/^\S+\s*/, '');
+const navIcon = (label = '') => String(label).split(' ')[0] || '•';
+const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+const fmtMoney = (v) =>
+  (Number(v) || 0).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  });
+const fmtDate = (d) => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '');
+const todayISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const referenciaParts = (value) => {
+  const ref = ensureReferencia(value || currentReferencia());
+  return {
+    referencia: ref,
+    ano: Number(ref.slice(0, 4)),
+    mes: Number(ref.slice(5, 7)),
+  };
+};
+
+const DIA_SEMANA_OPTIONS = [
+  { value: '0', label: 'Domingo' },
+  { value: '1', label: 'Segunda-feira' },
+  { value: '2', label: 'Terça-feira' },
+  { value: '3', label: 'Quarta-feira' },
+  { value: '4', label: 'Quinta-feira' },
+  { value: '5', label: 'Sexta-feira' },
+  { value: '6', label: 'Sábado' },
+];
+const DIA_SEMANA_LABELS = Object.fromEntries(DIA_SEMANA_OPTIONS.map((o) => [o.value, o.label]));
+const FREQUENCIA_AULA_OPTIONS = [
+  { value: 'semanal', label: 'Semanal' },
+  { value: 'quinzenal', label: 'Quinzenal' },
+  { value: 'mensal', label: 'Mensal / a cada 4 semanas' },
+];
+const STATUS_AULA_OPTIONS = [
+  { value: 'pendente', label: 'Pendente' },
+  { value: 'realizada', label: 'Realizada' },
+  { value: 'cancelada', label: 'Cancelada' },
+];
+function aulaStatusLabel(status) {
+  return STATUS_AULA_OPTIONS.find((s) => s.value === status)?.label || 'Pendente';
+}
+function aulaStatusClass(status) {
+  if (status === 'realizada') return 'Ativo';
+  if (status === 'cancelada') return 'Cancelado';
+  return 'Pendente';
+}
+function parseDiaSemana(value) {
+  const raw = String(value || '')
+    .trim()
+    .toLowerCase();
+  const aliases = {
+    domingo: 0,
+    dom: 0,
+    segunda: 1,
+    'segunda-feira': 1,
+    seg: 1,
+    terca: 2,
+    terça: 2,
+    'terça-feira': 2,
+    'terca-feira': 2,
+    ter: 2,
+    quarta: 3,
+    'quarta-feira': 3,
+    qua: 3,
+    quinta: 4,
+    'quinta-feira': 4,
+    qui: 4,
+    sexta: 5,
+    'sexta-feira': 5,
+    sex: 5,
+    sabado: 6,
+    sábado: 6,
+    sab: 6,
+    sáb: 6,
+  };
+  if (/^[0-6]$/.test(raw)) return Number(raw);
+  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return aliases[raw] ?? aliases[normalized] ?? 0;
+}
+function addDaysISO(dateISO, days) {
+  const d = new Date(`${dateISO}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function buildAulasPreview({ inicio, fim, diaSemana, frequencia, temaBase, horario, professor }) {
+  if (!inicio || !fim || inicio > fim) return [];
+  const step = frequencia === 'quinzenal' ? 14 : frequencia === 'mensal' ? 28 : 7;
+  const target = Number(diaSemana ?? 0);
+  let current = inicio;
+  let guard = 0;
+  while (new Date(`${current}T00:00:00`).getDay() !== target && guard < 8) {
+    current = addDaysISO(current, 1);
+    guard += 1;
+  }
+  const aulas = [];
+  let numero = 1;
+  while (current <= fim && aulas.length < 80) {
+    aulas.push({
+      numero_aula: numero,
+      data: current,
+      tema: temaBase ? `${temaBase} ${String(numero).padStart(2, '0')}` : `Aula ${String(numero).padStart(2, '0')}`,
+      horario: horario || '',
+      professor: professor || '',
+    });
+    numero += 1;
+    current = addDaysISO(current, step);
+  }
+  return aulas;
+}
+const currentReferencia = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+const referenciaFromDate = (d) => String(d || '').slice(0, 7) || currentReferencia();
+const fmtReferencia = (ref) => {
+  const [ano, mes] = String(ref || '').split('-');
+  const idx = Number(mes) - 1;
+  return ano && MESES[idx] ? `${MESES[idx]}/${ano}` : ref || '—';
+};
+
+const DEFAULT_THEME_COLOR = '#1e2a4a';
+const DEFAULT_SECONDARY_COLOR = '#2563eb';
+const DEFAULT_CARD_COLOR = '#ffffff';
+const DEFAULT_BACKGROUND_COLOR = '#f4f1ea';
+const DEFAULT_TITLE_COLOR = '#0f172a';
+const DEFAULT_ICON_COLOR = '#2563eb';
+const THEME_PRESETS = {
+  labrea: {
+    label: 'Padrão Lábrea Tech',
+    principal: '#1e2a4a',
+    secundaria: '#2563eb',
+    cards: '#ffffff',
+    icones: '#2563eb',
+    titulos: '#0f172a',
+    fundo: '#f4f1ea',
+  },
+  azul: {
+    label: 'Azul',
+    principal: '#1e3a8a',
+    secundaria: '#2563eb',
+    cards: '#ffffff',
+    icones: '#2563eb',
+    titulos: '#0f172a',
+    fundo: '#f8fafc',
+  },
+  verde: {
+    label: 'Verde',
+    principal: '#064e3b',
+    secundaria: '#16a34a',
+    cards: '#ffffff',
+    icones: '#16a34a',
+    titulos: '#0f172a',
+    fundo: '#f0fdf4',
+  },
+  roxo: {
+    label: 'Roxo',
+    principal: '#3b0764',
+    secundaria: '#7c3aed',
+    cards: '#ffffff',
+    icones: '#7c3aed',
+    titulos: '#111827',
+    fundo: '#faf5ff',
+  },
+  vermelho: {
+    label: 'Vermelho',
+    principal: '#7f1d1d',
+    secundaria: '#dc2626',
+    cards: '#ffffff',
+    icones: '#dc2626',
+    titulos: '#111827',
+    fundo: '#fff7f7',
+  },
+  claro: {
+    label: 'Claro',
+    principal: '#334155',
+    secundaria: '#0ea5e9',
+    cards: '#ffffff',
+    icones: '#0ea5e9',
+    titulos: '#0f172a',
+    fundo: '#f8fafc',
+  },
+  escuro: {
+    label: 'Escuro',
+    principal: '#020617',
+    secundaria: '#38bdf8',
+    cards: '#ffffff',
+    icones: '#38bdf8',
+    titulos: '#0f172a',
+    fundo: '#e2e8f0',
+  },
+  personalizado: {
+    label: 'Personalizado',
+    principal: '#1e2a4a',
+    secundaria: '#2563eb',
+    cards: '#ffffff',
+    icones: '#2563eb',
+    titulos: '#0f172a',
+    fundo: '#f4f1ea',
+  },
+};
+const THEME_QUICK_COLORS = ['#1e2a4a', '#2563eb', '#0ea5e9', '#0f766e', '#16a34a', '#84cc16', '#f59e0b', '#ea580c', '#dc2626', '#db2777', '#7c3aed', '#334155', '#020617', '#ffffff', '#f8fafc', '#f4f1ea'];
+const normalizeHexColor = (value, fallback = DEFAULT_THEME_COLOR) => {
+  const raw = String(value || '').trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw;
+  return fallback;
+};
+
+const clamp = (value, min = 0, max = 1) => Math.min(max, Math.max(min, value));
+const hexToRgb = (hex, fallback = DEFAULT_THEME_COLOR) => {
+  const safe = normalizeHexColor(hex, fallback).slice(1);
+  const num = parseInt(safe, 16);
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+};
+const rgbToHex = ({ r, g, b }) =>
+  `#${[r, g, b]
+    .map((v) =>
+      Math.round(clamp(v, 0, 255))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`;
+const rgbToHsv = ({ r, g, b }) => {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b),
+    min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+};
+const hsvToRgb = ({ h, s, v }) => {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r1 = 0,
+    g1 = 0,
+    b1 = 0;
+  if (h < 60) [r1, g1, b1] = [c, x, 0];
+  else if (h < 120) [r1, g1, b1] = [x, c, 0];
+  else if (h < 180) [r1, g1, b1] = [0, c, x];
+  else if (h < 240) [r1, g1, b1] = [0, x, c];
+  else if (h < 300) [r1, g1, b1] = [x, 0, c];
+  else [r1, g1, b1] = [c, 0, x];
+  return { r: (r1 + m) * 255, g: (g1 + m) * 255, b: (b1 + m) * 255 };
+};
+const hsvToHex = (hsv) => rgbToHex(hsvToRgb(hsv));
+
+const shadeHexColor = (hex, percent = -20) => {
+  const safe = normalizeHexColor(hex).slice(1);
+  const num = parseInt(safe, 16);
+  const amt = Math.round(2.55 * percent);
+  const r = Math.max(0, Math.min(255, (num >> 16) + amt));
+  const g = Math.max(0, Math.min(255, ((num >> 8) & 0x00ff) + amt));
+  const b = Math.max(0, Math.min(255, (num & 0x0000ff) + amt));
+  return `#${(0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+};
+const hexLuminance = (hex) => {
+  const safe = normalizeHexColor(hex).slice(1);
+  const num = parseInt(safe, 16);
+  const rgb = [(num >> 16) & 255, (num >> 8) & 255, num & 255].map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+};
+const FONT_SIZE_PRESETS = {
+  compacto: {
+    label: 'Compacta',
+    base: 14,
+    menu: 15,
+    icon: 19,
+    item: 48,
+    desc: 'Mais informações na tela.',
+  },
+  normal: {
+    label: 'Normal',
+    base: 15,
+    menu: 16,
+    icon: 20,
+    item: 50,
+    desc: 'Padrão recomendado.',
+  },
+  grande: {
+    label: 'Grande',
+    base: 16,
+    menu: 17,
+    icon: 21,
+    item: 52,
+    desc: 'Leitura mais confortável.',
+  },
+  extra: {
+    label: 'Extra grande',
+    base: 17,
+    menu: 18,
+    icon: 22,
+    item: 54,
+    desc: 'Maior acessibilidade visual.',
+  },
+};
+const normalizeFontSizePreset = (value) => (FONT_SIZE_PRESETS[value] ? value : 'normal');
+const ANNUAL_SUMMARY_FONT_PRESETS = {
+  compacto: {
+    label: 'Compacta',
+    desc: 'Mais conteúdo com leitura ainda proporcional.',
+    screenMonth: 10,
+    screenYear: 13,
+    screenLabel: 11,
+    screenValue: 11,
+    screenTotal: 11,
+    screenTotalLabel: 11,
+    printMonth: 6.4,
+    printYear: 8.8,
+    printLabel: 6.6,
+    printValue: 7.4,
+    printTotal: 7.4,
+    printTotalLabel: 6.6,
+  },
+  normal: {
+    label: 'Normal',
+    desc: 'Padrão proporcional recomendado para A4.',
+    screenMonth: 11,
+    screenYear: 14,
+    screenLabel: 12,
+    screenValue: 12,
+    screenTotal: 12,
+    screenTotalLabel: 12,
+    printMonth: 7.0,
+    printYear: 10.0,
+    printLabel: 7.2,
+    printValue: 8.2,
+    printTotal: 8.2,
+    printTotalLabel: 7.2,
+  },
+  grande: {
+    label: 'Grande',
+    desc: 'Maior leitura mantendo o encaixe em A4 paisagem.',
+    screenMonth: 12,
+    screenYear: 15,
+    screenLabel: 13,
+    screenValue: 13,
+    screenTotal: 13,
+    screenTotalLabel: 13,
+    printMonth: 7.6,
+    printYear: 10.8,
+    printLabel: 7.8,
+    printValue: 9.0,
+    printTotal: 9.0,
+    printTotalLabel: 7.8,
+  },
+};
+const normalizeAnnualSummaryFontPreset = (value) => (ANNUAL_SUMMARY_FONT_PRESETS[value] ? value : 'normal');
+const getAnnualSummaryFontVars = (value = 'normal') => {
+  const preset = ANNUAL_SUMMARY_FONT_PRESETS[normalizeAnnualSummaryFontPreset(value)];
+  return {
+    '--annual-screen-month-font': `${preset.screenMonth}px`,
+    '--annual-screen-year-font': `${preset.screenYear}px`,
+    '--annual-screen-label-font': `${preset.screenLabel}px`,
+    '--annual-screen-value-font': `${preset.screenValue}px`,
+    '--annual-screen-total-font': `${preset.screenTotal}px`,
+    '--annual-screen-total-label-font': `${preset.screenTotalLabel}px`,
+    '--annual-print-month-font': `${preset.printMonth}pt`,
+    '--annual-print-year-font': `${preset.printYear}pt`,
+    '--annual-print-label-font': `${preset.printLabel}pt`,
+    '--annual-print-value-font': `${preset.printValue}pt`,
+    '--annual-print-total-font': `${preset.printTotal}pt`,
+    '--annual-print-total-label-font': `${preset.printTotalLabel}pt`,
+  };
+};
+const ICON_STYLE_PRESETS = {
+  minimalista: { label: 'Minimalista', desc: 'Ícones finos, discretos e sem cores adicionais.' },
+  preenchido: { label: 'Colorido (Transportadora)', desc: 'Ícones reconhecíveis no padrão visual do Sistema Transportadora.' },
+};
+const normalizeIconStyle = (value) => {
+  const normalized = value === 'colorido' ? 'preenchido' : value;
+  // Compatibilidade: o estilo clássico antigo passa a usar o Minimalista.
+  if (normalized === 'classico') return 'minimalista';
+  return ICON_STYLE_PRESETS[normalized] ? normalized : 'minimalista';
+};
+const getStoredIconStyle = (empresa = {}) => {
+  if (!empresa?.id) return '';
+  return storageGet(`igreja:${empresa.id}:estilo_icones`, '');
+};
+
+const getStoredFontPreset = (empresa = {}) => {
+  if (!empresa?.id) return '';
+  return storageGet(`igreja:${empresa.id}:tamanho_fonte_sistema`, '');
+};
+const getEmpresaThemeValues = (empresa = {}) => {
+  const presetKey = empresa.tema_preset || 'labrea';
+  const preset = THEME_PRESETS[presetKey] || THEME_PRESETS.labrea;
+  const principal = normalizeHexColor(empresa.cor_principal || empresa.cor_menu || preset.principal, preset.principal);
+  const secundaria = normalizeHexColor(empresa.cor_secundaria || preset.secundaria, preset.secundaria);
+  const cards = normalizeHexColor(empresa.cor_cards || preset.cards, preset.cards);
+  const icones = normalizeHexColor(empresa.cor_icones || secundaria, secundaria);
+  const titulos = normalizeHexColor(empresa.cor_titulos || preset.titulos, preset.titulos);
+  const fundo = normalizeHexColor(empresa.cor_fundo || preset.fundo, preset.fundo);
+  const fontPresetKey = normalizeFontSizePreset(empresa.tamanho_fonte_sistema || empresa.tamanho_fonte || getStoredFontPreset(empresa) || 'normal');
+  const fontPreset = FONT_SIZE_PRESETS[fontPresetKey];
+  const iconStyle = normalizeIconStyle(empresa.estilo_icones || getStoredIconStyle(empresa) || 'classico');
+  return {
+    presetKey,
+    preset,
+    principal,
+    secundaria,
+    cards,
+    icones,
+    titulos,
+    fundo,
+    fontPresetKey,
+    fontPreset,
+    iconStyle,
+  };
+};
+const empresaThemeStyle = (empresa = {}) => {
+  const t = getEmpresaThemeValues(empresa);
+  const lum = hexLuminance(t.principal);
+  const dark = lum > 0.55 ? shadeHexColor(t.principal, -58) : shadeHexColor(t.principal, -18);
+  const darker = lum > 0.55 ? shadeHexColor(t.principal, -72) : shadeHexColor(t.principal, -34);
+  const activeText = lum > 0.62 ? '#07111f' : '#ffffff';
+  return {
+    '--navy': dark,
+    '--blue': t.secundaria,
+    '--primary': t.principal,
+    '--secondary': t.secundaria,
+    '--theme-base': t.principal,
+    '--theme-secondary': t.secundaria,
+    '--theme-dark': dark,
+    '--theme-darker': darker,
+    '--theme-active-text': activeText,
+    '--theme-sidebar-text': '#f8fbff',
+    '--theme-sidebar-muted': '#c7d7ea',
+    '--theme-soft': `${t.secundaria}18`,
+    '--theme-card': t.cards,
+    '--theme-icon': t.icones,
+    '--theme-title': t.titulos,
+    '--theme-bg': t.fundo,
+    '--lt-primary': t.principal,
+    '--lt-secondary': t.secundaria,
+    '--lt-card': t.cards,
+    '--lt-icon': t.icones,
+    '--lt-title': t.titulos,
+    '--lt-bg': t.fundo,
+    '--lt-font-base': `${t.fontPreset.base}px`,
+    '--lt-font-menu': `${t.fontPreset.menu}px`,
+    '--lt-font-icon': `${t.fontPreset.icon}px`,
+    '--lt-sidebar-item-height': `${t.fontPreset.item}px`,
+    '--lt-font-scale': `${t.fontPreset.base / FONT_SIZE_PRESETS.normal.base}`,
+  };
+};
+
+const escapeCsvCell = (value) => {
+  const raw = value === null || value === undefined ? '' : String(value);
+  const escaped = raw.replace(/"/g, '""');
+  return /[";\n\r]/.test(escaped) ? `"${escaped}"` : escaped;
+};
+const rowsToCsv = (rows, headers) => {
+  const lines = [headers.map((h) => escapeCsvCell(h.label)).join(';')];
+  rows.forEach((row) => lines.push(headers.map((h) => escapeCsvCell(row[h.key])).join(';')));
+  return `\ufeff${lines.join('\n')}`;
+};
+const downloadTextFile = (filename, content, type = 'text/csv;charset=utf-8;') => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+const downloadFinanceImportTemplate = (kind) => {
+  const entrada = kind === 'entrada';
+  const headers = entrada
+    ? [
+        { key: 'data', label: 'Data' },
+        { key: 'referencia', label: 'Referência' },
+        { key: 'numero_membro', label: 'ID do membro' },
+        { key: 'descricao', label: 'Nome do membro' },
+        { key: 'tipo', label: 'Tipo' },
+        { key: 'caixa', label: 'Caixa' },
+        { key: 'valor', label: 'Valor' },
+        { key: 'forma', label: 'Forma de pagamento' },
+        { key: 'observacoes', label: 'Observações' },
+      ]
+    : [
+        { key: 'data', label: 'Data' },
+        { key: 'referencia', label: 'Referência' },
+        { key: 'descricao', label: 'Descrição' },
+        { key: 'categoria', label: 'Categoria' },
+        { key: 'caixa', label: 'Caixa' },
+        { key: 'valor', label: 'Valor' },
+        { key: 'forma', label: 'Forma de pagamento' },
+        { key: 'observacoes', label: 'Observações' },
+      ];
+  const row = entrada
+    ? {
+        data: '30/06/2026',
+        referencia: '2026-06',
+        numero_membro: '1',
+        descricao: 'Nome do membro',
+        tipo: '1',
+        caixa: '1',
+        valor: '100,00',
+        forma: 'Pix',
+        observacoes: '',
+      }
+    : {
+        data: '01/06/2026',
+        referencia: '2026-06',
+        descricao: 'Conta de luz',
+        categoria: 'Energia elétrica',
+        caixa: '1',
+        valor: '100,00',
+        forma: 'Débito',
+        observacoes: '',
+      };
+  downloadTextFile(`modelo_importacao_${kind}s.csv`, rowsToCsv([row], headers));
+};
+const detectDelimiter = (text = '') => {
+  const sampleLine =
+    String(text || '')
+      .replace(/^\ufeff/, '')
+      .split(/\r?\n/)
+      .find((line) => line.trim()) || '';
+  const delimiters = [';', '\t', ','];
+  let best = ';';
+  let bestCount = -1;
+  delimiters.forEach((delimiter) => {
+    let count = 0;
+    let insideQuotes = false;
+    for (let i = 0; i < sampleLine.length; i += 1) {
+      const char = sampleLine[i];
+      const next = sampleLine[i + 1];
+      if (char === '"' && insideQuotes && next === '"') {
+        i += 1;
+        continue;
+      }
+      if (char === '"') {
+        insideQuotes = !insideQuotes;
+        continue;
+      }
+      if (char === delimiter && !insideQuotes) count += 1;
+    }
+    if (count > bestCount) {
+      best = delimiter;
+      bestCount = count;
+    }
+  });
+  return best;
+};
+const parseCsvText = (text) => {
+  const rows = [];
+  let cell = '';
+  let row = [];
+  let insideQuotes = false;
+  const normalized = String(text || '')
+    .replace(/^\ufeff/, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  const delimiter = detectDelimiter(normalized);
+  for (let i = 0; i < normalized.length; i += 1) {
+    const char = normalized[i];
+    const next = normalized[i + 1];
+    if (char === '"' && insideQuotes && next === '"') {
+      cell += '"';
+      i += 1;
+      continue;
+    }
+    if (char === '"') {
+      insideQuotes = !insideQuotes;
+      continue;
+    }
+    if (char === delimiter && !insideQuotes) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+    if (char === '\n' && !insideQuotes) {
+      row.push(cell.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+    cell += char;
+  }
+  row.push(cell.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+};
+const looksLikeExcelBinary = (text = '') => /PK\u0003\u0004|\[Content_Types\]\.xml|workbook\.xml/.test(String(text || '').slice(0, 500));
+const normalizeHeader = (value = '') => {
+  // IMPORTANTE: não use replace(/^n_?/) aqui. Isso transformava "Nome" em
+  // "numero_ome" e fazia a importação rejeitar planilhas válidas.
+  const key = normalizeKey(value);
+  const aliases = {
+    codigo: 'numero_membro',
+    cod: 'numero_membro',
+    numero: 'numero_membro',
+    numero_membro: 'numero_membro',
+    id: 'numero_membro',
+    nome: 'nome',
+    nome_completo: 'nome',
+    membro: 'nome',
+    nome_social: 'nome_social',
+    social: 'nome_social',
+    cpf: 'cpf',
+    rg: 'rg',
+    email: 'email',
+    e_mail: 'email',
+    endereco: 'endereco',
+    endereço: 'endereco',
+    logradouro: 'endereco',
+    rua: 'endereco',
+    numero_endereco: 'numero_endereco',
+    num_endereco: 'numero_endereco',
+    n_endereco: 'numero_endereco',
+    bairro: 'bairro',
+    cidade: 'cidade',
+    cep: 'cep',
+    uf: 'uf',
+    dt_nasc: 'data_nascimento',
+    data_nasc: 'data_nascimento',
+    data_nascimento: 'data_nascimento',
+    nascimento: 'data_nascimento',
+    data_de_nascimento: 'data_nascimento',
+    tel_res: 'telefone_residencial',
+    telefone_res: 'telefone_residencial',
+    telefone_residencial: 'telefone_residencial',
+    tel_residencial: 'telefone_residencial',
+    telefone_res_: 'telefone_residencial',
+    tel_cel: 'telefone_celular',
+    telefone_cel: 'telefone_celular',
+    telefone_celular: 'telefone_celular',
+    celular: 'telefone_celular',
+    whatsapp: 'telefone_celular',
+    est_civil: 'estado_civil',
+    estado_civil: 'estado_civil',
+    sexo: 'sexo',
+    profissao: 'profissao',
+    profissão: 'profissao',
+    setor: 'setor',
+    congregacao: 'congregacao',
+    congregação: 'congregacao',
+    ministerio: 'ministerio',
+    ministério: 'ministerio',
+    cargo: 'cargo',
+    escolaridade: 'escolaridade',
+    familia: 'familia',
+    família: 'familia',
+    data_batismo: 'data_batismo',
+    batismo: 'data_batismo',
+    data_conversao: 'data_conversao',
+    conversao: 'data_conversao',
+    conversão: 'data_conversao',
+    situacao: 'situacao',
+    situação: 'situacao',
+    complemento: 'complemento',
+  };
+  return aliases[key] || key;
+};
+const truthyFromSheet = (value) => ['sim', 's', 'true', '1', 'yes'].includes(normalizeKey(value));
+
+const toOptionLabel = (row, labelKey = 'nome') => row?.[labelKey] || row?.nome || row?.descricao || '—';
+const cepLookup = async (cep) => {
+  const digits = onlyDigits(cep);
+  if (digits.length !== 8) return null;
+  const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (data?.erro) return null;
+  return {
+    endereco: data.logradouro || '',
+    bairro: data.bairro || '',
+    cidade: data.localidade || '',
+    uf: data.uf || '',
+  };
+};
+const defaultQuickFields = [
+  { name: 'nome', label: 'Nome', required: true, full: true },
+  { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+];
+
+const estadoCivilFromSheet = (value) => {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const key = normalizeKey(raw);
+  const map = {
+    solteiro: 'solteiro',
+    solteira: 'solteiro',
+    solteiro_a: 'solteiro',
+    solteira_o: 'solteiro',
+    casado: 'casado',
+    casada: 'casado',
+    casado_a: 'casado',
+    casada_o: 'casado',
+    casamento: 'casado',
+    viuvo: 'viuvo',
+    viuva: 'viuvo',
+    viuvo_a: 'viuvo',
+    viuva_o: 'viuvo',
+    divorciado: 'divorciado',
+    divorciada: 'divorciado',
+    divorciado_a: 'divorciado',
+    divorciada_o: 'divorciado',
+    separado: 'divorciado',
+    separada: 'divorciado',
+    separado_a: 'divorciado',
+    uniao_estavel: 'uniao_estavel',
+    uniao: 'uniao_estavel',
+    uniao_estavel_a: 'uniao_estavel',
+    amasiado: 'uniao_estavel',
+    amasiada: 'uniao_estavel',
+    companheiro: 'uniao_estavel',
+    companheira: 'uniao_estavel',
+  };
+  return map[key] || null;
+};
+const dateFromSheet = (value) => {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (!m) return null;
+  return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+};
+const uid = () => Math.random().toString(36).slice(2);
+
+const AUDIT_TABLE_LABELS = {
+  profiles: 'Usuários',
+  empresas: 'Empresas/Igrejas',
+  membros: 'Membros',
+  filhos_dependentes: 'Filhos/dependentes',
+  familias: 'Famílias',
+  congregacoes: 'Congregações',
+  ministerios: 'Ministérios',
+  cargos: 'Cargos',
+  setores: 'Setores',
+  profissoes: 'Profissões',
+  escolaridades: 'Escolaridades',
+  tipos_caixa: 'Caixas',
+  tipos_receita: 'Tipos de receita',
+  categorias_despesas: 'Categorias de despesa',
+  formas_pagamento: 'Formas de pagamento',
+  centros_custo: 'Centros de custo',
+  lancamentos_financeiros: 'Livro caixa',
+  despesas: 'Despesas',
+  fechamentos_mensais: 'Fechamentos',
+  patrimonio: 'Patrimônio',
+  patrimonio_categorias: 'Categorias patrimônio',
+  patrimonio_locais: 'Locais patrimônio',
+  patrimonio_fornecedores: 'Fornecedores',
+  patrimonio_manutencoes: 'Manutenções',
+  importacoes_bancarias: 'Importações bancárias',
+  importacao_bancaria_itens: 'Itens importação',
+  credores: 'Credores',
+  prestacao_cofres_missionarios: 'Cofres missionários',
+  prestacao_relatorios: 'Relatórios da prestação',
+  prestacao_grupos_relatorio: 'Grupos da prestação',
+  prestacao_fontes_slide: 'Fontes de slides',
+  app_configuracoes: 'Configurações do app',
+};
+const AUDIT_ACTION_LABELS = {
+  INSERT: 'Criação',
+  UPDATE: 'Alteração',
+  DELETE: 'Exclusão',
+};
+const AUDIT_ACTION_CLASS = {
+  INSERT: 'Ativo',
+  UPDATE: 'warning',
+  DELETE: 'Inativo',
+};
+const formatAuditValue = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Sim' : 'Não';
+  if (typeof value === 'number') return String(value);
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10).split('-').reverse().join('/');
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+};
+const auditChanges = (oldData = {}, newData = {}) => {
+  const oldObj = oldData || {};
+  const newObj = newData || {};
+  const keys = Array.from(new Set([...Object.keys(oldObj), ...Object.keys(newObj)])).filter((k) => !['updated_at', 'created_at', 'id', 'empresa_id'].includes(k));
+  return keys.filter((k) => JSON.stringify(oldObj[k] ?? null) !== JSON.stringify(newObj[k] ?? null)).map((k) => ({ campo: k, antes: oldObj[k], depois: newObj[k] }));
+};
+const downloadJsonFile = (filename, data) => downloadTextFile(filename, JSON.stringify(data, null, 2), 'application/json;charset=utf-8;');
+
+/* =========================================================
+   TOASTS
+========================================================= */
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const timersRef = useRef(new Map());
+  const close = useCallback((id) => {
+    const timer = timersRef.current.get(id);
+    if (timer) clearTimeout(timer);
+    timersRef.current.delete(id);
+    setToasts((items) => items.filter((item) => item.id !== id));
+  }, []);
+  const push = useCallback(
+    (text, kind = 'success') => {
+      const id = uid();
+      setToasts((items) => [...items, { id, text, kind }]);
+      const timer = setTimeout(() => close(id), 4200);
+      timersRef.current.set(id, timer);
+      return id;
+    },
+    [close],
+  );
+  useEffect(
+    () => () => {
+      timersRef.current.forEach((timer) => clearTimeout(timer));
+      timersRef.current.clear();
+    },
+    [],
+  );
+  return { toasts, push, close };
+}
+function ToastStack({ toasts, close }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toastStack" role="region" aria-live="polite" aria-label="Notificações">
+      {toasts.map((t) => (
+        <div key={t.id} className={`toastBox ${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
+          <div className="toastIcon" aria-hidden="true">{t.kind === 'error' ? '⚠️' : t.kind === 'warning' ? '⏳' : '✅'}</div>
+          <div className="toastText">{t.text}</div>
+          <button type="button" className="toastClose" onClick={() => close(t.id)} aria-label="Fechar notificação">
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* =========================================================
+   DADOS: hook genérico de tabela supabase
+========================================================= */
+function useTable(table, { order = 'created_at', ascending = false, enabled = true, select = '*', filters = [], limit = null } = {}) {
+  const tenant = React.useContext(TenantContext);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(Boolean(enabled));
+  const [error, setError] = useState(null);
+  const requestSequence = useRef(0);
+  const filtersKey = JSON.stringify(filters || []);
+
+  const reload = useCallback(async () => {
+    const requestId = ++requestSequence.current;
+    if (!enabled || !supabase) {
+      setRows([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      let query = supabase.from(table).select(select || '*');
+      if (tenant?.empresaId && TENANT_TABLES.has(table)) query = query.eq('empresa_id', tenant.empresaId);
+
+      const parsedFilters = JSON.parse(filtersKey || '[]');
+      parsedFilters.forEach((filter) => {
+        if (!filter?.column || filter.value === undefined) return;
+        const operator = filter.operator || 'eq';
+        if (operator === 'in') {
+          if (Array.isArray(filter.value) && filter.value.length) query = query.in(filter.column, filter.value);
+          return;
+        }
+        if (operator === 'is') {
+          query = query.is(filter.column, filter.value);
+          return;
+        }
+        if (['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'ilike', 'contains', 'containedBy', 'overlaps'].includes(operator) && typeof query[operator] === 'function') {
+          query = query[operator](filter.column, filter.value);
+        }
+      });
+
+      if (order) query = query.order(order, { ascending });
+      if (Number.isInteger(limit) && limit > 0) query = query.limit(limit);
+      const result = await query;
+      if (requestId !== requestSequence.current) return;
+      if (result.error) throw result.error;
+      setRows(result.data || []);
+    } catch (err) {
+      if (requestId !== requestSequence.current) return;
+      setError(err);
+    } finally {
+      if (requestId === requestSequence.current) setLoading(false);
+    }
+  }, [table, order, ascending, enabled, select, filtersKey, limit, tenant?.empresaId]);
+
+  useEffect(() => {
+    reload();
+    return () => {
+      requestSequence.current += 1;
+    };
+  }, [reload]);
+  useEffect(() => {
+    const handler = (event) => {
+      if (!event?.detail?.table || event.detail.table === table) reload();
+    };
+    window.addEventListener('igreja:tableRefresh', handler);
+    return () => window.removeEventListener('igreja:tableRefresh', handler);
+  }, [table, reload]);
+
+  return { rows, loading, error, reload };
+}
+
+/* =========================================================
+   MODAL
+========================================================= */
+function Modal({ title, onClose, children, wide, className = '' }) {
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = React.useId();
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    const dialog = dialogRef.current;
+    const focusableSelector = 'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const focusFirstControl = () => {
+      const controls = dialog?.querySelectorAll(focusableSelector) || [];
+      (controls[0] || dialog)?.focus?.();
+    };
+    const frame = requestAnimationFrame(focusFirstControl);
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && onCloseRef.current) {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialog) return;
+      const controls = Array.from(dialog.querySelectorAll(focusableSelector));
+      if (!controls.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus?.();
+    };
+  }, []);
+
+  return (
+    <div
+      className="modalBackdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
+    >
+      <div ref={dialogRef} className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <div className="modalHeader">
+          <h3 id={titleId}>{title}</h3>
+          <button type="button" className="secondary" onClick={onClose} aria-label={`Fechar ${String(title || 'janela')}`}>
+            Fechar
+          </button>
+        </div>
+        <div className="modalBody">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   FORM GENÉRICO A PARTIR DE CONFIG DE CAMPOS
+========================================================= */
+function MoneyInput({ value, onChange, readOnly, className = '' }) {
+  const numericValue = Number(String(value ?? '0').replace(',', '.')) || 0;
+  const displayValue = fmtMoney(numericValue);
+  const handleChange = (e) => {
+    const digits = String(e.target.value || '').replace(/\D/g, '');
+    const cents = digits ? Number(digits) / 100 : 0;
+    onChange(cents.toFixed(2));
+  };
+  return <input className={`moneyInput ${className}`.trim()} type="text" inputMode="numeric" value={displayValue} onChange={handleChange} onFocus={(e) => e.currentTarget.select()} readOnly={!!readOnly} placeholder="R$ 0,00" />;
+}
+
+function SearchableSelect({ value, onChange, options = [], placeholder = 'Selecione…', disabled = false, emptyText = 'Nenhuma opção encontrada.' }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const wrapRef = useRef(null);
+  const inputRef = useRef(null);
+  const listId = React.useId();
+  const normalizedQuery = normalizeText(q);
+  const selected = (options || []).find((o) => String(o.value) === String(value ?? ''));
+  const filtered = (options || []).filter((o) => {
+    if (!normalizedQuery) return true;
+    return normalizeText(`${o.label || ''} ${o.value || ''}`).includes(normalizedQuery);
+  });
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutside = (event) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutside);
+    return () => document.removeEventListener('mousedown', closeOnOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) setTimeout(() => inputRef.current?.focus(), 20);
+  }, [open]);
+
+  const choose = (nextValue) => {
+    onChange(nextValue);
+    setOpen(false);
+    setQ('');
+  };
+
+  return (
+    <div className="searchableSelect" ref={wrapRef} onKeyDown={(event) => event.key === 'Escape' && setOpen(false)}>
+      <button type="button" className={`searchableSelectButton ${!selected ? 'placeholder' : ''}`} disabled={disabled} onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}>
+        <span>{selected?.label || placeholder}</span>
+        <span className="searchableSelectArrow">⌄</span>
+      </button>
+      {open && (
+        <div className="searchableSelectPanel">
+          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar opções…" className="searchableSelectSearch" aria-label="Filtrar opções" aria-controls={listId} />
+          <div className="searchableSelectActions">
+            <button type="button" className="tinyLinkBtn" onClick={() => choose('')}>
+              Limpar seleção
+            </button>
+            <span>{filtered.length} opção(ões)</span>
+          </div>
+          <div className="searchableSelectList" id={listId} role="listbox">
+            {filtered.length === 0 && <div className="searchableSelectEmpty">{emptyText}</div>}
+            {filtered.map((o) => {
+              const active = String(o.value) === String(value ?? '');
+              return (
+                <button key={String(o.value)} type="button" role="option" aria-selected={active} className={`searchableSelectOption ${active ? 'active' : ''}`} onClick={() => choose(o.value)}>
+                  <span>{o.label}</span>
+                  {active && <b>✓</b>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MultiSearchableSelect({ value = [], onChange, options = [], placeholder = 'Selecione…', disabled = false, emptyText = 'Nenhuma opção encontrada.' }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const wrapRef = useRef(null);
+  const inputRef = useRef(null);
+  const listId = React.useId();
+  const selectedValues = Array.isArray(value) ? value.map(String) : [];
+  const selectedSet = new Set(selectedValues);
+  const normalizedQuery = normalizeText(q);
+  const selectedOptions = (options || []).filter((o) => selectedSet.has(String(o.value)));
+  const filtered = (options || []).filter((o) => {
+    if (!normalizedQuery) return true;
+    return normalizeText(`${o.label || ''} ${o.value || ''}`).includes(normalizedQuery);
+  });
+  const label = selectedOptions.length === 0 ? placeholder : selectedOptions.length <= 2 ? selectedOptions.map((o) => o.label).join(', ') : `${selectedOptions.length} selecionado(s)`;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutside = (event) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutside);
+    return () => document.removeEventListener('mousedown', closeOnOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) setTimeout(() => inputRef.current?.focus(), 20);
+  }, [open]);
+
+  const setNext = (ids) => onChange(Array.from(new Set(ids.map(String))));
+  const toggle = (id) => {
+    const sid = String(id);
+    if (selectedSet.has(sid)) setNext(selectedValues.filter((x) => x !== sid));
+    else setNext([...selectedValues, sid]);
+  };
+  const selectFiltered = () => setNext([...selectedValues, ...filtered.map((o) => o.value)]);
+  const selectAll = () => setNext((options || []).map((o) => o.value));
+  const clear = () => setNext([]);
+
+  return (
+    <div className="searchableSelect multiSearchableSelect" ref={wrapRef} onKeyDown={(event) => event.key === 'Escape' && setOpen(false)}>
+      <button type="button" className={`searchableSelectButton ${selectedOptions.length === 0 ? 'placeholder' : ''}`} disabled={disabled} onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}>
+        <span>{label}</span>
+        <span className="searchableSelectArrow">⌄</span>
+      </button>
+      {open && (
+        <div className="searchableSelectPanel multiSearchablePanel">
+          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar opções…" className="searchableSelectSearch" aria-label="Filtrar opções" aria-controls={listId} />
+          <div className="searchableSelectActions multiSearchableActions">
+            <button type="button" className="tinyLinkBtn" onClick={clear}>
+              Limpar
+            </button>
+            <button type="button" className="tinyLinkBtn" onClick={selectFiltered}>
+              Selecionar filtrados
+            </button>
+            <button type="button" className="tinyLinkBtn" onClick={selectAll}>
+              Todos
+            </button>
+            <span>
+              {selectedOptions.length}/{options.length}
+            </span>
+          </div>
+          <div className="searchableSelectList" id={listId} role="listbox" aria-multiselectable="true">
+            {filtered.length === 0 && <div className="searchableSelectEmpty">{emptyText}</div>}
+            {filtered.map((o) => {
+              const active = selectedSet.has(String(o.value));
+              return (
+                <button key={String(o.value)} type="button" role="option" aria-selected={active} className={`searchableSelectOption ${active ? 'active' : ''}`} onClick={() => toggle(o.value)}>
+                  <span>{o.label}</span>
+                  {active && <b>✓</b>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="multiSearchableFooter">
+            <button type="button" className="smallBtn" onClick={() => setOpen(false)}>
+              Aplicar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, setForm, initial }) {
+  if (field.type === 'custom') {
+    return typeof field.render === 'function' ? field.render({ value, onChange, form, setForm, initial }) : null;
+  }
+  if (field.type === 'money') return <MoneyInput value={value ?? '0.00'} onChange={onChange} readOnly={field.readOnly} className={field.className || ''} />;
+  const common = {
+    value: value ?? '',
+    onChange: (e) => onChange(field.type === 'checkbox' ? e.target.checked : e.target.value),
+    readOnly: !!field.readOnly,
+    maxLength: field.maxLength,
+  };
+  if (field.type === 'select' || field.type === 'quickselect') {
+    const input = <SearchableSelect value={value ?? ''} onChange={onChange} options={field.options || []} placeholder={field.placeholder || 'Selecione…'} disabled={!!field.readOnly} />;
+    if (field.type === 'quickselect') {
+      return (
+        <div className="quickSelectRow">
+          {input}
+          <button type="button" className="smallBtn secondary nowrapBtn" onClick={() => onQuickCreate(field)}>
+            + Novo
+          </button>
+        </div>
+      );
+    }
+    return input;
+  }
+  if (field.type === 'combo') {
+    const listId = `list_${field.name}`;
+    return (
+      <>
+        <input list={listId} {...common} />
+        <datalist id={listId}>
+          {(field.options || []).map((o) => (
+            <option key={o.value || o.label} value={o.label || o.value} />
+          ))}
+        </datalist>
+      </>
+    );
+  }
+  if (field.type === 'textarea') return <textarea {...common} rows={3} />;
+  if (field.type === 'checkbox') return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />;
+  if (field.type === 'date')
+    return (
+      <div className="inlineSelectAction">
+        <input type="date" {...common} />
+        <button type="button" className="smallBtn secondary nowrapBtn" onClick={() => onChange(todayISO())}>
+          Hoje
+        </button>
+      </div>
+    );
+  if (field.type === 'month') return <input type="month" {...common} />;
+  if (field.type === 'file') return <input type="file" accept={field.accept || 'image/png,image/jpeg,image/webp'} onChange={(e) => onChange(e.target.files?.[0] || null)} />;
+  if (field.type === 'cep') {
+    return (
+      <div className="quickSelectRow">
+        <input type="text" {...common} />
+        <button type="button" className="smallBtn secondary" onClick={() => onCepFill(field.name)}>
+          Buscar CEP
+        </button>
+      </div>
+    );
+  }
+  return <input type={field.type || 'text'} {...common} />;
+}
+
+function EntityForm({ fields, initial, onCancel, onSave, saving, gridClass = 'cols2', formClass = '' }) {
+  const tenant = React.useContext(TenantContext);
+  const { push, toasts, close } = useToasts();
+  const [quickField, setQuickField] = useState(null);
+  const [quickSaving, setQuickSaving] = useState(false);
+  const [form, setForm] = useState(() => {
+    const base = {};
+    fields.forEach((f) => {
+      if (f.type === 'custom' || !f.name) return;
+      const defaultValue = typeof f.defaultValue === 'function' ? f.defaultValue() : f.defaultValue;
+      const autoDefault = f.type === 'date' ? todayISO() : f.type === 'money' ? '0.00' : f.type === 'checkbox' ? false : '';
+      base[f.name] = initial?.[f.name] ?? defaultValue ?? autoDefault;
+    });
+    return base;
+  });
+  const set = (name, val) => setForm((f) => ({ ...f, [name]: val }));
+  const persistableForm = () =>
+    fields.reduce((acc, f) => {
+      if (f.type !== 'custom' && f.name) acc[f.name] = form[f.name];
+      return acc;
+    }, {});
+  const missing = fields.some((f) => f.type !== 'custom' && f.required && !form[f.name] && form[f.name] !== false && form[f.name] !== 0);
+
+  const onCepFill = async (name) => {
+    try {
+      const data = await cepLookup(form[name]);
+      if (!data) {
+        push('CEP não encontrado ou inválido.', 'warning');
+        return;
+      }
+      setForm((f) => ({
+        ...f,
+        endereco: f.endereco || data.endereco,
+        bairro: f.bairro || data.bairro,
+        cidade: f.cidade || data.cidade,
+        uf: f.uf || data.uf,
+      }));
+      push('Endereço preenchido pelo CEP.');
+    } catch {
+      push('Não foi possível consultar o CEP agora.', 'warning');
+    }
+  };
+
+  const saveQuick = async (quickForm) => {
+    if (!quickField?.quickCreate?.table) return;
+    setQuickSaving(true);
+    const payload = { ...quickForm };
+    if (tenant?.empresaId && TENANT_TABLES.has(quickField.quickCreate.table)) payload.empresa_id = tenant.empresaId;
+    if (payload.ativo === '') payload.ativo = true;
+    const { data, error } = await supabase.from(quickField.quickCreate.table).insert(payload).select('*').single();
+    setQuickSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    const labelValue = quickField.quickCreate.valueMode === 'label' ? toOptionLabel(data, quickField.quickCreate.labelKey || 'nome') : data.id;
+    set(quickField.name, labelValue);
+    if (quickField.quickCreate.afterCreate) quickField.quickCreate.afterCreate();
+    setQuickField(null);
+    push('Cadastro rápido salvo e selecionado.');
+  };
+
+  return (
+    <div className={formClass}>
+      <ToastStack toasts={toasts} close={close} />
+      <div className={`grid ${gridClass}`}>
+        {fields.map((f) => (
+          <div className="field" key={f.name} style={f.full ? { gridColumn: '1 / -1' } : undefined}>
+            <label>
+              {f.label}
+              {f.required ? ' *' : ''}
+            </label>
+            <FieldInput field={f} value={form[f.name]} onChange={(v) => set(f.name, v)} onQuickCreate={setQuickField} onCepFill={onCepFill} form={form} setForm={setForm} initial={initial} />
+            {f.help && <div className="muted smallText">{f.help}</div>}
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+        <button className="secondary" onClick={onCancel}>
+          Cancelar
+        </button>
+        <button disabled={missing || saving} onClick={() => onSave(persistableForm())}>
+          {saving ? 'Salvando…' : 'Salvar'}
+        </button>
+      </div>
+      {quickField && (
+        <Modal title={`Novo cadastro — ${quickField.label}`} onClose={() => setQuickField(null)}>
+          <EntityForm fields={quickField.quickCreate?.fields || defaultQuickFields} initial={{ ativo: true }} onCancel={() => setQuickField(null)} onSave={saveQuick} saving={quickSaving} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   PÁGINA CRUD GENÉRICA (lista + modal de novo/editar)
+========================================================= */
+function CrudPage({ table, title, fields, columns, order = 'created_at', ascending = false, onAfterSave, searchKeys = [], extraRows, moduleKey, createLabel, topContent = null, summaryRender = null, rowActions = null, compact = false, softDeleteOnly = false }) {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const subscriptionAccess = useSubscriptionAccess();
+  const permissionModule = moduleKey || tableModuleKey(table);
+  const canCreate = access.can(permissionModule, 'create');
+  const canUpdate = access.can(permissionModule, 'update');
+  const canDelete = access.can(permissionModule, 'delete');
+  const { rows, loading, reload } = useTable(table, { order, ascending });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null); // null | 'new' | row
+  const [secureAction, setSecureAction] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
+  const [ativoFilter, setAtivoFilter] = useState('todos');
+
+  const data = extraRows ? extraRows(rows) : rows;
+  const filtered = data.filter((r) => {
+    const qOk =
+      !q ||
+      searchKeys.some((k) =>
+        String(r[k] || '')
+          .toLowerCase()
+          .includes(q.toLowerCase()),
+      );
+    const ativoOk = ativoFilter === 'todos' || (ativoFilter === 'ativos' ? r.ativo !== false : r.ativo === false);
+    return qOk && ativoOk;
+  });
+
+  const save = async (form) => {
+    const editing = modal && modal.id;
+    if (editing && !canUpdate) {
+      push('Seu perfil não tem permissão para editar neste módulo.', 'error');
+      return;
+    }
+    if (!editing && !canCreate) {
+      push('Seu perfil não tem permissão para criar neste módulo.', 'error');
+      return;
+    }
+    if (editing && permissionModule === 'financeiro' && !form.__secureConfirmed) {
+      setSecureAction({
+        title: 'Autorizar edição financeira',
+        label: 'Confirmar e salvar',
+        run: () => save({ ...form, __secureConfirmed: true }),
+      });
+      return;
+    }
+    setSaving(true);
+    const payload = { ...form };
+    delete payload.__secureConfirmed;
+    fields.forEach((f) => {
+      if (f.type === 'money' || f.type === 'number') payload[f.name] = form[f.name] === '' ? null : Number(form[f.name]);
+    });
+    fields.forEach((f) => {
+      if ((f.type === 'quickselect' || f.type === 'select') && (form[f.name] === '' || form[f.name] === undefined)) payload[f.name] = null;
+    });
+    if (table === 'lancamentos_financeiros' || table === 'despesas') {
+      try {
+        if (editing) await ensureFinancePeriodOpen(modal);
+        await ensureFinancePeriodOpen(payload);
+      } catch (closureError) {
+        setSaving(false);
+        push(closureError.message, 'error');
+        return;
+      }
+    }
+    let error;
+    if (modal && modal.id) {
+      ({ error } = await supabase.from(table).update(payload).eq('id', modal.id));
+    } else {
+      const { data: userData } = await supabase.auth.getUser();
+      payload.created_by = userData?.user?.id ?? null;
+      if (tenant?.empresaId && TENANT_TABLES.has(table) && !payload.empresa_id) payload.empresa_id = tenant.empresaId;
+      ({ error } = await supabase.from(table).insert(payload));
+    }
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Registro salvo com sucesso.');
+    setSecureAction(null);
+    setModal(null);
+    reload();
+    onAfterSave && onAfterSave();
+  };
+
+  const remove = async (row, secureConfirmed = false) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir neste módulo.', 'error');
+      return;
+    }
+    if (!secureConfirmed && !confirm('Excluir este registro? Esta ação não pode ser desfeita.')) return;
+    if (permissionModule === 'financeiro' && !secureConfirmed) {
+      setSecureAction({
+        title: 'Autorizar exclusão financeira',
+        label: 'Confirmar exclusão',
+        run: () => remove(row, true),
+      });
+      return;
+    }
+    if (table === 'lancamentos_financeiros' || table === 'despesas') {
+      try {
+        await ensureFinancePeriodOpen(row);
+      } catch (closureError) {
+        push(closureError.message, 'error');
+        setSecureAction(null);
+        return;
+      }
+    }
+    if (table === 'portal_publicacoes') {
+      const { data: anexos, error: anexosError } = await supabase.from('portal_publicacao_arquivos').select('storage_path').eq('publicacao_id', row.id);
+      if (anexosError) {
+        push(`Não foi possível verificar os anexos: ${anexosError.message}`, 'error');
+        return;
+      }
+      const paths = (anexos || []).map((a) => a.storage_path).filter(Boolean);
+      if (paths.length) {
+        const { error: storageError } = await supabase.storage.from('portal-publicacoes').remove(paths);
+        if (storageError) {
+          push(`Não foi possível remover os arquivos da publicação: ${storageError.message}`, 'error');
+          return;
+        }
+      }
+    }
+    const { error } = await supabase.from(table).delete().eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Registro excluído.');
+    setSecureAction(null);
+    reload();
+  };
+
+  const toggleActive = (row) => {
+    if (!canUpdate) {
+      push('Seu perfil não tem permissão para alterar este cadastro.', 'error');
+      return;
+    }
+    const next = row.ativo === false;
+    setSecureAction({
+      title: next ? `Autorizar reativação — ${title}` : `Autorizar inativação — ${title}`,
+      label: next ? 'Reativar cadastro' : 'Inativar cadastro',
+      run: async () => {
+        const { error } = await supabase.from(table).update({ ativo: next }).eq('id', row.id);
+        if (error) throw error;
+        push(next ? 'Cadastro reativado.' : 'Cadastro inativado. O histórico foi preservado.');
+        setSecureAction(null);
+        reload();
+      },
+    });
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      {topContent}
+      <div className={`toolbar ${compact ? 'compactCrudToolbar' : ''}`}>
+        <h2 style={{ margin: 0 }}>{title}</h2>
+        <div className="row">
+          {searchKeys.length > 0 && <input placeholder="Buscar…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220 }} />}
+          <select value={ativoFilter} onChange={(e) => setAtivoFilter(e.target.value)} style={{ minWidth: 140 }}>
+            <option value="todos">Todos</option>
+            <option value="ativos">Ativos</option>
+            <option value="inativos">Inativos</option>
+          </select>
+          <span className="muted smallText">
+            {filtered.length}/{data.length}
+          </span>
+          <button
+            className="secondary smallBtn"
+            type="button"
+            onClick={() => {
+              setQ('');
+              setAtivoFilter('todos');
+            }}
+          >
+            Limpar
+          </button>
+          {canCreate && <button onClick={() => setModal('new')}>{createLabel || '+ Novo'}</button>}
+        </div>
+      </div>
+      {typeof summaryRender === 'function' && summaryRender({ filtered, data, rows })}
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              {columns.map((c) => (
+                <th key={c.key}>{c.label}</th>
+              ))}
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={columns.length + 1} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={columns.length + 1} className="center muted">
+                  Nenhum registro encontrado.
+                </td>
+              </tr>
+            )}
+            {filtered.map((r) => (
+              <tr key={r.id}>
+                {columns.map((c) => (
+                  <td key={c.key}>{c.render ? c.render(r) : r[c.key]}</td>
+                ))}
+                <td className="center actionsCell">
+                  <div className="actionsInline">
+                    {typeof rowActions === 'function' && rowActions(r)}
+                    {canUpdate && (
+                      <button className="smallBtn secondary" onClick={() => setModal(r)}>
+                        Editar
+                      </button>
+                    )}
+                    {softDeleteOnly && canUpdate && (
+                      <button className={`smallBtn ${r.ativo === false ? 'green' : 'red'}`} onClick={() => toggleActive(r)}>
+                        {r.ativo === false ? 'Reativar' : 'Inativar'}
+                      </button>
+                    )}
+                    {!softDeleteOnly && canDelete && (
+                      <button className="smallBtn red" onClick={() => remove(r)}>
+                        Excluir
+                      </button>
+                    )}
+                    {!canUpdate && (!canDelete || softDeleteOnly) && <span className="muted smallText">Somente leitura</span>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <Modal title={modal === 'new' ? `Novo registro — ${title}` : `Editar — ${title}`} onClose={() => setModal(null)} wide>
+          <EntityForm fields={fields} initial={modal === 'new' ? null : modal} onCancel={() => setModal(null)} onSave={save} saving={saving} />
+        </Modal>
+      )}
+      {secureAction && <SecurePasswordModal title={secureAction.title} actionLabel={secureAction.label} onCancel={() => setSecureAction(null)} onConfirmed={secureAction.run} />}
+    </div>
+  );
+}
+
+/* =========================================================
+   AUTENTICAÇÃO
+========================================================= */
+const DEFAULT_PORTAL_CONFIG = {
+  cadastro_publico_ativo: true,
+  teste_gratis_ativo: true,
+  cor_primaria: '#0f2942',
+  cor_secundaria: '#1d6fa4',
+  login_chamada: 'SaaS para igrejas',
+  login_titulo: 'Sistema Igreja Online',
+  login_subtitulo: 'Gestão online para igrejas, financeiro, secretaria e EBD',
+  login_beneficio_1: 'Teste grátis por 10 dias',
+  login_beneficio_2: 'Controle de dízimos, membros e patrimônio',
+  login_card_titulo: 'Sistema Igreja Online',
+  login_card_subtitulo: 'Acesse sua área de gestão.',
+  login_botao_entrar: 'Entrar',
+  login_botao_cadastro: 'Criar conta grátis',
+  usar_logo: false,
+  logo_base64: '',
+};
+function portalConfigFromRows(rows = []) {
+  const cfg = rows.find((c) => c.chave === 'login_publico')?.valor || {};
+  return { ...DEFAULT_PORTAL_CONFIG, ...cfg };
+}
+
+function usePortalPublicConfig() {
+  const [portal, setPortal] = useState(DEFAULT_PORTAL_CONFIG);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    if (!supabase) {
+      setPortal(DEFAULT_PORTAL_CONFIG);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const { data, error } = await supabase.from('app_configuracoes').select('valor,updated_at').eq('chave', 'login_publico').maybeSingle();
+
+    if (error) {
+      console.warn('Configuração pública do login não carregada:', error.message);
+      setPortal(DEFAULT_PORTAL_CONFIG);
+    } else {
+      setPortal({ ...DEFAULT_PORTAL_CONFIG, ...(data?.valor || {}) });
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+  useEffect(() => {
+    const handler = () => reload();
+    window.addEventListener('igreja:portalConfigChanged', handler);
+    window.addEventListener('storage', handler);
+    return () => {
+      window.removeEventListener('igreja:portalConfigChanged', handler);
+      window.removeEventListener('storage', handler);
+    };
+  }, [reload]);
+
+  return { portal, loading, reload };
+}
+
+function isPasswordSetupUrl() {
+  if (typeof window === 'undefined') return false;
+  const raw = `${window.location.hash || ''}&${window.location.search || ''}`.toLowerCase();
+  return raw.includes('type=invite') || raw.includes('type=recovery') || raw.includes('type=magiclink') || raw.includes('access_token=');
+}
+
+function clearAuthHashFromUrl() {
+  if (typeof window === 'undefined') return;
+  const clean = `${window.location.origin}${window.location.pathname}${window.location.search}`.replace(/[?&](type=invite|type=recovery|type=magiclink)(&|$)/i, '$2').replace(/[?&]$/, '');
+  window.history.replaceState({}, document.title, clean);
+}
+
+function LoginScreen({ onLogged }) {
+  const [mode, setMode] = useState('login'); // login | signup | recovery
+  const [email, setEmail] = useState('');
+  const [senha, setSenha] = useState('');
+  const [nome, setNome] = useState('');
+  const [empresaNome, setEmpresaNome] = useState('');
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const { portal } = usePortalPublicConfig();
+
+  const solicitarRecuperacao = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setMsg({ kind: 'error', text: 'Informe um e-mail válido.' });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
+    setBusy(false);
+    if (error) {
+      const details = `${error.code || ''} ${error.message || ''}`.toLowerCase();
+      const text = details.includes('rate') || details.includes('429') ? 'O limite temporário de e-mails do Supabase foi atingido. Aguarde até uma hora ou configure um servidor SMTP próprio.' : details.includes('smtp') || details.includes('send email') || details.includes('sending') ? 'O serviço de envio de e-mails ainda não está configurado corretamente. Solicite ao administrador a configuração do SMTP no Supabase.' : details.includes('redirect') || details.includes('url') ? 'A URL de retorno não está autorizada no Supabase. O administrador deve revisar Authentication → URL Configuration.' : 'O serviço de e-mail recusou o envio. Aguarde alguns minutos e tente novamente ou procure o administrador.';
+      setMsg({ kind: 'error', text });
+      return;
+    }
+    setMsg({
+      kind: 'ok',
+      text: 'Se este e-mail estiver cadastrado, você receberá um link seguro para criar uma nova senha. Confira também a caixa de spam.',
+    });
+  };
+
+  const submit = async () => {
+    setBusy(true);
+    setMsg(null);
+    if (mode === 'login') {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password: senha,
+      });
+      if (error) setMsg({ kind: 'error', text: error.message });
+      else onLogged();
+    } else {
+      if (!portal.cadastro_publico_ativo) {
+        setMsg({
+          kind: 'error',
+          text: 'Cadastro público indisponível no momento.',
+        });
+        setBusy(false);
+        return;
+      }
+      const { error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: senha,
+        options: {
+          data: { nome: nome.trim(), empresa_nome: empresaNome.trim() },
+        },
+      });
+      if (error) {
+        setMsg({ kind: 'error', text: error.message });
+        setBusy(false);
+        return;
+      }
+      setMsg({
+        kind: 'ok',
+        text: 'Conta criada! O primeiro usuário Lábrea Tech entra como Master. Se houver confirmação de e-mail, confirme antes de acessar.',
+      });
+      setMode('login');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className={`login loginModern ${mode === 'signup' ? 'signupScreen' : ''}`}>
+      <div
+        className={`loginShell ${mode === 'signup' ? 'signupMode' : ''}`}
+        style={{
+          '--login-primary': portal.cor_primaria,
+          '--login-secondary': portal.cor_secundaria,
+        }}
+      >
+        <section className="loginHeroPanel igrejaHeroPanel">
+          <div className="loginBrandBlock igrejaBrandBlock">
+            <div className="labreaLogoFake">
+              {portal.usar_logo && portal.logo_base64 ? <img className="portalLoginLogo" src={portal.logo_base64} alt="Logo" /> : <img className="portalLoginLogo defaultSystemLogo" src="/logo-icon.svg" alt="Lábrea Tech" />}
+              <div>
+                <b>LÁBREA</b>
+                <span>TECH SOLUTIONS</span>
+              </div>
+            </div>
+          </div>
+          <p className="loginEyebrow">{portal.login_chamada}</p>
+          <h1>{portal.login_titulo}</h1>
+          <p>{portal.login_subtitulo}</p>
+          <div className="loginFeatureList">
+            {portal.teste_gratis_ativo && portal.login_beneficio_1 && <span>✅ {portal.login_beneficio_1}</span>}
+            {portal.login_beneficio_2 && <span>⛪ {portal.login_beneficio_2}</span>}
+          </div>
+        </section>
+
+        <section className="loginCard card igrejaLoginCard">
+          <div className="loginCardHeader">
+            {portal.usar_logo && portal.logo_base64 ? <img className="portalMiniLogo" src={portal.logo_base64} alt="Logo" /> : <img className="portalMiniLogo defaultSystemLogo" src="/logo-icon.svg" alt="Lábrea Tech" />}
+            <div>
+              <h2>{mode === 'login' ? portal.login_card_titulo : mode === 'recovery' ? 'Recuperar acesso' : portal.login_botao_cadastro || 'Criar conta grátis'}</h2>
+              <p className="muted">{mode === 'login' ? portal.login_card_subtitulo : mode === 'recovery' ? 'Enviaremos um link seguro para você criar uma nova senha.' : 'Cadastre a igreja e inicie o teste grátis.'}</p>
+            </div>
+          </div>
+
+          {msg && <div className={`alert ${msg.kind === 'ok' ? 'ok' : ''}`}>{msg.text}</div>}
+
+          {mode === 'signup' && (
+            <>
+              <div className="field">
+                <label>Nome completo</label>
+                <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Seu nome" />
+              </div>
+              <div className="field">
+                <label>Nome da igreja/empresa</label>
+                <input value={empresaNome} onChange={(e) => setEmpresaNome(e.target.value)} placeholder="Ex: Igreja Assembleia Central" />
+              </div>
+            </>
+          )}
+
+          <div className="field">
+            <label>E-mail</label>
+            <input
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && mode === 'recovery') solicitarRecuperacao();
+              }}
+            />
+          </div>
+          {mode !== 'recovery' && (
+            <div className="field">
+              <label>Senha</label>
+              <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={senha} onChange={(e) => setSenha(e.target.value)} />
+            </div>
+          )}
+
+          {mode === 'login' && (
+            <button
+              type="button"
+              className="forgotPasswordLink"
+              onClick={() => {
+                setMode('recovery');
+                setMsg(null);
+                setSenha('');
+              }}
+            >
+              Esqueci minha senha
+            </button>
+          )}
+
+          <div className="loginActions">
+            {mode === 'recovery' ? (
+              <button disabled={busy || !email} onClick={solicitarRecuperacao}>
+                {busy ? 'Enviando…' : 'Enviar link de recuperação'}
+              </button>
+            ) : (
+              <button disabled={busy || !email || !senha} onClick={submit}>
+                {busy ? 'Aguarde…' : mode === 'login' ? portal.login_botao_entrar || 'Entrar' : portal.login_botao_cadastro || 'Criar conta grátis'}
+              </button>
+            )}
+            {mode === 'recovery' ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setMode('login');
+                  setMsg(null);
+                }}
+              >
+                Voltar ao login
+              </button>
+            ) : mode === 'login' ? (
+              portal.cadastro_publico_ativo && (
+                <button type="button" className="secondary" onClick={() => setMode('signup')}>
+                  {portal.login_botao_cadastro || 'Criar conta grátis'}
+                </button>
+              )
+            ) : (
+              <button type="button" className="secondary" onClick={() => setMode('login')}>
+                Já tenho conta
+              </button>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function FirstAccessPasswordScreen({ onDone, email }) {
+  const [senha, setSenha] = useState('');
+  const [confirmacao, setConfirmacao] = useState('');
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const salvarSenha = async () => {
+    setMsg(null);
+    if (senha.length < 8) {
+      setMsg({
+        kind: 'error',
+        text: 'A senha deve ter pelo menos 8 caracteres.',
+      });
+      return;
+    }
+    if (senha !== confirmacao) {
+      setMsg({ kind: 'error', text: 'As senhas não conferem.' });
+      return;
+    }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: senha });
+    setBusy(false);
+    if (error) {
+      setMsg({ kind: 'error', text: error.message });
+      return;
+    }
+    clearAuthHashFromUrl();
+    setMsg({
+      kind: 'ok',
+      text: 'Senha criada com sucesso. Você já pode acessar o sistema normalmente.',
+    });
+    setTimeout(() => onDone && onDone(), 700);
+  };
+
+  return (
+    <div className="login loginModern">
+      <section className="loginCard card igrejaLoginCard firstAccessCard">
+        <div className="loginCardHeader">
+          <div className="loginMiniLogo">🔐</div>
+          <div>
+            <h2>Criar senha de acesso</h2>
+            <p className="muted">
+              Defina a senha do primeiro acesso para <b>{email || 'seu e-mail'}</b>.
+            </p>
+          </div>
+        </div>
+        {msg && <div className={`alert ${msg.kind === 'ok' ? 'ok' : ''}`}>{msg.text}</div>}
+        <div className="field">
+          <label>Nova senha</label>
+          <input type="password" autoComplete="new-password" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Mínimo de 8 caracteres" />
+        </div>
+        <div className="field">
+          <label>Confirmar senha</label>
+          <input type="password" autoComplete="new-password" value={confirmacao} onChange={(e) => setConfirmacao(e.target.value)} placeholder="Digite novamente" />
+        </div>
+        <div className="loginActions">
+          <button disabled={busy || !senha || !confirmacao} onClick={salvarSenha}>
+            {busy ? 'Salvando…' : 'Salvar senha e entrar'}
+          </button>
+          <button type="button" className="secondary" onClick={() => supabase.auth.signOut()}>
+            Sair
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+function DashboardModule({ onNavigate }) {
+  const access = usePermissions();
+  const show = (blockId) => (access.canDashboardBlock ? access.canDashboardBlock(blockId) : true);
+  const financeDashboardEnabled = show('financeiro_resumo') || show('saldo_caixa');
+  const membersDashboardEnabled = show('secretaria_membros') || show('secretaria_aniversariantes');
+  const turmasDashboardEnabled = show('ebd_resumo');
+  const patrimonioDashboardEnabled = show('patrimonio_resumo');
+  const { referencia, caixaId, caixaIds } = useGlobalFilters();
+  const ref = ensureReferencia(referencia || currentReferencia());
+  const refAnterior = previousReferencia(ref);
+  const mes = Number(ref.slice(5, 7));
+  const caixaIdsFiltro = (Array.isArray(caixaIds) ? caixaIds : caixaId ? [caixaId] : []).filter(Boolean).map(String);
+  const financeFilters = [
+    { column: 'referencia', operator: 'gte', value: refAnterior },
+    { column: 'referencia', operator: 'lte', value: ref },
+    ...(caixaIdsFiltro.length ? [{ column: 'tipo_caixa_id', operator: 'in', value: caixaIdsFiltro }] : []),
+  ];
+  const transferFilters = [
+    { column: 'referencia', operator: 'gte', value: refAnterior },
+    { column: 'referencia', operator: 'lte', value: ref },
+  ];
+  const lanc = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+    select: 'id,data,referencia,tipo_caixa_id,valor',
+    filters: financeFilters,
+    enabled: financeDashboardEnabled,
+  });
+  const desp = useTable('despesas', {
+    order: 'data',
+    ascending: false,
+    select: 'id,data,referencia,tipo_caixa_id,valor',
+    filters: financeFilters,
+    enabled: financeDashboardEnabled,
+  });
+  const transf = useTable('transferencias_caixas', {
+    order: 'data',
+    ascending: false,
+    select: 'id,data,referencia,status,caixa_origem_id,caixa_destino_id,valor',
+    filters: transferFilters,
+    enabled: financeDashboardEnabled,
+  });
+  // Tabelas de apoio são pequenas. O select '*' mantém compatibilidade com
+  // instalações antigas que ainda não possuem campos opcionais como numero_caixa.
+  const caixas = useTable('tipos_caixa', { order: 'nome', ascending: true, select: '*', enabled: financeDashboardEnabled });
+  const membros = useTable('membros', {
+    order: 'nome',
+    ascending: true,
+    select: 'id,nome,data_nascimento',
+    enabled: membersDashboardEnabled,
+  });
+  const turmas = useTable('turmas_ebd', {
+    order: 'nome',
+    ascending: true,
+    select: 'id,nome,ativo',
+    enabled: turmasDashboardEnabled,
+  });
+  const patrimonio = useTable('patrimonio', {
+    order: 'nome',
+    ascending: true,
+    select: 'id,nome,status',
+    enabled: patrimonioDashboardEnabled,
+  });
+  const resumoAtual = calcularResumoFinanceiro({ receitas: lanc.rows, despesas: desp.rows, transferencias: transf.rows, referencia: ref, caixaIds: caixaIdsFiltro });
+  const resumoAnterior = calcularResumoFinanceiro({ receitas: lanc.rows, despesas: desp.rows, transferencias: transf.rows, referencia: refAnterior, caixaIds: caixaIdsFiltro });
+  const lancPeriodo = lanc.rows.filter((row) => getRowReferencia(row) === ref);
+  const despPeriodo = desp.rows.filter((row) => getRowReferencia(row) === ref);
+  const entradasMes = resumoAtual.entradas;
+  const saidasMes = resumoAtual.saidas;
+  const transferenciasLiquidas = resumoAtual.transferenciasLiquidas;
+  const saldoGeral = resumoAtual.saldo;
+  const saldoAnteriorRef = resumoAnterior.saldo;
+  const variacaoSaldo = saldoAnteriorRef === 0 ? null : ((saldoGeral - saldoAnteriorRef) / Math.abs(saldoAnteriorRef)) * 100;
+  const caixasVisiveis = caixaIdsFiltro.length ? caixas.rows.filter((c) => caixaIdsFiltro.includes(String(c.id))) : caixas.rows;
+  const porCaixa = caixasVisiveis.map((c) => {
+    const resumo = calcularResumoFinanceiro({ receitas: lanc.rows, despesas: desp.rows, transferencias: transf.rows, referencia: ref, caixaIds: [String(c.id)] });
+    return {
+      nome: c.nome,
+      numero_caixa: c.numero_caixa,
+      saldo: resumo.saldo,
+    };
+  });
+  const dashboardResources = [
+    { key: 'receitas', label: 'entradas', resource: lanc, enabled: financeDashboardEnabled, critical: true },
+    { key: 'despesas', label: 'despesas', resource: desp, enabled: financeDashboardEnabled, critical: true },
+    { key: 'transferencias', label: 'transferências', resource: transf, enabled: financeDashboardEnabled, critical: true },
+    { key: 'caixas', label: 'caixas', resource: caixas, enabled: financeDashboardEnabled, critical: true },
+    { key: 'membros', label: 'membros', resource: membros, enabled: membersDashboardEnabled, critical: false },
+    { key: 'turmas', label: 'turmas da EBD', resource: turmas, enabled: turmasDashboardEnabled, critical: false },
+    { key: 'patrimonio', label: 'patrimônio', resource: patrimonio, enabled: patrimonioDashboardEnabled, critical: false },
+  ].filter((item) => item.enabled);
+  const dashboardLoading = dashboardResources.some(({ resource }) => resource.loading);
+  const dashboardErrors = dashboardResources.filter(({ resource }) => Boolean(resource.error));
+  const criticalDashboardErrors = dashboardErrors.filter((item) => item.critical);
+  const aniversariantes = membros.rows.filter((m) => m.data_nascimento && Number(m.data_nascimento.slice(5, 7)) === mes).slice(0, 8);
+  const navigate = (module, page = 'home') => {
+    if (onNavigate) onNavigate(module, page);
+  };
+  const hasAnyDashboardBlock = DASHBOARD_BLOCKS.some((b) => show(b.id));
+  const attention = [
+    ...(financeDashboardEnabled && !dashboardLoading && criticalDashboardErrors.length === 0 && lancPeriodo.length + despPeriodo.length === 0
+      ? [
+          {
+            tone: 'info',
+            title: 'Nenhuma movimentação nesta referência',
+            desc: 'Registre lançamentos ou importe um extrato para iniciar o acompanhamento.',
+            action: 'Abrir Financeiro',
+            module: 'financeiro',
+          },
+        ]
+      : []),
+    ...(!membros.error && aniversariantes.length
+      ? [
+          {
+            tone: 'warm',
+            title: `${aniversariantes.length} aniversariante(s) neste mês`,
+            desc: 'Veja a lista e organize o acompanhamento da comunidade.',
+            action: 'Ver membros',
+            module: 'secretaria',
+          },
+        ]
+      : []),
+    ...(turmasDashboardEnabled && !turmas.error && turmas.rows.length === 0
+      ? [
+          {
+            tone: 'neutral',
+            title: 'EBD ainda sem turmas',
+            desc: 'Cadastre a primeira turma para organizar aulas e frequência.',
+            action: 'Configurar EBD',
+            module: 'ebd',
+          },
+        ]
+      : []),
+  ].slice(0, 5);
+  return (
+    <div className="leadershipDashboard">
+      <section className="leadershipWelcome">
+        <div>
+          <span className="eyebrow">Saúde da comunidade</span>
+          <h1>Visão geral de {fmtReferencia(ref)}</h1>
+          <p>{caixaIdsFiltro.length ? `${caixaIdsFiltro.length} caixa(s) selecionado(s)` : 'Todos os caixas'} · informações atualizadas pelos lançamentos do sistema.</p>
+        </div>
+        <div className="dashboardQuickActions">
+          <button onClick={() => navigate('financeiro', 'receita')}>Nova entrada</button>
+          <button className="secondary" onClick={() => navigate('financeiro', 'despesa')}>
+            Nova despesa
+          </button>
+          <button className="secondary" onClick={() => navigate('secretaria', 'membros')}>
+            Novo membro
+          </button>
+        </div>
+      </section>
+      {dashboardLoading && <div className="dashboardDataStatus" role="status" aria-live="polite">Atualizando indicadores…</div>}
+      {criticalDashboardErrors.length > 0 && (
+        <div className="alert dashboardDataError" role="alert">
+          <div>
+            <b>Não foi possível atualizar os dados financeiros.</b>{' '}
+            Falha ao carregar {criticalDashboardErrors.map((item) => item.label).join(', ')}.
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => criticalDashboardErrors.forEach(({ resource }) => resource.reload())}
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+      {!hasAnyDashboardBlock && (
+        <div className="card accessDeniedBox">
+          <h2>Dashboard sem blocos liberados</h2>
+          <p>Seu perfil pode acessar o Dashboard, mas nenhum bloco de informação foi liberado.</p>
+          <p className="muted">
+            Peça para um administrador revisar <b>Usuários › Perfis e permissões › Permissões do Dashboard</b>.
+          </p>
+        </div>
+      )}
+      {show('financeiro_resumo') && (
+        <section className="dashboardPrimaryGrid">
+          <article className="balanceCard">
+            <span>Saldo disponível na referência</span>
+            <strong className={saldoGeral < 0 ? 'negativeValue' : ''}>{fmtMoney(saldoGeral)}</strong>
+            <p>{variacaoSaldo === null ? 'Primeira comparação disponível após o próximo período.' : `${variacaoSaldo >= 0 ? '▲' : '▼'} ${Math.abs(variacaoSaldo).toFixed(1)}% em relação a ${fmtReferencia(refAnterior)}`}</p>
+            <div className="balanceBreakdown">
+              <div>
+                <small>Entradas</small>
+                <b>{fmtMoney(entradasMes)}</b>
+              </div>
+              <div>
+                <small>Despesas</small>
+                <b>{fmtMoney(saidasMes)}</b>
+              </div>
+              {transferenciasLiquidas !== 0 && (
+                <div>
+                  <small>Transferências líquidas</small>
+                  <b className={transferenciasLiquidas < 0 ? 'negativeValue' : ''}>{fmtMoney(transferenciasLiquidas)}</b>
+                </div>
+              )}
+            </div>
+            <button className="balanceLink" onClick={() => navigate('financeiro', 'livro')}>
+              Ver extrato completo →
+            </button>
+          </article>
+          <article className="communityHealthCard">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Comunidade</span>
+                <h2>Panorama atual</h2>
+              </div>
+            </div>
+            <div className="healthMetrics">
+              {show('secretaria_membros') && (
+                <div>
+                  <span>Membros</span>
+                  <b>{membros.error ? '—' : membros.rows.length}</b>
+                  <small>{membros.error ? 'indisponível' : 'cadastrados'}</small>
+                </div>
+              )}
+              {show('ebd_resumo') && (
+                <div>
+                  <span>Turmas EBD</span>
+                  <b>{turmas.error ? '—' : turmas.rows.length}</b>
+                  <small>{turmas.error ? 'indisponível' : 'em acompanhamento'}</small>
+                </div>
+              )}
+              {show('patrimonio_resumo') && (
+                <div>
+                  <span>Patrimônio</span>
+                  <b>{patrimonio.error ? '—' : patrimonio.rows.length}</b>
+                  <small>{patrimonio.error ? 'indisponível' : 'itens registrados'}</small>
+                </div>
+              )}
+            </div>
+          </article>
+        </section>
+      )}
+      <div className="dashboardSecondaryGrid">
+        {show('saldo_caixa') && (
+          <section className="modernPanel">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Financeiro</span>
+                <h2>Saldo por caixa</h2>
+              </div>
+              <button className="textButton" onClick={() => navigate('financeiro', 'relatorios')}>
+                Ver relatório
+              </button>
+            </div>
+            {porCaixa.length === 0 ? (
+              <div className="emptyState">
+                <b>Nenhum caixa cadastrado</b>
+                <span>Cadastre um caixa para acompanhar os saldos.</span>
+              </div>
+            ) : (
+              <div className="cleanList">
+                {porCaixa.map((c) => (
+                  <div key={c.nome}>
+                    <span>
+                      {formatCadastroCode(c.numero_caixa)} — {c.nome}
+                    </span>
+                    <b className={c.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(c.saldo)}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+        <section className="modernPanel">
+          <div className="sectionHeading">
+            <div>
+              <span className="eyebrow">Prioridades</span>
+              <h2>O que precisa de atenção</h2>
+            </div>
+          </div>
+          {attention.length === 0 ? (
+            <div className="emptyState success">
+              <b>Tudo em ordem por aqui</b>
+              <span>Não há pendências importantes nesta referência.</span>
+            </div>
+          ) : (
+            <div className="attentionFeed">
+              {attention.map((item, i) => (
+                <div className={`attentionItem ${item.tone}`} key={i}>
+                  <span className="attentionDot" />
+                  <div>
+                    <b>{item.title}</b>
+                    <p>{item.desc}</p>
+                  </div>
+                  <button className="textButton" onClick={() => navigate(item.module)}>
+                    {item.action}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+        {show('secretaria_aniversariantes') && (
+          <section className="modernPanel">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Cuidado</span>
+                <h2>Aniversariantes de {MESES[mes - 1]}</h2>
+              </div>
+              <button className="textButton" onClick={() => navigate('secretaria', 'membros')}>
+                Ver membros
+              </button>
+            </div>
+            {membros.error ? (
+              <div className="emptyState">
+                <b>Não foi possível carregar os aniversariantes</b>
+                <button type="button" className="textButton" onClick={membros.reload}>Tentar novamente</button>
+              </div>
+            ) : aniversariantes.length === 0 ? (
+              <div className="emptyState">
+                <b>Nenhum aniversariante</b>
+                <span>Não há datas cadastradas para este mês.</span>
+              </div>
+            ) : (
+              <div className="cleanList peopleList">
+                {aniversariantes.map((m) => (
+                  <div key={m.id}>
+                    <span className="personAvatar">{String(m.nome || '?').slice(0, 1)}</span>
+                    <span>{m.nome}</span>
+                    <b>
+                      {m.data_nascimento?.slice(8, 10)}/{m.data_nascimento?.slice(5, 7)}
+                    </b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+        {show('ebd_resumo') && (
+          <section className="modernPanel">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Ensino</span>
+                <h2>Turmas da EBD</h2>
+              </div>
+              <button className="textButton" onClick={() => navigate('ebd')}>
+                Abrir EBD
+              </button>
+            </div>
+            {turmas.error ? (
+              <div className="emptyState">
+                <b>Não foi possível carregar as turmas</b>
+                <button type="button" className="textButton" onClick={turmas.reload}>Tentar novamente</button>
+              </div>
+            ) : turmas.rows.length === 0 ? (
+              <div className="emptyState">
+                <b>Nenhuma turma cadastrada</b>
+                <span>Organize turmas, professores e chamadas.</span>
+              </div>
+            ) : (
+              <div className="cleanList">
+                {turmas.rows.slice(0, 6).map((t) => (
+                  <div key={t.id}>
+                    <span>{t.nome}</span>
+                    <b>{t.ativo === false ? 'Inativa' : 'Ativa'}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   MÓDULO FINANCEIRO
+========================================================= */
+const cadastroCodeKey = (table) => (table === 'tipos_caixa' ? 'numero_caixa' : table === 'tipos_receita' ? 'numero_tipo' : '');
+const formatCadastroCode = (value) => (value === null || value === undefined || value === '' ? '—' : String(value).padStart(2, '0'));
+const caixaEstaAtivo = (row) => Boolean(row && row.ativo !== false);
+const caixaNomeExibicao = (row, { comCodigo = false } = {}) => {
+  if (!row) return '—';
+  const nome = comCodigo ? `${formatCadastroCode(row.numero_caixa)} — ${row.nome}` : row.nome;
+  return row.ativo === false ? `${nome} (Inativo)` : nome;
+};
+const cadastroOptionLabel = (table, row, labelKey = 'nome') => {
+  const codeKey = cadastroCodeKey(table);
+  const base = codeKey && row?.[codeKey] != null ? `${formatCadastroCode(row[codeKey])} — ${row[labelKey]}` : row[labelKey];
+  return table === 'tipos_caixa' && row?.ativo === false ? `${base} (Inativo)` : base;
+};
+function useLookup(table, labelKey = 'nome') {
+  const { rows, reload } = useTable(table, {
+    order: labelKey,
+    ascending: true,
+  });
+  const options = rows
+    .filter((r) => r.ativo !== false && (table !== 'membros' || r.situacao !== 'inativo'))
+    .map((r) => ({
+      value: r.id,
+      label: cadastroOptionLabel(table, r, labelKey),
+    }));
+  return { rows, options, reload };
+}
+function useLookupLabels(table, labelKey = 'nome') {
+  const { rows, reload } = useTable(table, {
+    order: labelKey,
+    ascending: true,
+  });
+  const options = rows
+    .filter((r) => r.ativo !== false && (table !== 'membros' || r.situacao !== 'inativo'))
+    .map((r) => ({
+      value: r[labelKey],
+      label: cadastroOptionLabel(table, r, labelKey),
+    }));
+  return { rows, options, reload };
+}
+const quickCreate = (table, reload, valueMode = 'label', fields = defaultQuickFields) => ({ table, afterCreate: reload, valueMode, fields });
+
+const professorEbdLabel = (p = {}) => [p.nome, p.email].filter(Boolean).join(' — ') || 'Professor';
+const linkedProfessoresDaTurma = (turmaId, professoresRows = [], vinculosRows = [], { onlyActive = true } = {}) => {
+  if (!turmaId) return [];
+  const professoresById = Object.fromEntries((professoresRows || []).map((p) => [p.id, p]));
+  return (vinculosRows || [])
+    .filter((v) => v.turma_id === turmaId)
+    .filter((v) => !onlyActive || v.ativo !== false)
+    .map((v) => ({
+      ...professoresById[v.professor_id],
+      vinculo_id: v.id,
+      principal: v.principal === true,
+      vinculo_ativo: v.ativo !== false,
+    }))
+    .filter((p) => p?.id && (!onlyActive || p.ativo !== false))
+    .sort((a, b) => (b.principal === true) - (a.principal === true) || String(a.nome || '').localeCompare(String(b.nome || '')));
+};
+const professorOptionsForTurma = (turmaId, professoresRows = [], vinculosRows = []) =>
+  linkedProfessoresDaTurma(turmaId, professoresRows, vinculosRows).map((p) => ({
+    value: p.id,
+    label: professorEbdLabel(p),
+  }));
+const professorById = (professoresRows = [], id = '') => (professoresRows || []).find((p) => String(p.id) === String(id || '')) || null;
+
+const PRESTACAO_LEGACY_RELATORIOS = {
+  dizimo_dos_dizimos: {
+    id: 'legacy_dizimo_dos_dizimos',
+    codigo: 'dizimo_dos_dizimos',
+    nome: 'Dízimo dos Dízimos',
+    tipo_calculo: 'dizimo_dos_dizimos',
+    incluir_slide_default: true,
+    ativo: true,
+  },
+  investimento_especifico: {
+    id: 'legacy_investimento_especifico',
+    codigo: 'investimento_especifico',
+    nome: 'Investimento específico',
+    tipo_calculo: 'investimento_especifico',
+    incluir_slide_default: true,
+    ativo: true,
+  },
+};
+function categoriaRelatorioTipo(row = {}) {
+  const value = String(row?.relatorio_prestacao_tipo || row?.prestacao_relatorio || row?.relatorio_tipo || 'nenhum');
+  return ['dizimo_dos_dizimos', 'investimento_especifico'].includes(value) ? value : 'nenhum';
+}
+function relatorioPrestacaoLabel(value) {
+  const labels = {
+    nenhum: 'Não entra',
+    dizimo_dos_dizimos: 'Dízimo dos Dízimos',
+    investimento_especifico: 'Investimento específico',
+  };
+  return labels[categoriaRelatorioTipo({ relatorio_prestacao_tipo: value })] || labels.nenhum;
+}
+function prestacaoReportKey(report = {}) {
+  return String(report?.codigo || report?.id || '').trim();
+}
+function isSpecialPrestacaoReport(report = {}) {
+  const key = prestacaoReportKey(report);
+  const tipo = String(report?.tipo_calculo || '');
+  return key === 'dizimo_dos_dizimos' || key === 'investimento_especifico' || key === 'cofres_missionarios' || tipo === 'dizimo_dos_dizimos' || tipo === 'investimento_especifico' || tipo === 'cofres_missionarios';
+}
+function categoriaPrestacaoRelatorio(row = {}, relatorioMap = {}) {
+  const linked = row?.prestacao_relatorio_id ? relatorioMap[row.prestacao_relatorio_id] : null;
+  if (linked) return linked;
+  const legacy = categoriaRelatorioTipo(row);
+  return legacy !== 'nenhum' ? PRESTACAO_LEGACY_RELATORIOS[legacy] : null;
+}
+function categoriaRelatorioGrupo(row = {}, fallback = '', grupoMap = {}) {
+  const linked = row?.prestacao_grupo_id ? grupoMap[row.prestacao_grupo_id] : null;
+  return String(linked?.nome || row?.relatorio_prestacao_grupo || fallback || row?.nome || 'Outros').trim() || 'Outros';
+}
+function slugPrestacao(value = '') {
+  return (
+    normalizeText(value)
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60) || `relatorio_${Date.now()}`
+  );
+}
+
+function TiposCaixaPage() {
+  return (
+    <CrudPage
+      table="tipos_caixa"
+      title="Tipos de Caixa"
+      order="nome"
+      ascending
+      searchKeys={['nome']}
+      columns={[
+        {
+          key: 'numero_caixa',
+          label: 'Cód.',
+          render: (r) => <b className="cadastroCode">{formatCadastroCode(r.numero_caixa)}</b>,
+        },
+        { key: 'nome', label: 'Nome' },
+        { key: 'descricao', label: 'Descrição' },
+        {
+          key: 'ativo',
+          label: 'Ativo',
+          render: (r) => (r.ativo ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        {
+          name: 'numero_caixa',
+          label: 'Código da caixa',
+          type: 'number',
+          readOnly: true,
+          help: 'Gerado automaticamente pelo sistema.',
+        },
+        {
+          name: 'nome',
+          label: 'Nome (ex: Caixa Geral, Missões, Construção)',
+          required: true,
+          full: true,
+        },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+      ]}
+    />
+  );
+}
+
+function PrestacaoRelatoriosPage() {
+  return (
+    <CrudPage
+      table="prestacao_relatorios"
+      title="Relatórios da Prestação de Contas"
+      order="ordem"
+      ascending
+      searchKeys={['nome', 'codigo', 'descricao']}
+      createLabel="+ Novo relatório/slide"
+      columns={[
+        { key: 'nome', label: 'Relatório / slide' },
+        {
+          key: 'tipo_calculo',
+          label: 'Tipo',
+          render: (r) =>
+            ({
+              dizimo_dos_dizimos: 'Dízimo dos Dízimos',
+              investimento_especifico: 'Investimento específico',
+              cofres_missionarios: 'Cofres missionários',
+              despesas_agrupadas: 'Despesas agrupadas',
+            })[r.tipo_calculo] || 'Despesas agrupadas',
+        },
+        {
+          key: 'incluir_slide_default',
+          label: 'Entra no slide',
+          render: (r) => (r.incluir_slide_default !== false ? 'Sim' : 'Não'),
+        },
+        { key: 'ordem', label: 'Ordem' },
+        {
+          key: 'ativo',
+          label: 'Ativo',
+          render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        {
+          name: 'nome',
+          label: 'Nome do relatório/slide',
+          required: true,
+          full: true,
+          placeholder: 'Ex: Dízimo dos Dízimos, Investimentos, Campanha Missionária',
+        },
+        {
+          name: 'codigo',
+          label: 'Código interno',
+          placeholder: 'Pode deixar em branco para gerar automático',
+          help: 'Use nomes simples. Ex.: campanha_missionaria. Os padrões do sistema são dizimo_dos_dizimos e investimento_especifico.',
+        },
+        {
+          name: 'tipo_calculo',
+          label: 'Tipo de cálculo',
+          type: 'select',
+          defaultValue: 'despesas_agrupadas',
+          options: [
+            {
+              value: 'despesas_agrupadas',
+              label: 'Despesas agrupadas em slide próprio',
+            },
+            {
+              value: 'dizimo_dos_dizimos',
+              label: 'Dízimo dos Dízimos (com cálculo de 10%)',
+            },
+            {
+              value: 'investimento_especifico',
+              label: 'Investimento específico',
+            },
+            {
+              value: 'cofres_missionarios',
+              label: 'Cofres missionários (por caixa/tipo/categoria)',
+            },
+          ],
+        },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+        {
+          name: 'ordem',
+          label: 'Ordem no slide',
+          type: 'number',
+          defaultValue: 50,
+        },
+        {
+          name: 'incluir_slide_default',
+          label: 'Incluir por padrão na geração dos slides',
+          type: 'checkbox',
+          defaultValue: true,
+        },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+      ]}
+      topContent={
+        <div className="infoBox" style={{ marginBottom: 12 }}>
+          <b>Uso recomendado:</b> crie aqui cada bloco que a diretoria pode pedir no slide. Ex.: Dízimo dos Dízimos, Investimentos, Campanha Missionária, Ação Social, Construção, Conferência.
+        </div>
+      }
+    />
+  );
+}
+
+function PrestacaoGruposRelatorioPage() {
+  const relatorios = useLookup('prestacao_relatorios');
+  const relatorioMap = useMemo(() => Object.fromEntries((relatorios.rows || []).map((r) => [r.id, r])), [relatorios.rows]);
+  return (
+    <CrudPage
+      table="prestacao_grupos_relatorio"
+      title="Grupos exibidos no relatório/slide"
+      order="ordem"
+      ascending
+      searchKeys={['nome', 'descricao']}
+      createLabel="+ Novo grupo"
+      columns={[
+        { key: 'nome', label: 'Grupo' },
+        {
+          key: 'prestacao_relatorio_id',
+          label: 'Relatório/slide',
+          render: (r) => relatorioMap[r.prestacao_relatorio_id]?.nome || '—',
+        },
+        { key: 'ordem', label: 'Ordem' },
+        {
+          key: 'ativo',
+          label: 'Ativo',
+          render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        {
+          name: 'prestacao_relatorio_id',
+          label: 'Relatório/slide',
+          type: 'quickselect',
+          options: relatorios.options,
+          required: true,
+          quickCreate: quickCreate('prestacao_relatorios', relatorios.reload, 'id', [
+            {
+              name: 'nome',
+              label: 'Nome do relatório/slide',
+              required: true,
+            },
+            {
+              name: 'codigo',
+              label: 'Código interno',
+              placeholder: 'Pode deixar em branco',
+            },
+            {
+              name: 'tipo_calculo',
+              label: 'Tipo de cálculo',
+              type: 'select',
+              defaultValue: 'despesas_agrupadas',
+              options: [
+                {
+                  value: 'despesas_agrupadas',
+                  label: 'Despesas agrupadas em slide próprio',
+                },
+                { value: 'dizimo_dos_dizimos', label: 'Dízimo dos Dízimos' },
+                {
+                  value: 'investimento_especifico',
+                  label: 'Investimento específico',
+                },
+                {
+                  value: 'cofres_missionarios',
+                  label: 'Cofres missionários',
+                },
+              ],
+            },
+            {
+              name: 'ativo',
+              label: 'Ativo',
+              type: 'checkbox',
+              defaultValue: true,
+            },
+          ]),
+        },
+        {
+          name: 'nome',
+          label: 'Nome do grupo no slide',
+          required: true,
+          placeholder: 'Ex: Cestas básicas, Missionários, Reforma, Bíblias',
+          full: true,
+        },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+        { name: 'ordem', label: 'Ordem', type: 'number', defaultValue: 50 },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+      ]}
+      topContent={
+        <div className="infoBox" style={{ marginBottom: 12 }}>
+          <b>Como funciona:</b> o relatório define o slide; o grupo define a linha dentro desse slide. Depois, em Categorias de despesas, escolha para qual relatório e grupo cada categoria irá automaticamente.
+        </div>
+      }
+    />
+  );
+}
+
+function CategoriasDespesasPage() {
+  const relatorios = useLookup('prestacao_relatorios');
+  const grupos = useLookup('prestacao_grupos_relatorio');
+  const relatorioMap = useMemo(() => Object.fromEntries((relatorios.rows || []).map((r) => [r.id, r])), [relatorios.rows]);
+  const grupoMap = useMemo(() => Object.fromEntries((grupos.rows || []).map((g) => [g.id, g])), [grupos.rows]);
+  const relatorioOptions = relatorios.options;
+  const grupoOptions = grupos.options.map((g) => {
+    const row = grupoMap[g.value] || {};
+    const rel = relatorioMap[row.prestacao_relatorio_id];
+    return { ...g, label: rel ? `${g.label} — ${rel.nome}` : g.label };
+  });
+  const relatorioQuickFields = [
+    { name: 'nome', label: 'Nome do relatório/slide', required: true },
+    {
+      name: 'codigo',
+      label: 'Código interno',
+      placeholder: 'Pode deixar em branco',
+    },
+    {
+      name: 'tipo_calculo',
+      label: 'Tipo de cálculo',
+      type: 'select',
+      defaultValue: 'despesas_agrupadas',
+      options: [
+        {
+          value: 'despesas_agrupadas',
+          label: 'Despesas agrupadas em slide próprio',
+        },
+        { value: 'dizimo_dos_dizimos', label: 'Dízimo dos Dízimos' },
+        { value: 'investimento_especifico', label: 'Investimento específico' },
+        { value: 'cofres_missionarios', label: 'Cofres missionários' },
+      ],
+    },
+    { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+  ];
+  const grupoQuickFields = [
+    {
+      name: 'prestacao_relatorio_id',
+      label: 'Relatório/slide',
+      type: 'select',
+      options: relatorioOptions,
+      required: true,
+    },
+    { name: 'nome', label: 'Nome do grupo no slide', required: true },
+    { name: 'ordem', label: 'Ordem', type: 'number', defaultValue: 50 },
+    { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+  ];
+  return (
+    <CrudPage
+      table="categorias_despesas"
+      title="Categorias de Despesas"
+      order="nome"
+      ascending
+      searchKeys={['nome', 'relatorio_prestacao_grupo']}
+      columns={[
+        { key: 'nome', label: 'Nome' },
+        {
+          key: 'prestacao_relatorio_id',
+          label: 'Relatório/slide',
+          render: (r) => {
+            const rel = categoriaPrestacaoRelatorio(r, relatorioMap);
+            return rel ? <span className={`badge reportBadge ${prestacaoReportKey(rel)}`}>{rel.nome}</span> : <span className="muted">Não entra</span>;
+          },
+        },
+        {
+          key: 'prestacao_grupo_id',
+          label: 'Grupo no slide',
+          render: (r) => {
+            const rel = categoriaPrestacaoRelatorio(r, relatorioMap);
+            return rel ? categoriaRelatorioGrupo(r, r.nome, grupoMap) : '—';
+          },
+        },
+        {
+          key: 'ativo',
+          label: 'Ativo',
+          render: (r) => (r.ativo ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        {
+          name: 'nome',
+          label: 'Nome (ex: Água, Luz, Manutenção)',
+          required: true,
+          full: true,
+        },
+        {
+          name: 'prestacao_relatorio_id',
+          label: 'Relatório da prestação de contas',
+          type: 'quickselect',
+          options: relatorioOptions,
+          quickCreate: quickCreate('prestacao_relatorios', relatorios.reload, 'id', relatorioQuickFields),
+          help: 'Escolha o slide/bloco onde os lançamentos desta categoria entrarão automaticamente.',
+        },
+        {
+          name: 'prestacao_grupo_id',
+          label: 'Grupo exibido no relatório/slide',
+          type: 'quickselect',
+          options: grupoOptions,
+          quickCreate: quickCreate('prestacao_grupos_relatorio', grupos.reload, 'id', grupoQuickFields),
+          help: 'Escolha a linha/agrupamento dentro do slide. Ex.: Cestas básicas, Missionários, Reforma, Bíblias.',
+        },
+        {
+          name: 'relatorio_prestacao_grupo',
+          label: 'Grupo livre/legado',
+          placeholder: 'Opcional. Use apenas se não quiser cadastrar grupo.',
+          full: true,
+          help: 'Mantido para compatibilidade com categorias antigas.',
+        },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+      ]}
+      topContent={
+        <div className="infoBox" style={{ marginBottom: 12 }}>
+          <b>Prestação de contas:</b> agora você pode cadastrar quantos relatórios/slides e grupos quiser. Depois marque cada categoria uma vez; os lançamentos entram automaticamente na prestação de contas.
+        </div>
+      }
+    />
+  );
+}
+
+const FORMAS_PAGAMENTO = [
+  { value: 'dinheiro', label: 'Dinheiro' },
+  { value: 'pix', label: 'Pix' },
+  { value: 'cartao', label: 'Cartão' },
+  { value: 'transferencia', label: 'Transferência' },
+  { value: 'cheque', label: 'Cheque' },
+];
+
+const OFX_DEFAULT_RULES = [
+  {
+    keywords: ['TAR.', 'TARIFA', 'TAR AGRUPADAS', 'CESTA', 'PACOTE DE SERVICOS'],
+    tipo: 'despesa',
+    categoria: 'Tarifas Bancárias',
+  },
+  { keywords: ['IOF'], tipo: 'despesa', categoria: 'Impostos e IOF' },
+  {
+    keywords: ['JUROS', 'ENCARGOS'],
+    tipo: 'despesa',
+    categoria: 'Juros e Encargos',
+  },
+  {
+    keywords: ['PIX ENVIADO', 'PAGAMENTO PIX', 'TED ENVIADA', 'DOC ENVIADO', 'TRANSF ENVIADA'],
+    tipo: 'despesa',
+    categoria: 'Transferências e Pagamentos',
+  },
+  {
+    keywords: ['SAQUE', 'COMPRA CARTAO', 'DEBITO'],
+    tipo: 'despesa',
+    categoria: 'Despesas Bancárias',
+  },
+  {
+    keywords: ['PIX RECEBIDO', 'CREDITO PIX', 'TED RECEBIDA', 'DOC RECEBIDO', 'DEPOSITO', 'DEPÓSITO', 'CREDITO'],
+    tipo: 'receita',
+    categoria: 'Entrada Bancária',
+  },
+];
+const ofxTag = (block, tag) => {
+  const m = String(block || '').match(new RegExp(`<${tag}>([^<\\r\\n]+)`, 'i'));
+  return m ? m[1].trim() : '';
+};
+const normalizeBankText = (v = '') =>
+  String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+const parseOfxDate = (raw = '') => {
+  const d = String(raw || '')
+    .replace(/[^0-9]/g, '')
+    .slice(0, 8);
+  if (d.length !== 8) return '';
+  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+};
+const parseOfxAmount = (raw = '') => Number(String(raw || '0').replace(',', '.')) || 0;
+const parseOfx = (text = '') => {
+  const content = String(text || '');
+  const blocks = [...content.matchAll(/<STMTTRN>([\s\S]*?)(?=<STMTTRN>|<\/BANKTRANLIST>|<LEDGERBAL>|$)/gi)].map((m) => m[1]);
+  return blocks
+    .map((block, index) => {
+      const valor = parseOfxAmount(ofxTag(block, 'TRNAMT'));
+      const data = parseOfxDate(ofxTag(block, 'DTPOSTED'));
+      const historico = [ofxTag(block, 'NAME'), ofxTag(block, 'MEMO')].filter(Boolean).join(' - ').trim() || ofxTag(block, 'TRNTYPE') || 'Movimentação bancária';
+      const fitid = ofxTag(block, 'FITID') || ofxTag(block, 'CHECKNUM') || `${data}-${valor}-${index}`;
+      return {
+        index: index + 1,
+        data,
+        referencia: referenciaFromDate(data),
+        valor,
+        valorAbs: Math.abs(valor),
+        historico,
+        fitid,
+        raw: block,
+      };
+    })
+    .filter((r) => r.data && r.valor !== 0);
+};
+const suggestBankMovement = (mov, customRules = []) => {
+  const hist = normalizeBankText(mov.historico);
+  const allRules = [
+    ...customRules.map((r) => ({
+      keywords: [r.padrao],
+      tipo: r.tipo,
+      categoria: r.categoria_nome || r.tipo_receita_nome || r.categoria || 'Outros',
+    })),
+    ...OFX_DEFAULT_RULES,
+  ];
+  const rule = allRules.find((r) => (r.keywords || []).some((k) => k && hist.includes(normalizeBankText(k))));
+  const tipo = rule?.tipo || (mov.valor >= 0 ? 'receita' : 'despesa');
+  const categoria = rule?.categoria || (tipo === 'receita' ? 'Entrada Bancária' : 'Despesas Bancárias');
+  return {
+    ...mov,
+    tipo,
+    categoria,
+    selecionado: true,
+    status: 'novo',
+    ...extractOfxPessoa(mov.historico, tipo),
+  };
+};
+const ensureReferencia = (value, fallbackDate) => {
+  const raw = String(value || '').trim();
+  const ym = raw.match(/(20\d{2}|19\d{2})[-\/](0?[1-9]|1[0-2])/);
+  if (ym) return `${ym[1]}-${String(ym[2]).padStart(2, '0')}`;
+  const br = raw.match(/(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de\s+)?(20\d{2}|19\d{2})/i);
+  if (br) {
+    const idx = MESES.map((m) => normalizeKey(m)).indexOf(normalizeKey(br[1]));
+    if (idx >= 0) return `${br[2]}-${String(idx + 1).padStart(2, '0')}`;
+  }
+  const dateRef = referenciaFromDate(fallbackDate);
+  return /^[0-9]{4}-[0-9]{2}$/.test(dateRef) ? dateRef : currentReferencia();
+};
+const cleanPersonName = (value = '') =>
+  String(value || '')
+    .replace(/\b(PIX|RECEBIDO|ENVIADO|QR|CODE|TED|DOC|TRANSF|TRANSFERENCIA|PAGAMENTO|DEPOSITO|CREDITO)\b/gi, ' ')
+    .replace(/\b\d{1,2}\/\d{1,2}\b/g, ' ')
+    .replace(/\b\d{1,2}:\d{2}(:\d{2})?\b/g, ' ')
+    .replace(/\b\d{7,}\b/g, ' ')
+    .replace(/[^A-Za-zÀ-ÿ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+const extractOfxPessoa = (historico = '', tipo = 'receita') => {
+  const raw = String(historico || '');
+  const hora = (raw.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/) || [])[1] || '';
+  const documento = (raw.match(/\b(\d{7,14})\b/) || [])[1] || '';
+  let nome = '';
+  const afterTime = raw.match(/\b\d{1,2}:\d{2}(?::\d{2})?\s+(?:\d{7,14}\s+)?(.+)$/i);
+  if (afterTime) nome = afterTime[1];
+  if (!nome) {
+    const parts = raw
+      .split(/-|–|—/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    nome = parts[parts.length - 1] || raw;
+  }
+  nome = cleanPersonName(nome);
+  const nome_identificado = tipo === 'receita' && nome.length >= 3 ? nome.toUpperCase() : '';
+  const credor_identificado = tipo === 'despesa' ? cleanPersonName(nome || raw).toUpperCase() || 'Banco' : '';
+  return {
+    hora_transacao: hora,
+    documento_transacao: documento,
+    nome_identificado,
+    credor_identificado,
+  };
+};
+const normalizeComparable = (v = '') =>
+  normalizeBankText(v)
+    .replace(/\b(DA|DE|DO|DAS|DOS|E)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+const isReliablePersonName = (name = '') => {
+  const parts = normalizeComparable(name).split(' ').filter(Boolean);
+  return parts.length >= 2 && parts.join('').length >= 7;
+};
+const memberDigits = (m = {}) => [m.cpf, m.documento, m.telefone, m.telefone_celular, m.tel_celular, m.tel_cel, m.whatsapp, m.celular, m.tel_res, m.telefone_residencial].map(onlyDigits).filter(Boolean);
+const findByDocument = (rows = [], documento = '') => {
+  const doc = onlyDigits(documento);
+  if (doc.length < 8) return null;
+  return rows.find((r) => memberDigits(r).some((d) => d === doc || (d.length >= 8 && doc.endsWith(d)) || (doc.length >= 8 && d.endsWith(doc))));
+};
+const findByName = (rows, name) => {
+  const target = normalizeComparable(name);
+  if (!target) return null;
+  return rows.find((r) => normalizeComparable(r.nome) === target) || rows.find((r) => target.includes(normalizeComparable(r.nome)) || normalizeComparable(r.nome).includes(target)) || null;
+};
+const findMemberByNameSafe = (rows = [], name = '') => {
+  const target = normalizeComparable(name);
+  if (!target) return null;
+  const exact = rows.find((r) => normalizeComparable(r.nome) === target);
+  if (exact) return exact;
+  if (!isReliablePersonName(target)) return null;
+  const contains = rows.map((r) => ({ row: r, norm: normalizeComparable(r.nome) })).filter(({ norm }) => norm && (target.includes(norm) || norm.includes(target)));
+  if (!contains.length) return null;
+  contains.sort((a, b) => Math.abs(a.norm.length - target.length) - Math.abs(b.norm.length - target.length));
+  return contains[0].row || null;
+};
+const findMembroByImportIdentity = (rows = [], nome = '', documento = '') => findByDocument(rows, documento) || findMemberByNameSafe(rows, nome);
+const suggestMembroByName = (rows = [], name = '') => {
+  const target = normalizeComparable(name);
+  const targetTokens = target.split(' ').filter(Boolean);
+  if (targetTokens.length < 2) return null;
+  const ranked = rows
+    .map((row) => {
+      const norm = normalizeComparable(row.nome);
+      const tokens = norm.split(' ').filter(Boolean);
+      const common = targetTokens.filter((token) => tokens.includes(token)).length;
+      const coverage = common / Math.max(targetTokens.length, tokens.length);
+      const first = targetTokens[0] && targetTokens[0] === tokens[0] ? 0.18 : 0;
+      const last = targetTokens.at(-1) && targetTokens.at(-1) === tokens.at(-1) ? 0.12 : 0;
+      return { row, score: coverage + first + last };
+    })
+    .filter((item) => item.score >= 0.5)
+    .sort((a, b) => b.score - a.score);
+  if (!ranked.length) return null;
+  if (ranked[1] && ranked[0].score - ranked[1].score < 0.12) return null;
+  return ranked[0].row;
+};
+const resolveMembroImportacao = (rows = [], nome = '', documento = '') => {
+  const byDocument = findByDocument(rows, documento);
+  if (byDocument) return { membro: byDocument, status: 'confirmado', motivo: 'documento' };
+  const target = normalizeComparable(nome);
+  const byExact = rows.find((row) => normalizeComparable(row.nome) === target);
+  if (byExact) return { membro: byExact, status: 'confirmado', motivo: 'nome' };
+  const suggested = suggestMembroByName(rows, nome);
+  return suggested ? { membro: suggested, status: 'sugerido', motivo: 'similaridade' } : { membro: null, status: 'sem_vinculo', motivo: '' };
+};
+const numeroPorExtenso = (valor = 0) => {
+  const unidades = ['', 'um', 'dois', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove'];
+  const especiais = ['dez', 'onze', 'doze', 'treze', 'quatorze', 'quinze', 'dezesseis', 'dezessete', 'dezoito', 'dezenove'];
+  const dezenas = ['', '', 'vinte', 'trinta', 'quarenta', 'cinquenta', 'sessenta', 'setenta', 'oitenta', 'noventa'];
+  const centenas = ['', 'cento', 'duzentos', 'trezentos', 'quatrocentos', 'quinhentos', 'seiscentos', 'setecentos', 'oitocentos', 'novecentos'];
+  const ate999 = (n) => {
+    n = Math.trunc(Number(n) || 0);
+    if (!n) return '';
+    if (n === 100) return 'cem';
+    const partes = [];
+    const c = Math.trunc(n / 100);
+    const resto = n % 100;
+    if (c) partes.push(centenas[c]);
+    if (resto >= 10 && resto < 20) partes.push(especiais[resto - 10]);
+    else {
+      const d = Math.trunc(resto / 10);
+      const u = resto % 10;
+      if (d) partes.push(dezenas[d]);
+      if (u) partes.push(unidades[u]);
+    }
+    return partes.filter(Boolean).join(' e ');
+  };
+  const inteiro = Math.max(0, Math.trunc(Number(valor) || 0));
+  if (inteiro === 0) return 'zero';
+  const grupos = [
+    { divisor: 1_000_000_000, singular: 'bilhão', plural: 'bilhões' },
+    { divisor: 1_000_000, singular: 'milhão', plural: 'milhões' },
+    { divisor: 1_000, singular: 'mil', plural: 'mil' },
+  ];
+  let restante = inteiro;
+  const partes = [];
+  grupos.forEach(({ divisor, singular, plural }) => {
+    const grupo = Math.trunc(restante / divisor);
+    if (!grupo) return;
+    restante %= divisor;
+    if (divisor === 1_000 && grupo === 1) partes.push('mil');
+    else partes.push(`${ate999(grupo)} ${grupo === 1 ? singular : plural}`);
+  });
+  if (restante) partes.push(ate999(restante));
+  return partes.join(restante > 0 && restante < 100 ? ' e ' : ', ');
+};
+const valorPorExtensoBRL = (valor = 0) => {
+  const totalCentavos = Math.round((Number(valor) || 0) * 100);
+  const reais = Math.trunc(totalCentavos / 100);
+  const centavos = totalCentavos % 100;
+  const partes = [];
+  if (reais) partes.push(`${numeroPorExtenso(reais)} ${reais === 1 ? 'real' : 'reais'}`);
+  if (centavos) partes.push(`${numeroPorExtenso(centavos)} ${centavos === 1 ? 'centavo' : 'centavos'}`);
+  return partes.join(' e ') || 'zero reais';
+};
+const receiptYear = (row = {}) => {
+  const explicit = Number(row.numero_recibo_ano);
+  if (Number.isInteger(explicit) && explicit >= 2000 && explicit <= 2100) return String(explicit);
+  const source = String(row.data || row.referencia || new Date().getFullYear());
+  const matched = source.match(/(20\d{2}|21\d{2})/);
+  return matched?.[1] || String(new Date().getFullYear());
+};
+const formatReceiptNumber = (prefix, row = {}) => {
+  const sequence = Number(row.numero_recibo);
+  const normalized = Number.isInteger(sequence) && sequence > 0 ? String(sequence).padStart(4, '0') : 'PENDENTE';
+  return `${prefix}-${receiptYear(row)}-${normalized}`;
+};
+const incomeReceiptNumber = (row = {}) => formatReceiptNumber('REC', row);
+const expenseReceiptNumber = (row = {}) => formatReceiptNumber('DES', row);
+const reciboHtml = ({ igreja = {}, empresaNome = 'Igreja', modo = 'recebimento', numero = '000001', nome = '—', credor = null, valor = 0, referencia = '—', tipo = 'Dízimo/Oferta', data = '', caixa = '', historico = '', formaPagamento = '', vias = 2, cancelado = false }) => {
+  const identidade = {
+    nome: igreja.nome || empresaNome || 'Igreja',
+    cnpj: igreja.cnpj || '',
+    endereco: igreja.endereco || '',
+    contato: igreja.contato || '',
+    logo: igreja.logo || '',
+  };
+  const pagamento = modo === 'pagamento';
+  const quantidadeVias = Number(vias) === 1 ? 1 : 2;
+  const valorExtenso = valorPorExtensoBRL(valor);
+  const credorNome = credor?.razao_social || credor?.nome || nome;
+  const credorEndereco = credor
+    ? [
+        [credor.endereco, credor.numero].filter(Boolean).join(', '),
+        credor.complemento,
+        credor.bairro,
+        [credor.cidade, credor.uf].filter(Boolean).join('/'),
+        credor.cep ? `CEP ${credor.cep}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const credorDados = pagamento && credor
+    ? [
+        credor.documento ? ['CPF/CNPJ', credor.documento] : null,
+        credor.inscricao_estadual ? ['Inscrição', credor.inscricao_estadual] : null,
+        credor.telefone ? ['Telefone', credor.telefone] : null,
+        credor.email ? ['E-mail', credor.email] : null,
+        credorEndereco ? ['Endereço', credorEndereco] : null,
+        credor.chave_pix ? ['Chave PIX', credor.chave_pix] : null,
+      ].filter(Boolean)
+    : [];
+  const via = (titulo) => `
+    <section class="receiptVia">
+      <div class="receiptHead">
+        <div class="churchIdentity">${identidade.logo ? `<img src="${safeHtml(identidade.logo)}" alt="Logo">` : '<span class="logoFallback">IG</span>'}<div><span class="kicker">${titulo}</span><h1>${safeHtml(identidade.nome)}</h1>${identidade.cnpj ? `<p>${safeHtml(identidade.cnpj)}</p>` : ''}${identidade.endereco ? `<p>${safeHtml(identidade.endereco)}</p>` : ''}${identidade.contato ? `<p>${safeHtml(identidade.contato)}</p>` : ''}</div></div>
+        <div class="receiptNumber">${pagamento ? 'RECIBO DE PAGAMENTO' : 'RECIBO'}<br><b>Nº ${safeHtml(numero)}</b></div>
+      </div>
+      ${cancelado ? '<div class="receiptCanceled">CANCELADO</div>' : ''}
+      <div class="receiptText">${pagamento ? `Eu, <b>${safeHtml(credorNome)}</b>, declaro ter recebido de <b>${safeHtml(identidade.nome)}</b> a importância de` : `Recebemos de <b>${safeHtml(nome)}</b> a importância de`} <b class="money ${pagamento ? '' : 'income'}"${pagamento ? ' style="color:#dc2626"' : ''}>${fmtMoney(valor)}</b> <span class="amountWords">(${safeHtml(valorExtenso)})</span>${pagamento ? `, referente a <b>${safeHtml(tipo)}</b>, dando plena quitação do valor recebido.` : '.'}</div>
+      ${credorDados.length ? `<div class="receiptCreditor"><span class="receiptCreditorTitle">Dados do credor / prestador</span>${credorDados.map(([label, value]) => `<span><b>${safeHtml(label)}:</b> ${safeHtml(value)}</span>`).join('')}</div>` : ''}
+      <div class="receiptGrid">
+        <div><span>${pagamento ? 'Serviço / despesa' : 'Referente a'}</span><b>${safeHtml(tipo)}</b></div>
+        <div><span>Referência</span><b>${safeHtml(fmtReferencia(referencia))}</b></div>
+        <div><span>Data</span><b>${safeHtml(fmtDate(data))}</b></div>
+        <div><span>${formaPagamento ? 'Pagamento' : 'Caixa'}</span><b>${safeHtml(formaPagamento || caixa || '—')}</b></div>
+      </div>
+      ${historico ? `<div class="receiptNote"><b>Observações:</b> ${safeHtml(historico)}</div>` : ''}
+      <div class="assinaturas"><span><b>Tesouraria</b><small>Responsável pelo pagamento</small></span><span><b>${safeHtml(pagamento ? credorNome : nome)}</b><small>${pagamento ? 'Credor / prestador — assinatura' : 'Contribuinte'}</small></span></div>
+    </section>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Recibo ${safeHtml(numero)}</title><style>
+    :root{--navy:#10243f;--blue:#0969da;--green:#059669;--line:#d8e4f1;--text:#0f172a;--muted:#64748b}*{box-sizing:border-box}html,body{margin:0;padding:0}body{font-family:Inter,Arial,Helvetica,sans-serif;color:var(--text);background:#eef3f8;padding:16px}.receiptToolbar{display:flex;align-items:center;gap:8px;position:sticky;top:0;z-index:5;background:#eef3f8;padding:0 0 12px}.receiptToolbar button{border:1px solid #bfdbfe;background:#fff;color:#0759b8}.receiptToolbar button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.receiptToolbar span{margin-left:auto;color:var(--muted);font-size:12px}body.vias-1 .receiptVia{min-height:620px}button{border:0;border-radius:10px;background:var(--blue);color:#fff;padding:10px 18px;font-weight:800;margin-bottom:12px;cursor:pointer}.receiptVia{height:calc((100vh - 60px)/2);min-height:350px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:19px 22px;margin-bottom:12px;box-shadow:0 10px 28px rgba(15,41,66,.09);break-inside:avoid;page-break-inside:avoid;display:flex;flex-direction:column;overflow:hidden}.receiptHead{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;border-bottom:2px solid #e5edf5;padding-bottom:10px;margin-bottom:12px}.churchIdentity{display:flex;align-items:center;gap:12px;min-width:0}.churchIdentity img,.logoFallback{width:58px;height:58px;flex:0 0 58px;border-radius:12px;object-fit:contain;background:#f8fafc;border:1px solid var(--line)}.logoFallback{display:grid;place-items:center;background:var(--navy);color:#fff;font-size:17px;font-weight:900}.kicker{display:inline-flex;color:#0759b8;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.13em}h1{margin:2px 0;font-size:18px;line-height:1.15;color:var(--navy)}p{margin:1px 0;color:var(--muted);font-size:9.5px;line-height:1.25}.receiptNumber{align-self:flex-start;min-width:112px;text-align:center;background:#eff6ff;color:#0759b8;border:1px solid #bfdbfe;border-radius:12px;padding:8px 12px;font-size:10px;font-weight:850;letter-spacing:.09em}.receiptNumber b{display:block;margin-top:2px;font-size:16px;letter-spacing:0}.receiptText{font-size:15px;line-height:1.4;margin:2px 0 8px}.amountWords{font-size:12px;color:#475569;font-weight:700}.receiptCanceled{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%) rotate(-18deg);font-size:56px;font-weight:950;color:rgba(220,38,38,.18);border:6px solid rgba(220,38,38,.18);padding:8px 22px;border-radius:12px;z-index:2}.receiptVia{position:relative}.money{font-weight:950}.income{color:var(--green)}.receiptCreditor{display:flex;flex-wrap:wrap;gap:3px 12px;margin-bottom:8px;padding:6px 8px;border:1px solid var(--line);border-radius:9px;background:#f8fbff;font-size:8.5px;line-height:1.25}.receiptCreditorTitle{width:100%;color:#0759b8;font-weight:900;text-transform:uppercase;letter-spacing:.06em}.receiptGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.receiptGrid div{border:1px solid var(--line);border-radius:10px;padding:8px 9px;background:#f8fbff}.receiptGrid span{display:block;font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:900;margin-bottom:3px}.receiptGrid b{font-size:11px}.receiptNote{margin-top:7px;padding:7px 9px;background:#f8fafc;border:1px solid var(--line);border-radius:9px;color:#475569;font-size:9.5px;line-height:1.3;max-height:35px;overflow:hidden}.assinaturas{display:flex;justify-content:space-around;gap:34px;margin-top:auto;padding-top:14px}.assinaturas span{display:grid;min-width:210px;text-align:center;border-top:1.5px solid #334155;padding-top:5px;color:#334155}.assinaturas b{font-size:10px}.assinaturas small{font-size:8px;color:var(--muted);margin-top:1px}@media print{html,body{width:210mm;height:297mm}body{padding:7mm;background:#fff}.receiptVia{box-shadow:none;border-radius:10px;width:196mm;height:137.5mm;min-height:0;margin:0 0 7mm;padding:5mm 6mm;break-after:auto}.receiptVia:last-child{margin-bottom:0}.receiptHead{margin-bottom:2mm;padding-bottom:2mm}.churchIdentity img,.logoFallback{width:14mm;height:14mm;flex-basis:14mm}.receiptText{font-size:10.5pt;margin-bottom:2mm}.receiptCreditor{font-size:6.7pt;margin-bottom:2mm;padding:1.3mm 2mm}.receiptGrid b{font-size:8pt}.receiptNote{font-size:7pt}.assinaturas{padding-top:3.5mm}.receiptToolbar{display:none!important}.hiddenVia{display:none!important}body.vias-1 .receiptVia{height:283mm;min-height:0;margin-bottom:0}button{display:none}@page{size:A4 portrait;margin:0}}
+  </style></head><body class="vias-${quantidadeVias}"><div class="receiptToolbar"><button type="button" onclick="setVias(1)">1 via</button><button type="button" onclick="setVias(2)">2 vias</button><button type="button" class="primary" onclick="print()">Imprimir / salvar PDF</button><span>Escolha a quantidade de vias.</span></div>${via('1ª via — Igreja')}<div id="segundaVia" class="${quantidadeVias === 1 ? 'hiddenVia' : ''}">${via('2ª via — Recebedor')}</div><script>function setVias(n){var segunda=document.getElementById('segundaVia');if(segunda)segunda.classList.toggle('hiddenVia',Number(n)===1);document.body.className='vias-'+n;}</script></body></html>`;
+};
+const abrirRecibo = (dados) => {
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write(reciboHtml(dados));
+  w.document.close();
+};
+const simpleHash = async (text) => {
+  if (window.crypto?.subtle) {
+    const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+  return String(h);
+};
+
+function makeFinancialFilterDefault(referenciaGlobal) {
+  const ref = ensureReferencia(referenciaGlobal || currentReferencia());
+  return {
+    modo: 'referencia_global',
+    referencia: ref,
+    dataInicio: `${ref}-01`,
+    dataFim: monthLastDayISO(ref),
+    ano: ref.slice(0, 4),
+  };
+}
+function monthLastDayISO(ref) {
+  const safe = ensureReferencia(ref || currentReferencia());
+  const [ano, mes] = safe.split('-').map(Number);
+  return new Date(ano, mes, 0).toISOString().slice(0, 10);
+}
+function useFinancialPeriodFilter(referenciaGlobal) {
+  const [filter, setFilter] = useState(() => makeFinancialFilterDefault(referenciaGlobal));
+  useEffect(() => {
+    const ref = ensureReferencia(referenciaGlobal || currentReferencia());
+    setFilter((old) => {
+      if (old.modo !== 'referencia_global') return old;
+      return {
+        ...old,
+        referencia: ref,
+        dataInicio: `${ref}-01`,
+        dataFim: monthLastDayISO(ref),
+        ano: ref.slice(0, 4),
+      };
+    });
+  }, [referenciaGlobal]);
+  return [filter, setFilter];
+}
+function getRowReferencia(row) {
+  return ensureReferencia(row?.referencia || referenciaFromDate(row?.data), row?.data);
+}
+function rowMatchesFinanceFilter(row, filter, globalFilters = {}) {
+  const ref = getRowReferencia(row);
+  const data = String(row?.data || '');
+  const modo = filter?.modo || 'referencia_global';
+  if (modo === 'referencia_global' || modo === 'mes') {
+    if (ref !== ensureReferencia(filter?.referencia || globalFilters.referencia || currentReferencia(), data)) return false;
+  } else if (modo === 'periodo') {
+    if (filter?.dataInicio && data < filter.dataInicio) return false;
+    if (filter?.dataFim && data > filter.dataFim) return false;
+  } else if (modo === 'ano') {
+    const ano = String(filter?.ano || currentReferencia().slice(0, 4));
+    if (!ref.startsWith(`${ano}-`)) return false;
+  }
+  const caixaIds = globalFilters?.caixaIds || [];
+  if ((caixaIds?.length || 0) > 0 && !caixaIds.includes(row?.tipo_caixa_id)) return false;
+  return true;
+}
+function financialFilterLabel(filter, referenciaGlobal) {
+  const modo = filter?.modo || 'referencia_global';
+  if (modo === 'referencia_global') return `Referência global: ${fmtReferencia(referenciaGlobal || filter?.referencia)}`;
+  if (modo === 'mes') return `Mês: ${fmtReferencia(filter?.referencia)}`;
+  if (modo === 'periodo') return `Período: ${fmtDate(filter?.dataInicio)} a ${fmtDate(filter?.dataFim)}`;
+  if (modo === 'ano') return `Ano: ${filter?.ano || currentReferencia().slice(0, 4)}`;
+  return 'Todos os períodos';
+}
+function FinancePeriodPanel({ filter, setFilter, referenciaGlobal, resumo, compact = false }) {
+  const refGlobal = ensureReferencia(referenciaGlobal || currentReferencia());
+  const anoAtual = Number(refGlobal.slice(0, 4));
+  const anos = Array.from(new Set([anoAtual, anoAtual - 1, anoAtual + 1, Number(filter?.ano || anoAtual)])).sort((a, b) => b - a);
+  const setModo = (modo) => {
+    setFilter((old) => {
+      const base = { ...old, modo };
+      if (modo === 'referencia_global')
+        return {
+          ...base,
+          referencia: refGlobal,
+          ano: refGlobal.slice(0, 4),
+          dataInicio: `${refGlobal}-01`,
+          dataFim: monthLastDayISO(refGlobal),
+        };
+      if (modo === 'mes')
+        return {
+          ...base,
+          referencia: old.referencia || refGlobal,
+          dataInicio: `${old.referencia || refGlobal}-01`,
+          dataFim: monthLastDayISO(old.referencia || refGlobal),
+        };
+      if (modo === 'periodo')
+        return {
+          ...base,
+          dataInicio: old.dataInicio || `${refGlobal}-01`,
+          dataFim: old.dataFim || monthLastDayISO(refGlobal),
+        };
+      if (modo === 'ano') return { ...base, ano: old.ano || refGlobal.slice(0, 4) };
+      return base;
+    });
+  };
+  const setRef = (ref) =>
+    setFilter((old) => ({
+      ...old,
+      referencia: ensureReferencia(ref),
+      dataInicio: `${ensureReferencia(ref)}-01`,
+      dataFim: monthLastDayISO(ref),
+      ano: ensureReferencia(ref).slice(0, 4),
+    }));
+  const useGlobal = () => setFilter(makeFinancialFilterDefault(refGlobal));
+  const clear = () => setFilter({ ...makeFinancialFilterDefault(refGlobal), modo: 'todos' });
+  return (
+    <div className={`financeFilterPanel ${compact ? 'compact' : ''}`}>
+      <div className="financeFilterHeader">
+        <div>
+          <h3>Filtros financeiros</h3>
+          <p>{financialFilterLabel(filter, refGlobal)}. Os totais abaixo respeitam período, referência e caixas selecionadas.</p>
+        </div>
+        <div className="financeFilterActions">
+          <button type="button" className="smallBtn secondary" onClick={useGlobal}>
+            Usar referência global
+          </button>
+          <button type="button" className="smallBtn secondary" onClick={clear}>
+            Ver tudo
+          </button>
+        </div>
+      </div>
+      <div className="financeFilterGrid">
+        <div className="field">
+          <label>Analisar por</label>
+          <select value={filter.modo} onChange={(e) => setModo(e.target.value)}>
+            <option value="referencia_global">Referência global</option>
+            <option value="mes">Mês/competência</option>
+            <option value="periodo">Período entre datas</option>
+            <option value="ano">Ano</option>
+            <option value="todos">Todos</option>
+          </select>
+        </div>
+        {(filter.modo === 'referencia_global' || filter.modo === 'mes') && (
+          <div className="field">
+            <label>Referência</label>
+            <input type="month" value={filter.referencia || refGlobal} onChange={(e) => setRef(e.target.value)} />
+          </div>
+        )}
+        {filter.modo === 'periodo' && (
+          <>
+            <div className="field">
+              <label>Data inicial</label>
+              <input type="date" value={filter.dataInicio || ''} onChange={(e) => setFilter((old) => ({ ...old, dataInicio: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Data final</label>
+              <input type="date" value={filter.dataFim || ''} onChange={(e) => setFilter((old) => ({ ...old, dataFim: e.target.value }))} />
+            </div>
+          </>
+        )}
+        {filter.modo === 'ano' && (
+          <div className="field">
+            <label>Ano</label>
+            <select value={filter.ano || refGlobal.slice(0, 4)} onChange={(e) => setFilter((old) => ({ ...old, ano: e.target.value }))}>
+              {anos.map((ano) => (
+                <option key={ano} value={ano}>
+                  {ano}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+      {resumo && (
+        <div className="financeFilterSummary">
+          <div className="miniStat income">
+            <span>Receitas filtradas</span>
+            <b>{fmtMoney(resumo.receitas || 0)}</b>
+          </div>
+          <div className="miniStat expense">
+            <span>Despesas filtradas</span>
+            <b>{fmtMoney(resumo.despesas || 0)}</b>
+          </div>
+          <div className={`miniStat ${(resumo.saldo || 0) < 0 ? 'expense' : 'income'}`}>
+            <span>Saldo do filtro</span>
+            <b>{fmtMoney(resumo.saldo || 0)}</b>
+          </div>
+          <div className="miniStat">
+            <span>Registros</span>
+            <b>{resumo.registros || 0}</b>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function FinanceSectionSummary({ kind, filtered }) {
+  const total = filtered.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const count = filtered.length;
+  const media = count ? total / count : 0;
+  const maior = filtered.reduce((max, r) => Math.max(max, Number(r.valor) || 0), 0);
+  const klass = kind === 'despesa' ? 'expense' : 'income';
+  return (
+    <div className="financeSectionSummary">
+      <div className={`miniStat ${klass}`}>
+        <span>Total filtrado</span>
+        <b>{fmtMoney(total)}</b>
+      </div>
+      <div className="miniStat">
+        <span>Quantidade</span>
+        <b>{count}</b>
+      </div>
+      <div className="miniStat">
+        <span>Média</span>
+        <b>{fmtMoney(media)}</b>
+      </div>
+      <div className="miniStat">
+        <span>Maior lançamento</span>
+        <b>{fmtMoney(maior)}</b>
+      </div>
+    </div>
+  );
+}
+
+function LancamentosPage({ financeFilter: externalFilter = null, hideFinanceControls = false, onImportar = null } = {}) {
+  const { referencia, caixaId, caixaIds } = useGlobalFilters();
+  const [localFilter, setLocalFilter] = useFinancialPeriodFilter(referencia);
+  const activeFilter = externalFilter || localFilter;
+  const setActiveFilter = externalFilter ? null : setLocalFilter;
+  const caixas = useLookup('tipos_caixa');
+  const membros = useLookup('membros');
+  const tiposReceita = useLookupLabels('tipos_receita');
+  const formasPagto = useLookupLabels('formas_pagamento');
+  const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m.nome])), [membros.rows]);
+  const baixarMembrosComIds = () => {
+    const rows = membros.rows
+      .slice()
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+      .map((m) => ({
+        numero_membro: m.numero_membro,
+        nome: m.nome || '',
+        status: m.ativo === false ? 'Inativo' : 'Ativo',
+      }));
+    downloadTextFile(
+      'membros_com_ids_numericos.csv',
+      rowsToCsv(rows, [
+        { key: 'nome', label: 'Nome do membro' },
+        { key: 'numero_membro', label: 'ID do membro' },
+        { key: 'status', label: 'Status' },
+      ]),
+    );
+  };
+  const baixarCodigosFinanceiros = () => {
+    const rows = [
+      ...tiposReceita.rows.map((t) => ({
+        cadastro: 'Tipo',
+        codigo: t.numero_tipo,
+        nome: t.nome || '',
+      })),
+      ...caixas.rows.filter(caixaEstaAtivo).map((c) => ({
+        cadastro: 'Caixa',
+        codigo: c.numero_caixa,
+        nome: c.nome || '',
+      })),
+    ];
+    downloadTextFile(
+      'codigos_tipos_e_caixas.csv',
+      rowsToCsv(rows, [
+        { key: 'cadastro', label: 'Cadastro' },
+        { key: 'codigo', label: 'Código' },
+        { key: 'nome', label: 'Nome' },
+      ]),
+    );
+  };
+  const globalFilters = useMemo(() => ({ referencia, caixaIds }), [referencia, caixaIds]);
+  return (
+    <CrudPage
+      table="lancamentos_financeiros"
+      title="Dízimos, Ofertas e Doações"
+      order="data"
+      ascending={false}
+      compact
+      searchKeys={['tipo', 'forma_pagamento', 'culto', 'observacoes']}
+      topContent={
+        !hideFinanceControls && setActiveFilter ? (
+          <>
+            <FinancePeriodPanel filter={activeFilter} setFilter={setActiveFilter} referenciaGlobal={referencia} />
+            {onImportar && (
+              <div className="sheetImportCallout">
+                <div>
+                  <b>Implantação ou lançamentos em lote</b>
+                  <span>Use os códigos numéricos de membro, tipo e caixa.</span>
+                </div>
+                <div className="sheetImportActions">
+                  <button className="secondary" onClick={baixarMembrosComIds}>
+                    Baixar membros com IDs
+                  </button>
+                  <button className="secondary" onClick={baixarCodigosFinanceiros}>
+                    Baixar códigos de tipo e caixa
+                  </button>
+                  <button className="secondary" onClick={() => downloadFinanceImportTemplate('entrada')}>
+                    Baixar modelo da planilha
+                  </button>
+                  <button onClick={onImportar}>Importar planilha</button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : null
+      }
+      summaryRender={({ filtered }) => <FinanceSectionSummary kind="receita" filtered={filtered} />}
+      extraRows={(rows) => rows.filter((r) => rowMatchesFinanceFilter(r, activeFilter, globalFilters))}
+      columns={[
+        { key: 'data', label: 'Data', render: (r) => fmtDate(r.data) },
+        {
+          key: 'referencia',
+          label: 'Referência',
+          render: (r) => fmtReferencia(r.referencia || referenciaFromDate(r.data)),
+        },
+        {
+          key: 'tipo',
+          label: 'Tipo',
+          render: (r) => <span className="badgeFinance income">{r.tipo || 'Receita'}</span>,
+        },
+        {
+          key: 'membro_id',
+          label: 'Membro',
+          render: (r) => membroMap[r.membro_id] || '—',
+        },
+        {
+          key: 'tipo_caixa_id',
+          label: 'Caixa',
+          render: (r) => caixaMap[r.tipo_caixa_id] || '',
+        },
+        {
+          key: 'valor',
+          label: 'Valor',
+          render: (r) => <b className="moneyIncome">{fmtMoney(r.valor)}</b>,
+        },
+        { key: 'forma_pagamento', label: 'Forma' },
+      ]}
+      fields={[
+        { name: 'data', label: 'Data', type: 'date', required: true },
+        {
+          name: 'referencia',
+          label: 'Referência/Competência',
+          type: 'month',
+          required: true,
+          defaultValue: () => referencia || currentReferencia(),
+          help: 'Padrão vindo da Referência global do topo. Pode alterar manualmente quando o lançamento pertencer a outra competência.',
+        },
+        {
+          name: 'tipo',
+          label: 'Tipo de entrada',
+          type: 'quickselect',
+          required: true,
+          options: tiposReceita.options,
+          quickCreate: quickCreate('tipos_receita', tiposReceita.reload),
+        },
+        {
+          name: 'membro_id',
+          label: 'Membro (opcional)',
+          type: 'quickselect',
+          options: membros.options,
+          quickCreate: quickCreate('membros', membros.reload, 'id', [
+            { name: 'nome', label: 'Nome', required: true, full: true },
+            { name: 'telefone_celular', label: 'Tel. Cel.' },
+            { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+          ]),
+        },
+        {
+          name: 'tipo_caixa_id',
+          label: 'Tipo de Caixa',
+          type: 'quickselect',
+          required: true,
+          options: caixas.options,
+          defaultValue: () => (caixaIds?.length === 1 ? caixaIds[0] : caixaId || ''),
+          quickCreate: quickCreate('tipos_caixa', caixas.reload, 'id'),
+        },
+        {
+          name: 'valor',
+          label: 'Valor (R$)',
+          type: 'money',
+          required: true,
+          className: 'incomeMoney',
+        },
+        {
+          name: 'forma_pagamento',
+          label: 'Forma de Pagamento',
+          type: 'quickselect',
+          required: true,
+          options: formasPagto.options,
+          quickCreate: quickCreate('formas_pagamento', formasPagto.reload),
+        },
+        { name: 'culto', label: 'Culto/Evento', full: true },
+        {
+          name: 'observacoes',
+          label: 'Observações',
+          type: 'textarea',
+          full: true,
+        },
+      ]}
+    />
+  );
+}
+
+function DespesasPage({ financeFilter: externalFilter = null, hideFinanceControls = false, onImportar = null } = {}) {
+  const igrejaRecibo = useChurchReceiptIdentity();
+  const { referencia, caixaId, caixaIds } = useGlobalFilters();
+  const [localFilter, setLocalFilter] = useFinancialPeriodFilter(referencia);
+  const activeFilter = externalFilter || localFilter;
+  const setActiveFilter = externalFilter ? null : setLocalFilter;
+  const caixas = useLookup('tipos_caixa');
+  const categorias = useLookup('categorias_despesas');
+  const credores = useLookup('credores');
+  const formasPagto = useLookupLabels('formas_pagamento');
+  const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  const catMap = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c.nome])), [categorias.rows]);
+  const credorMap = useMemo(() => Object.fromEntries(credores.rows.map((c) => [c.id, c.nome || c.razao_social])), [credores.rows]);
+  const credorById = useMemo(() => Object.fromEntries(credores.rows.map((c) => [c.id, c])), [credores.rows]);
+  const baixarCodigosCaixas = () => {
+    const rows = caixas.rows.filter(caixaEstaAtivo).map((c) => ({
+      codigo: c.numero_caixa,
+      nome: c.nome || '',
+    }));
+    downloadTextFile(
+      'codigos_caixas.csv',
+      rowsToCsv(rows, [
+        { key: 'codigo', label: 'Código da caixa' },
+        { key: 'nome', label: 'Nome da caixa' },
+      ]),
+    );
+  };
+  const globalFilters = useMemo(() => ({ referencia, caixaIds }), [referencia, caixaIds]);
+  return (
+    <CrudPage
+      table="despesas"
+      title="Despesas"
+      order="data"
+      ascending={false}
+      compact
+      searchKeys={['descricao', 'forma_pagamento', 'observacoes']}
+      topContent={
+        !hideFinanceControls && setActiveFilter ? (
+          <>
+            <FinancePeriodPanel filter={activeFilter} setFilter={setActiveFilter} referenciaGlobal={referencia} />
+            {onImportar && (
+              <div className="sheetImportCallout">
+                <div>
+                  <b>Implantação ou lançamentos em lote</b>
+                  <span>Use o código numérico da caixa para evitar divergências.</span>
+                </div>
+                <div className="sheetImportActions">
+                  <button className="secondary" onClick={baixarCodigosCaixas}>
+                    Baixar códigos das caixas
+                  </button>
+                  <button className="secondary" onClick={() => downloadFinanceImportTemplate('despesa')}>
+                    Baixar modelo da planilha
+                  </button>
+                  <button onClick={onImportar}>Importar planilha</button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : null
+      }
+      summaryRender={({ filtered }) => <FinanceSectionSummary kind="despesa" filtered={filtered} />}
+      rowActions={(r) => (
+        <button
+          className="smallBtn secondary"
+          onClick={() =>
+            abrirRecibo({
+              igreja: igrejaRecibo,
+              modo: 'pagamento',
+              numero: expenseReceiptNumber(r),
+              nome: credorMap[r.credor_id] || r.descricao || 'Credor / prestador',
+              credor: credorById[r.credor_id] || null,
+              valor: r.valor,
+              referencia: r.referencia || referenciaFromDate(r.data),
+              tipo: catMap[r.categoria_id] || 'Serviço / despesa',
+              data: r.data,
+              caixa: caixaMap[r.tipo_caixa_id] || '—',
+              historico: [r.descricao, r.observacoes].filter(Boolean).join(' · '),
+              formaPagamento: r.forma_pagamento || '',
+            })
+          }
+        >
+          Recibo
+        </button>
+      )}
+      extraRows={(rows) => rows.filter((r) => rowMatchesFinanceFilter(r, activeFilter, globalFilters))}
+      columns={[
+        { key: 'data', label: 'Data', render: (r) => fmtDate(r.data) },
+        {
+          key: 'referencia',
+          label: 'Referência',
+          render: (r) => fmtReferencia(r.referencia || referenciaFromDate(r.data)),
+        },
+        { key: 'descricao', label: 'Descrição' },
+        {
+          key: 'categoria_id',
+          label: 'Categoria',
+          render: (r) => catMap[r.categoria_id] || '—',
+        },
+        {
+          key: 'tipo_caixa_id',
+          label: 'Caixa',
+          render: (r) => caixaMap[r.tipo_caixa_id] || '',
+        },
+        {
+          key: 'valor',
+          label: 'Valor',
+          render: (r) => <b className="moneyExpense">{fmtMoney(r.valor)}</b>,
+        },
+      ]}
+      fields={[
+        { name: 'data', label: 'Data', type: 'date', required: true },
+        {
+          name: 'referencia',
+          label: 'Referência/Competência',
+          type: 'month',
+          required: true,
+          defaultValue: () => referencia || currentReferencia(),
+          help: 'Padrão vindo da Referência global do topo. Pode alterar manualmente quando o lançamento pertencer a outra competência.',
+        },
+        { name: 'descricao', label: 'Descrição', required: true, full: true },
+        {
+          name: 'credor_id',
+          label: 'Credor / prestador de serviço',
+          type: 'quickselect',
+          options: credores.options,
+          quickCreate: quickCreate('credores', credores.reload, 'id'),
+        },
+        {
+          name: 'categoria_id',
+          label: 'Categoria',
+          type: 'quickselect',
+          options: categorias.options,
+          quickCreate: quickCreate('categorias_despesas', categorias.reload, 'id'),
+        },
+        {
+          name: 'tipo_caixa_id',
+          label: 'Tipo de Caixa',
+          type: 'quickselect',
+          required: true,
+          options: caixas.options,
+          defaultValue: () => (caixaIds?.length === 1 ? caixaIds[0] : caixaId || ''),
+          quickCreate: quickCreate('tipos_caixa', caixas.reload, 'id'),
+        },
+        {
+          name: 'valor',
+          label: 'Valor (R$)',
+          type: 'money',
+          required: true,
+          className: 'expenseMoney',
+        },
+        {
+          name: 'forma_pagamento',
+          label: 'Forma de Pagamento',
+          type: 'quickselect',
+          required: true,
+          options: formasPagto.options,
+          quickCreate: quickCreate('formas_pagamento', formasPagto.reload),
+        },
+        {
+          name: 'observacoes',
+          label: 'Observações',
+          type: 'textarea',
+          full: true,
+        },
+      ]}
+    />
+  );
+}
+
+const financeSheetHeader = (value = '') => {
+  const key = normalizeKey(value);
+  const aliases = {
+    id_membro: 'numero_membro',
+    id_do_membro: 'numero_membro',
+    membro_id: 'numero_membro',
+    codigo_membro: 'numero_membro',
+    numero_membro: 'numero_membro',
+    data: 'data',
+    referencia: 'referencia',
+    competencia: 'referencia',
+    mes: 'referencia',
+    descricao: 'descricao',
+    historico: 'descricao',
+    pessoa: 'descricao',
+    membro: 'descricao',
+    nome: 'descricao',
+    nome_membro: 'descricao',
+    tipo: 'tipo',
+    tipo_entrada: 'tipo',
+    categoria: 'categoria',
+    caixa: 'caixa',
+    origem: 'caixa',
+    valor: 'valor',
+    forma: 'forma_pagamento',
+    forma_pagamento: 'forma_pagamento',
+    pagamento: 'forma_pagamento',
+    observacoes: 'observacoes',
+    observacao: 'observacoes',
+    dizimo: 'dizimo',
+    oferta: 'oferta',
+  };
+  return aliases[key] || key;
+};
+const financeSheetMoney = (value) => {
+  if (typeof value === 'number') return value;
+  let raw = String(value ?? '')
+    .trim()
+    .replace(/R\$/gi, '')
+    .replace(/\s/g, '');
+  if (raw.includes(',') && raw.includes('.')) raw = raw.replace(/\./g, '').replace(',', '.');
+  else if (raw.includes(',')) raw = raw.replace(',', '.');
+  const number = Number(raw);
+  return Number.isFinite(number) ? number : 0;
+};
+const financeSheetDate = (value) => (value instanceof Date && !Number.isNaN(value.getTime()) ? `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` : dateFromSheet(value));
+const financeImportHash = (item) => {
+  const text = [item.kind, item.data, item.referencia, item.tipo_caixa_id, item.membro_id || item.descricao, item.tipo || item.categoria_id, item.valor].map((v) => normalizeText(v)).join('|');
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fi_${(hash >>> 0).toString(16)}`;
+};
+
+function PlanilhaFinanceiraImportPage({ kind, onBack }) {
+  const tenant = React.useContext(TenantContext);
+  const { referencia } = useGlobalFilters();
+  const caixas = useLookup('tipos_caixa');
+  const membros = useLookup('membros');
+  const tipos = useLookupLabels('tipos_receita');
+  const categorias = useLookup('categorias_despesas');
+  const formas = useLookupLabels('formas_pagamento');
+  const batches = useTable('financeiro_importacoes_planilha', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const importedItems = useTable('financeiro_importacao_planilha_itens', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const existing = useTable(kind === 'entrada' ? 'lancamentos_financeiros' : 'despesas', { order: 'data', ascending: false });
+  const [fileName, setFileName] = useState('');
+  const [rawRows, setRawRows] = useState([]);
+  const [preview, setPreview] = useState([]);
+  const [dataPadrao, setDataPadrao] = useState(`${referencia || currentReferencia()}-01`);
+  const [dataRule, setDataRule] = useState('planilha');
+  const [refPadrao, setRefPadrao] = useState(referencia || currentReferencia());
+  const [caixaPadrao, setCaixaPadrao] = useState('');
+  const [tipoPadrao, setTipoPadrao] = useState('');
+  const [categoriaPadrao, setCategoriaPadrao] = useState('');
+  const [formaPadrao, setFormaPadrao] = useState('Pix');
+  const [busy, setBusy] = useState(false);
+  const { toasts, push, close } = useToasts();
+  const lookup = (rows, label) => rows.find((r) => normalizeText(r.nome || r.label) === normalizeText(label));
+  const applyDateRuleToRows = useCallback(
+    (rows, rule, dateValue) =>
+      rows.map((row) => {
+        const original = row.__dataPlanilha ?? row.data ?? '';
+        const parsed = financeSheetDate(original);
+        let data = original;
+        let origem = 'planilha';
+        if (rule === 'especifica') {
+          data = dateValue;
+          origem = 'especifica';
+        } else if (rule === 'hoje') {
+          data = todayISO();
+          origem = 'hoje';
+        } else if (rule === 'preencher_vazias' && !parsed) {
+          data = dateValue;
+          origem = 'padrao_vazia';
+        }
+        return { ...row, __dataPlanilha: original, __dataOrigem: origem, data };
+      }),
+    [],
+  );
+  const changeDataRule = (rule) => {
+    setDataRule(rule);
+    const dateValue = dataPadrao || `${refPadrao}-01`;
+    if ((rule === 'especifica' || rule === 'preencher_vazias') && !dataPadrao) setDataPadrao(dateValue);
+    setRawRows((rows) => applyDateRuleToRows(rows, rule, dateValue));
+  };
+  const changeDataPadrao = (value) => {
+    setDataPadrao(value);
+    if (dataRule === 'especifica' || dataRule === 'preencher_vazias') setRawRows((rows) => applyDateRuleToRows(rows, dataRule, value));
+  };
+  const dataOriginLabel = (line) => {
+    const origem = rawRows.find((r) => r.__line === line)?.__dataOrigem || 'planilha';
+    return origem === 'especifica' ? 'Data específica' : origem === 'hoje' ? 'Hoje' : origem === 'padrao_vazia' ? 'Padrão para célula vazia' : 'Planilha';
+  };
+  const modelo = () => downloadFinanceImportTemplate(kind);
+  const baixarMembrosComIds = () => {
+    const rows = membros.rows
+      .slice()
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+      .map((m) => ({
+        numero_membro: m.numero_membro,
+        nome: m.nome || '',
+        status: m.ativo === false ? 'Inativo' : 'Ativo',
+      }));
+    downloadTextFile(
+      'membros_com_ids_numericos.csv',
+      rowsToCsv(rows, [
+        { key: 'nome', label: 'Nome do membro' },
+        { key: 'numero_membro', label: 'ID do membro' },
+        { key: 'status', label: 'Status' },
+      ]),
+    );
+  };
+  const baixarCodigosFinanceiros = () => {
+    const rows =
+      kind === 'entrada'
+        ? [
+            ...tipos.rows.map((t) => ({
+              cadastro: 'Tipo',
+              codigo: t.numero_tipo,
+              nome: t.nome || '',
+            })),
+            ...caixas.rows.filter(caixaEstaAtivo).map((c) => ({
+              cadastro: 'Caixa',
+              codigo: c.numero_caixa,
+              nome: c.nome || '',
+            })),
+          ]
+        : caixas.rows.filter(caixaEstaAtivo).map((c) => ({
+            cadastro: 'Caixa',
+            codigo: c.numero_caixa,
+            nome: c.nome || '',
+          }));
+    downloadTextFile(
+      kind === 'entrada' ? 'codigos_tipos_e_caixas.csv' : 'codigos_caixas.csv',
+      rowsToCsv(rows, [
+        { key: 'cadastro', label: 'Cadastro' },
+        { key: 'codigo', label: 'Código' },
+        { key: 'nome', label: 'Nome' },
+      ]),
+    );
+  };
+  const readFile = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      let rows;
+      if (/\.xlsx$/i.test(file.name)) {
+        const { default: readXlsxFile } = await import('read-excel-file');
+        rows = await readXlsxFile(file);
+      } else rows = parseCsvText(await file.text());
+      if (rows.length < 2) throw new Error('A planilha não possui linhas para importar.');
+      const headers = rows[0].map(financeSheetHeader);
+      const baseRows = rows.slice(1).map((values, index) => {
+        const parsed = {
+          ...Object.fromEntries(headers.map((h, i) => [h, values[i]])),
+          __line: index + 2,
+        };
+        return { ...parsed, __dataPlanilha: parsed.data ?? '' };
+      });
+      setRawRows(applyDateRuleToRows(baseRows, dataRule, dataPadrao));
+      setFileName(file.name);
+    } catch (error) {
+      push(error.message || 'Não foi possível ler a planilha.', 'error');
+      setRawRows([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const caixaMap = (value) => (caixaPadrao ? caixas.rows.find((c) => c.id === caixaPadrao) : String(value ?? '').trim() ? caixas.rows.find((c) => /^\d+$/.test(String(value).trim()) && Number(c.numero_caixa) === Number(value)) : null);
+    const catMap = (label) => (categoriaPadrao ? categorias.rows.find((c) => c.id === categoriaPadrao) : lookup(categorias.rows, label));
+    const tipoMap = (value) => (tipoPadrao ? tipos.rows.find((t) => t.nome === tipoPadrao || t.id === tipoPadrao) : String(value ?? '').trim() ? tipos.rows.find((t) => (/^\d+$/.test(String(value).trim()) && Number(t.numero_tipo) === Number(value)) || normalizeText(t.nome) === normalizeText(value)) : null);
+    const expanded = [];
+    rawRows.forEach((row, index) => {
+      const base = { ...row, __line: index + 2 };
+      if (kind === 'entrada' && (financeSheetMoney(row.dizimo) > 0 || financeSheetMoney(row.oferta) > 0)) {
+        if (financeSheetMoney(row.dizimo) > 0)
+          expanded.push({
+            ...base,
+            tipo: 'Dízimo',
+            __tipoGerado: true,
+            valor: financeSheetMoney(row.dizimo),
+          });
+        if (financeSheetMoney(row.oferta) > 0)
+          expanded.push({
+            ...base,
+            tipo: 'Oferta',
+            __tipoGerado: true,
+            valor: financeSheetMoney(row.oferta),
+          });
+      } else expanded.push(base);
+    });
+    const oldHashes = new Set(importedItems.rows.filter((i) => i.status === 'importado').map((i) => i.hash_importacao));
+    const result = expanded.map((row, index) => {
+      const data = financeSheetDate(row.data);
+      const ref = ensureReferencia(row.referencia || refPadrao, data);
+      const caixa = caixaMap(row.caixa);
+      const cat = kind === 'despesa' ? catMap(row.categoria) : null;
+      const tipo = kind === 'entrada' ? tipoMap(row.tipo) : null;
+      const requestedMemberNumber = String(row.numero_membro ?? '').trim();
+      const validMemberNumber = !requestedMemberNumber || /^\d+$/.test(requestedMemberNumber);
+      const memberByNumber = kind === 'entrada' && requestedMemberNumber && validMemberNumber ? membros.rows.find((m) => Number(m.numero_membro) === Number(requestedMemberNumber)) : null;
+      const memberByName = kind === 'entrada' && row.descricao ? membros.rows.find((m) => normalizeText(m.nome) === normalizeText(row.descricao)) : null;
+      const member = memberByNumber || (!requestedMemberNumber ? memberByName : null);
+      const memberMatch = memberByNumber ? 'id_numerico' : memberByName ? 'nome' : 'sem_vinculo';
+      const memberNameMismatch = Boolean(memberByNumber && row.descricao && normalizeText(memberByNumber.nome) !== normalizeText(row.descricao));
+      const valor = financeSheetMoney(row.valor);
+      const errors = [];
+      if (kind === 'despesa' && !row.descricao) errors.push('Descrição obrigatória');
+      if (kind === 'entrada' && !row.descricao && !requestedMemberNumber) errors.push('Informe o ID ou o nome do membro');
+      if (kind === 'entrada' && requestedMemberNumber && !validMemberNumber) errors.push('O ID do membro deve conter somente números');
+      if (kind === 'entrada' && requestedMemberNumber && validMemberNumber && !memberByNumber) errors.push('ID do membro não encontrado nesta igreja');
+      if (!data) errors.push('Data inválida');
+      if (!ref) errors.push('Referência inválida');
+      if (!caixaPadrao && row.caixa && !/^\d+$/.test(String(row.caixa).trim())) errors.push('O código da caixa deve conter somente números');
+      if (!caixa) errors.push(caixaPadrao ? 'Caixa padrão não encontrado nesta igreja' : 'Código da caixa não encontrado nesta igreja');
+      else if (!caixaEstaAtivo(caixa)) errors.push('O caixa informado está inativo e não aceita novos lançamentos');
+      if (valor <= 0) errors.push('Valor inválido');
+      if (kind === 'entrada' && !tipoPadrao && row.tipo && !row.__tipoGerado && !/^\d+$/.test(String(row.tipo).trim())) errors.push('O código do tipo deve conter somente números');
+      if (kind === 'entrada' && !tipo) errors.push(tipoPadrao ? 'Tipo padrão não encontrado nesta igreja' : 'Código do tipo não encontrado nesta igreja');
+      if (kind === 'despesa' && !cat) errors.push(categoriaPadrao ? 'Categoria padrão não encontrada nesta igreja' : 'Categoria não encontrada');
+      const item = {
+        key: `${row.__line}-${index}`,
+        kind,
+        data,
+        referencia: ref,
+        descricao: member?.nome || String(row.descricao || '').trim(),
+        descricao_planilha: String(row.descricao || '').trim(),
+        tipo_caixa_id: caixa?.id || '',
+        numero_caixa: caixa?.numero_caixa || null,
+        tipo: tipo?.nome || '',
+        numero_tipo: tipo?.numero_tipo || null,
+        membro_id: member?.id || null,
+        numero_membro: member?.numero_membro || null,
+        membro_nome: member?.nome || '',
+        membro_match: memberMatch,
+        membro_nome_divergente: memberNameMismatch,
+        categoria_id: cat?.id || null,
+        valor,
+        forma_pagamento: String(formaPadrao || row.forma_pagamento || '').trim(),
+        observacoes: String(row.observacoes || '').trim(),
+        line: row.__line,
+        errors,
+      };
+      item.hash = financeImportHash(item);
+      item.duplicate = oldHashes.has(item.hash);
+      item.selected = errors.length === 0 && !item.duplicate;
+      return item;
+    });
+    setPreview(result);
+  }, [rawRows, dataPadrao, refPadrao, caixaPadrao, tipoPadrao, categoriaPadrao, formaPadrao, caixas.rows, membros.rows, tipos.options, categorias.rows, importedItems.rows, kind]);
+  const toggle = (key) => setPreview((rows) => rows.map((r) => (r.key === key && r.errors.length === 0 && !r.duplicate ? { ...r, selected: !r.selected } : r)));
+  const selected = preview.filter((r) => r.selected);
+  const total = selected.reduce((s, r) => s + r.valor, 0);
+  const overriddenDates = preview.filter((item) => dataOriginLabel(item.line) !== 'Planilha').length;
+  const importar = async () => {
+    if (!selected.length || !tenant?.empresaId) return;
+    setBusy(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const { data: batch, error: batchError } = await supabase
+      .from('financeiro_importacoes_planilha')
+      .insert({
+        empresa_id: tenant.empresaId,
+        tipo: kind,
+        arquivo_nome: fileName,
+        referencia_padrao: refPadrao,
+        data_padrao: dataRule === 'especifica' || dataRule === 'preencher_vazias' ? dataPadrao : null,
+        status: 'processando',
+        total_linhas: preview.length,
+        total_importadas: selected.length,
+        total_ignoradas: preview.length - selected.length,
+        total_valor: total,
+        created_by: userData?.user?.id || null,
+      })
+      .select('*')
+      .single();
+    if (batchError) {
+      push(batchError.message, 'error');
+      setBusy(false);
+      return;
+    }
+    const records = selected.map((item) =>
+      kind === 'entrada'
+        ? {
+            id: crypto.randomUUID(),
+            empresa_id: tenant.empresaId,
+            data: item.data,
+            referencia: item.referencia,
+            tipo: item.tipo,
+            membro_id: item.membro_id,
+            tipo_caixa_id: item.tipo_caixa_id,
+            valor: item.valor,
+            forma_pagamento: item.forma_pagamento || 'Outros',
+            observacoes: `Importação ${batch.id}${item.observacoes ? ` · ${item.observacoes}` : ''}`,
+            created_by: userData?.user?.id || null,
+          }
+        : {
+            id: crypto.randomUUID(),
+            empresa_id: tenant.empresaId,
+            data: item.data,
+            referencia: item.referencia,
+            descricao: item.descricao,
+            categoria_id: item.categoria_id,
+            tipo_caixa_id: item.tipo_caixa_id,
+            valor: item.valor,
+            forma_pagamento: item.forma_pagamento || 'Outros',
+            observacoes: `Importação ${batch.id}${item.observacoes ? ` · ${item.observacoes}` : ''}`,
+            created_by: userData?.user?.id || null,
+          },
+    );
+    const table = kind === 'entrada' ? 'lancamentos_financeiros' : 'despesas';
+    const { error: recordError } = await supabase.from(table).insert(records);
+    if (recordError) {
+      await supabase.from('financeiro_importacoes_planilha').delete().eq('id', batch.id);
+      push(recordError.message, 'error');
+      setBusy(false);
+      return;
+    }
+    const itemRows = selected.map((item, i) => ({
+      empresa_id: tenant.empresaId,
+      importacao_id: batch.id,
+      linha_origem: item.line,
+      hash_importacao: item.hash,
+      status: 'importado',
+      dados: item,
+      lancamento_id: kind === 'entrada' ? records[i].id : null,
+      despesa_id: kind === 'despesa' ? records[i].id : null,
+      created_by: userData?.user?.id || null,
+    }));
+    const { error: itemError } = await supabase.from('financeiro_importacao_planilha_itens').insert(itemRows);
+    if (itemError) {
+      await supabase
+        .from(table)
+        .delete()
+        .in(
+          'id',
+          records.map((r) => r.id),
+        );
+      await supabase.from('financeiro_importacoes_planilha').delete().eq('id', batch.id);
+      push(itemError.message, 'error');
+      setBusy(false);
+      return;
+    }
+    await supabase.from('financeiro_importacoes_planilha').update({ status: 'concluido' }).eq('id', batch.id);
+    push(`${selected.length} lançamento(s) importado(s) com sucesso.`);
+    setRawRows([]);
+    setPreview([]);
+    setFileName('');
+    batches.reload();
+    importedItems.reload();
+    existing.reload();
+    setBusy(false);
+  };
+  const desfazer = async (batch) => {
+    if (!confirm(`Desfazer a importação ${batch.arquivo_nome}?`)) return;
+    setBusy(true);
+    const { data: items, error } = await supabase.from('financeiro_importacao_planilha_itens').select('*').eq('importacao_id', batch.id).eq('status', 'importado');
+    if (error) {
+      push(error.message, 'error');
+      setBusy(false);
+      return;
+    }
+    const ids = (items || []).map((i) => (batch.tipo === 'entrada' ? i.lancamento_id : i.despesa_id)).filter(Boolean);
+    if (ids.length) {
+      const { error: deleteError } = await supabase
+        .from(batch.tipo === 'entrada' ? 'lancamentos_financeiros' : 'despesas')
+        .delete()
+        .in('id', ids);
+      if (deleteError) {
+        push(deleteError.message, 'error');
+        setBusy(false);
+        return;
+      }
+    }
+    await supabase.from('financeiro_importacao_planilha_itens').update({ status: 'desfeito' }).eq('importacao_id', batch.id);
+    await supabase.from('financeiro_importacoes_planilha').update({ status: 'desfeito', desfeito_em: new Date().toISOString() }).eq('id', batch.id);
+    push('Lote desfeito. Somente os lançamentos desta importação foram removidos.');
+    batches.reload();
+    importedItems.reload();
+    existing.reload();
+    setBusy(false);
+  };
+  return (
+    <div className="sheetImporter">
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero compactHero">
+        <div>
+          <span className="eyebrow">Importação histórica</span>
+          <h1>Importar {kind === 'entrada' ? 'entradas' : 'despesas'} por planilha</h1>
+          <p>Carregue CSV ou XLSX, confira todas as linhas e importe somente os registros válidos.</p>
+        </div>
+        <div className="sheetImportActions">
+          {kind === 'entrada' && (
+            <button className="secondary" onClick={baixarMembrosComIds}>
+              Baixar membros com IDs
+            </button>
+          )}
+          <button className="secondary" onClick={baixarCodigosFinanceiros}>
+            Baixar códigos de tipo e caixa
+          </button>
+          <button className="secondary" onClick={modelo}>
+            Baixar modelo da planilha
+          </button>
+        </div>
+      </div>
+      <section className="card">
+        <div className="grid cols4">
+          <div className="field">
+            <label>Arquivo CSV/XLSX</label>
+            <input
+              type="file"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={(e) => {
+                readFile(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+          </div>
+          <div className="field">
+            <label>Referência padrão</label>
+            <input type="month" value={refPadrao} onChange={(e) => setRefPadrao(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Regra da data</label>
+            <select value={dataRule} onChange={(e) => changeDataRule(e.target.value)}>
+              <option value="planilha">Usar a data da planilha</option>
+              <option value="especifica">Usar uma data específica</option>
+              <option value="hoje">Usar a data de hoje</option>
+              <option value="preencher_vazias">Planilha; preencher somente vazias</option>
+            </select>
+            <small className="muted">A referência financeira continua sendo definida separadamente.</small>
+          </div>
+          {(dataRule === 'especifica' || dataRule === 'preencher_vazias') && (
+            <div className="field">
+              <label>{dataRule === 'especifica' ? 'Data para todas as linhas' : 'Data para células vazias'}</label>
+              <input type="date" value={dataPadrao} onChange={(e) => changeDataPadrao(e.target.value)} />
+            </div>
+          )}
+          {dataRule === 'hoje' && (
+            <div className="field">
+              <label>Data aplicada</label>
+              <div className="infoBox compactInfoBox">Hoje — {fmtDate(todayISO())}</div>
+            </div>
+          )}
+          <div className="field">
+            <label>Forma padrão</label>
+            <select value={formaPadrao} onChange={(e) => setFormaPadrao(e.target.value)}>
+              <option value="">Selecione</option>
+              {formas.options.map((o) => (
+                <option key={o.value} value={o.label}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Caixa padrão</label>
+            <select value={caixaPadrao} onChange={(e) => setCaixaPadrao(e.target.value)}>
+              <option value="">Usar coluna da planilha</option>
+              {caixas.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {kind === 'entrada' ? (
+            <div className="field">
+              <label>Tipo padrão</label>
+              <select value={tipoPadrao} onChange={(e) => setTipoPadrao(e.target.value)}>
+                <option value="">Usar coluna da planilha</option>
+                {tipos.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="field">
+              <label>Categoria padrão</label>
+              <select value={categoriaPadrao} onChange={(e) => setCategoriaPadrao(e.target.value)}>
+                <option value="">Usar coluna da planilha</option>
+                {categorias.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        {fileName && (
+          <div className="infoBox">
+            <b>{fileName}</b>
+            <p>{preview.length} linha(s) preparada(s). Linhas inválidas e duplicadas ficam desmarcadas.</p>
+          </div>
+        )}
+      </section>
+      {preview.length > 0 && (
+        <section className="card">
+          {overriddenDates > 0 && (
+            <div className="infoBox">
+              <b>Regra de data aplicada</b>
+              <p>{overriddenDates} linha(s) receberão uma data diferente da célula original da planilha. Confira a origem exibida abaixo antes de importar.</p>
+            </div>
+          )}
+          <div className="toolbar">
+            <div>
+              <h3>Conferência antes da importação</h3>
+              <p className="muted">
+                Selecionados: {selected.length} · Total: {fmtMoney(total)}
+              </p>
+            </div>
+            <button disabled={busy || !selected.length} onClick={importar}>
+              {busy ? 'Processando…' : `Importar ${selected.length} selecionado(s)`}
+            </button>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Linha</th>
+                  <th>Data/Referência</th>
+                  <th>Descrição</th>
+                  <th>{kind === 'entrada' ? 'Tipo/Membro' : 'Categoria'}</th>
+                  <th>Caixa</th>
+                  <th>Valor</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.map((item) => (
+                  <tr key={item.key} className={item.errors.length || item.duplicate ? 'importInvalidRow' : ''}>
+                    <td>
+                      <input type="checkbox" checked={item.selected} disabled={item.errors.length > 0 || item.duplicate} onChange={() => toggle(item.key)} />
+                    </td>
+                    <td>{item.line}</td>
+                    <td>
+                      {fmtDate(item.data)}
+                      <small className="blockText importDateOrigin">{dataOriginLabel(item.line)}</small>
+                      <small className="blockText muted">{fmtReferencia(item.referencia)}</small>
+                    </td>
+                    <td>
+                      <b>{item.descricao}</b>
+                    </td>
+                    <td>
+                      {kind === 'entrada' ? (
+                        <div>
+                          <b>
+                            Tipo {item.numero_tipo}: {item.tipo}
+                          </b>
+                          <small className="blockText">{item.membro_nome || 'Sem membro vinculado'}</small>
+                          {item.numero_membro && <small className="blockText muted">ID: {item.numero_membro}</small>}
+                          {item.membro_nome_divergente && <small className="blockText importWarning">Nome da planilha diferente; ID confirmado</small>}
+                        </div>
+                      ) : (
+                        categorias.rows.find((c) => c.id === item.categoria_id)?.nome || '—'
+                      )}
+                    </td>
+                    <td>{caixas.rows.find((c) => c.id === item.tipo_caixa_id)?.nome || '—'}</td>
+                    <td className={kind === 'entrada' ? 'moneyIncome' : 'moneyExpense'}>{fmtMoney(item.valor)}</td>
+                    <td>{item.duplicate ? <span className="badge warning">Duplicado</span> : item.errors.length ? <span className="importErrors">{item.errors.join('; ')}</span> : <span className="badge success">Pronto</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+      <section className="card">
+        <h3>Histórico e reversão</h3>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Arquivo</th>
+                <th>Tipo</th>
+                <th>Registros</th>
+                <th>Total</th>
+                <th>Status</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {batches.rows
+                .filter((b) => b.tipo === kind)
+                .map((b) => (
+                  <tr key={b.id}>
+                    <td>{new Date(b.created_at).toLocaleString('pt-BR')}</td>
+                    <td>{b.arquivo_nome}</td>
+                    <td>{b.tipo}</td>
+                    <td>{b.total_importadas}</td>
+                    <td>{fmtMoney(b.total_valor)}</td>
+                    <td>
+                      <span className="badge">{b.status}</span>
+                    </td>
+                    <td>
+                      {b.status === 'concluido' && (
+                        <button className="smallBtn red" disabled={busy} onClick={() => desfazer(b)}>
+                          Desfazer lote
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              {!batches.rows.some((b) => b.tipo === kind) && (
+                <tr>
+                  <td colSpan="7" className="center muted">
+                    Nenhuma importação realizada.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FinanceiroLivroCaixaPage() {
+  const tenant = React.useContext(TenantContext);
+  const igrejaRecibo = useChurchReceiptIdentity();
+  const { referencia, caixaIds } = useGlobalFilters();
+  const access = usePermissions();
+  const { toasts, push, close } = useToasts();
+  const [filter, setFilter] = useFinancialPeriodFilter(referencia);
+  const [detalhe, setDetalhe] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const globalFilters = useMemo(() => ({ referencia, caixaIds }), [referencia, caixaIds]);
+  const receitasTable = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+  });
+  const despesasTable = useTable('despesas', {
+    order: 'data',
+    ascending: false,
+  });
+  const transferenciasTable = useTable('transferencias_caixas', {
+    order: 'data',
+    ascending: false,
+  });
+  const fechamentos = useTable('fechamentos_mensais', {
+    order: 'ano',
+    ascending: false,
+  });
+  const caixas = useLookup('tipos_caixa');
+  const categorias = useLookup('categorias_despesas');
+  const membros = useLookup('membros');
+  const credores = useLookup('credores');
+  const tiposReceita = useLookupLabels('tipos_receita');
+  const formasPagamento = useLookupLabels('formas_pagamento');
+  const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((item) => [item.id, item.nome])), [caixas.rows]);
+  const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((item) => [item.id, item.nome])), [categorias.rows]);
+  const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((item) => [item.id, item.nome])), [membros.rows]);
+  const credorMap = useMemo(() => Object.fromEntries(credores.rows.map((item) => [item.id, item.nome])), [credores.rows]);
+  const credorById = useMemo(() => Object.fromEntries(credores.rows.map((item) => [item.id, item])), [credores.rows]);
+  const receitasFiltradas = useMemo(() => (receitasTable.rows || []).filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [receitasTable.rows, filter, globalFilters]);
+  const despesasFiltradas = useMemo(() => (despesasTable.rows || []).filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [despesasTable.rows, filter, globalFilters]);
+  const transferenciasFiltradas = useMemo(() => (transferenciasTable.rows || []).filter((r) => r.status !== 'estornada' && (rowMatchesFinanceFilter({ ...r, tipo_caixa_id: r.caixa_origem_id }, filter, globalFilters) || rowMatchesFinanceFilter({ ...r, tipo_caixa_id: r.caixa_destino_id }, filter, globalFilters))), [transferenciasTable.rows, filter, globalFilters]);
+  const totalReceitas = receitasFiltradas.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const totalDespesas = despesasFiltradas.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const resumo = {
+    receitas: totalReceitas,
+    despesas: totalDespesas,
+    saldo: totalReceitas - totalDespesas,
+    registros: receitasFiltradas.length + despesasFiltradas.length,
+  };
+  const movimentos = useMemo(
+    () =>
+      [
+        ...receitasFiltradas.map((r) => ({
+          ...r,
+          origemRegistro: 'receita',
+          movimento: 'Entrada',
+          sinal: 1,
+          categoria: r.tipo || r.tipo_receita || r.origem || 'Contribuição',
+        })),
+        ...despesasFiltradas.map((r) => ({
+          ...r,
+          origemRegistro: 'despesa',
+          movimento: 'Saída',
+          sinal: -1,
+          categoria: categoriaMap[r.categoria_id] || 'Sem categoria',
+        })),
+        ...transferenciasFiltradas.flatMap((r) => [
+          {
+            ...r,
+            id: `${r.id}-origem`,
+            transferenciaRealId: r.id,
+            tipo_caixa_id: r.caixa_origem_id,
+            origemRegistro: 'transferencia',
+            movimento: 'Transferência enviada',
+            sinal: -1,
+            categoria: 'Movimentação interna',
+            descricao: r.descricao || 'Transferência entre caixas',
+          },
+          {
+            ...r,
+            id: `${r.id}-destino`,
+            transferenciaRealId: r.id,
+            tipo_caixa_id: r.caixa_destino_id,
+            origemRegistro: 'transferencia',
+            movimento: 'Transferência recebida',
+            sinal: 1,
+            categoria: 'Movimentação interna',
+            descricao: r.descricao || 'Transferência entre caixas',
+          },
+        ]),
+      ].sort((a, b) => String(b.data || '').localeCompare(String(a.data || ''))),
+    [receitasFiltradas, despesasFiltradas, transferenciasFiltradas, categoriaMap],
+  );
+  const isMovimentoFechado = (r) => {
+    const ref = ensureReferencia(r.referencia || referenciaFromDate(r.data));
+    const [ano, mes] = String(ref).split('-').map(Number);
+    return fechamentos.rows.some((f) => Number(f.ano) === ano && Number(f.mes) === mes && f.tipo_caixa_id === r.tipo_caixa_id && f.status === 'fechado');
+  };
+  const origemLabel = (r) => (r.importacao_id || r.hash_importacao ? 'Importação bancária (OFX)' : String(r.observacoes || '').startsWith('Importação ') ? 'Importação por planilha' : 'Lançamento manual');
+  const abrirEdicao = (r) => {
+    if (!access.can('financeiro', 'update')) {
+      push('Seu perfil não tem permissão para editar lançamentos.', 'error');
+      return;
+    }
+    if (isMovimentoFechado(r)) {
+      push('Este período está fechado. Reabra o fechamento mensal antes de editar.', 'error');
+      return;
+    }
+    setDetalhe(null);
+    setEditando({
+      ...r,
+      referencia: ensureReferencia(r.referencia || referenciaFromDate(r.data)),
+    });
+  };
+  const salvarEdicao = async (event) => {
+    event.preventDefault();
+    if (!editando || saving) return;
+    if (!editando.data || !editando.referencia || !editando.tipo_caixa_id || Number(editando.valor) <= 0) {
+      push('Preencha data, referência, caixa e um valor maior que zero.', 'error');
+      return;
+    }
+    const receita = editando.origemRegistro === 'receita';
+    if (receita && !editando.tipo) {
+      push('Selecione o tipo de entrada.', 'error');
+      return;
+    }
+    if (!receita && (!editando.descricao || !editando.categoria_id)) {
+      push('Preencha a descrição e a categoria da despesa.', 'error');
+      return;
+    }
+    const payload = receita
+      ? {
+          data: editando.data,
+          referencia: editando.referencia,
+          tipo: editando.tipo,
+          membro_id: editando.membro_id || null,
+          tipo_caixa_id: editando.tipo_caixa_id,
+          valor: Number(editando.valor),
+          forma_pagamento: editando.forma_pagamento || null,
+          culto: editando.culto || null,
+          observacoes: editando.observacoes || null,
+        }
+      : {
+          data: editando.data,
+          referencia: editando.referencia,
+          descricao: editando.descricao,
+          categoria_id: editando.categoria_id,
+          credor_id: editando.credor_id || null,
+          tipo_caixa_id: editando.tipo_caixa_id,
+          valor: Number(editando.valor),
+          forma_pagamento: editando.forma_pagamento || null,
+          observacoes: editando.observacoes || null,
+        };
+    setSaving(true);
+    const table = receita ? 'lancamentos_financeiros' : 'despesas';
+    const { error } = await supabase.from(table).update(payload).eq('id', editando.id);
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    await (receita ? receitasTable.reload() : despesasTable.reload());
+    setEditando(null);
+    push('Movimentação atualizada. Totais do Livro Caixa recalculados.');
+  };
+  const registrarEmissaoReciboDespesa = async (r, numero) => {
+    if (!supabase || r.origemRegistro !== 'despesa') return;
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      await supabase.from('auditoria_logs').insert({
+        empresa_id: tenant?.empresaId || null,
+        usuario_id: authData?.user?.id || null,
+        usuario_email: authData?.user?.email || null,
+        acao: 'INSERT',
+        tabela: 'despesas_recibos',
+        registro_id: String(r.id || ''),
+        descricao: `Recibo de despesa ${numero} emitido pelo Livro Caixa.`,
+        dados_depois: {
+          despesa_id: r.id,
+          numero_recibo: numero,
+          valor: Number(r.valor) || 0,
+          referencia: r.referencia || referenciaFromDate(r.data),
+          credor_id: r.credor_id || null,
+        },
+        origem: 'livro_caixa',
+        user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+      });
+    } catch (error) {
+      console.warn('Não foi possível registrar a emissão do recibo na auditoria.', error);
+    }
+  };
+  const emitirRecibo = (r, vias = 2) => {
+    const despesa = r.origemRegistro === 'despesa';
+    const numero = despesa ? expenseReceiptNumber(r) : incomeReceiptNumber(r);
+    abrirRecibo({
+      igreja: igrejaRecibo,
+      modo: despesa ? 'pagamento' : 'recebimento',
+      numero,
+      nome: despesa ? credorMap[r.credor_id] || r.descricao || 'Credor / prestador' : membroMap[r.membro_id] || 'Contribuinte',
+      credor: despesa ? credorById[r.credor_id] || null : null,
+      valor: r.valor,
+      referencia: r.referencia || referenciaFromDate(r.data),
+      tipo: despesa ? r.categoria || r.descricao : r.tipo || r.categoria,
+      data: r.data,
+      caixa: caixaMap[r.tipo_caixa_id] || '—',
+      historico: despesa ? [r.descricao, r.observacoes].filter(Boolean).join(' · ') : r.observacoes || r.culto || '',
+      formaPagamento: despesa ? r.forma_pagamento || '' : '',
+      vias,
+      cancelado: r.status === 'cancelado',
+    });
+    if (despesa) void registrarEmissaoReciboDespesa(r, numero);
+  };
+  return (
+    <div className="financeLivroPage">
+      <ToastStack toasts={toasts} close={close} />
+      <FinancePeriodPanel filter={filter} setFilter={setFilter} referenciaGlobal={referencia} resumo={resumo} compact />
+      <div className="financeSplitNotice">
+        Extrato unificado de <b>{financialFilterLabel(filter, referencia)}</b>. Entradas e saídas aparecem na mesma linha do tempo para facilitar conferência e auditoria.
+      </div>
+      <section className="card unifiedLedger">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">Livro caixa</span>
+            <h2>Movimentações</h2>
+          </div>
+          <span className="badge">{movimentos.length} registros</span>
+        </div>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Descrição</th>
+                <th>Categoria</th>
+                <th>Caixa</th>
+                <th>Movimento</th>
+                <th className="right">Valor</th>
+                <th className="center">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movimentos.map((r) => (
+                <tr key={`${r.movimento}-${r.id}`} className="ledgerClickableRow" onClick={() => setDetalhe(r)}>
+                  <td>{fmtDate(r.data)}</td>
+                  <td>
+                    <b>{r.descricao || r.tipo || r.historico || r.nome || 'Movimentação'}</b>
+                    <small className="muted blockText">{r.origemRegistro === 'transferencia' ? `${caixaMap[r.caixa_origem_id] || '—'} → ${caixaMap[r.caixa_destino_id] || '—'}` : r.origemRegistro === 'receita' ? membroMap[r.membro_id] || r.forma_pagamento || 'Registro financeiro' : credorMap[r.credor_id] || r.forma_pagamento || 'Registro financeiro'}</small>
+                  </td>
+                  <td>
+                    <span className="ledgerTag">{r.categoria}</span>
+                  </td>
+                  <td>{caixaMap[r.tipo_caixa_id] || '—'}</td>
+                  <td>
+                    <span className={`movementBadge ${r.sinal > 0 ? 'income' : 'expense'}`}>{r.movimento}</span>
+                  </td>
+                  <td className={`right ${r.sinal > 0 ? 'moneyIncome' : 'moneyExpense'}`}>
+                    <b>
+                      {r.sinal < 0 ? '− ' : '+ '}
+                      {fmtMoney(r.valor)}
+                    </b>
+                  </td>
+                  <td className="center">
+                    <div className="ledgerRowActions" onClick={(e) => e.stopPropagation()}>
+                      <button className="smallBtn secondary" onClick={() => setDetalhe(r)}>
+                        Detalhes
+                      </button>
+                      {r.origemRegistro === 'despesa' && (
+                        <button className="smallBtn" title="Imprimir recibo de pagamento" onClick={() => emitirRecibo(r)}>
+                          Recibo
+                        </button>
+                      )}
+                      {r.origemRegistro !== 'transferencia' && access.can('financeiro', 'update') && (
+                        <button className="smallBtn secondary" disabled={isMovimentoFechado(r)} title={isMovimentoFechado(r) ? 'Período fechado' : 'Editar lançamento'} onClick={() => abrirEdicao(r)}>
+                          Editar
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!movimentos.length && (
+                <tr>
+                  <td colSpan="7">
+                    <div className="emptyState">
+                      <b>Nenhuma movimentação no período</b>
+                      <span>Ajuste os filtros ou registre uma nova entrada ou saída.</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {detalhe && (
+        <Modal title="Detalhes da movimentação" wide onClose={() => setDetalhe(null)}>
+          <div className="ledgerDetailGrid">
+            <div>
+              <span>Movimento</span>
+              <b>
+                <span className={`movementBadge ${detalhe.sinal > 0 ? 'income' : 'expense'}`}>{detalhe.movimento}</span>
+              </b>
+            </div>
+            <div>
+              <span>Valor</span>
+              <b className={detalhe.sinal > 0 ? 'moneyIncome' : 'moneyExpense'}>{fmtMoney(detalhe.valor)}</b>
+            </div>
+            <div>
+              <span>Data</span>
+              <b>{fmtDate(detalhe.data)}</b>
+            </div>
+            <div>
+              <span>Referência</span>
+              <b>{fmtReferencia(detalhe.referencia || referenciaFromDate(detalhe.data))}</b>
+            </div>
+            <div>
+              <span>Categoria / tipo</span>
+              <b>{detalhe.categoria}</b>
+            </div>
+            <div>
+              <span>Caixa</span>
+              <b>{caixaMap[detalhe.tipo_caixa_id] || '—'}</b>
+            </div>
+            <div>
+              <span>{detalhe.origemRegistro === 'receita' ? 'Membro' : 'Credor'}</span>
+              <b>{detalhe.origemRegistro === 'receita' ? membroMap[detalhe.membro_id] || 'Não vinculado' : credorMap[detalhe.credor_id] || 'Não vinculado'}</b>
+            </div>
+            <div>
+              <span>Forma de pagamento</span>
+              <b>{detalhe.forma_pagamento || '—'}</b>
+            </div>
+            <div>
+              <span>Origem do registro</span>
+              <b>{origemLabel(detalhe)}</b>
+            </div>
+            <div>
+              <span>Status do período</span>
+              <b>{isMovimentoFechado(detalhe) ? 'Fechado para edição' : 'Aberto'}</b>
+            </div>
+            <div className="full">
+              <span>Descrição / observações</span>
+              <b>{detalhe.descricao || detalhe.observacoes || detalhe.culto || '—'}</b>
+            </div>
+          </div>
+          <div className="modalActions">
+            <button className="secondary" onClick={() => setDetalhe(null)}>
+              Fechar
+            </button>
+            {detalhe.origemRegistro !== 'transferencia' && (
+              <button className="secondary" onClick={() => emitirRecibo(detalhe)}>
+                {detalhe.origemRegistro === 'despesa' ? 'Imprimir recibo da despesa' : 'Emitir recibo'}
+              </button>
+            )}
+            {access.can('financeiro', 'update') && (
+              <button disabled={isMovimentoFechado(detalhe)} onClick={() => abrirEdicao(detalhe)}>
+                Editar lançamento
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+      {editando && (
+        <Modal title={`Editar ${editando.origemRegistro === 'receita' ? 'entrada' : 'despesa'}`} wide onClose={() => !saving && setEditando(null)}>
+          <form onSubmit={salvarEdicao}>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Data *</label>
+                <input type="date" value={editando.data || ''} onChange={(e) => setEditando({ ...editando, data: e.target.value })} />
+              </div>
+              <div className="field">
+                <label>Referência *</label>
+                <input type="month" value={editando.referencia || ''} onChange={(e) => setEditando({ ...editando, referencia: e.target.value })} />
+              </div>
+              {editando.origemRegistro === 'receita' ? (
+                <>
+                  <div className="field">
+                    <label>Tipo de entrada *</label>
+                    <select value={editando.tipo || ''} onChange={(e) => setEditando({ ...editando, tipo: e.target.value })}>
+                      <option value="">Selecione</option>
+                      {tiposReceita.options.map((o) => (
+                        <option key={o.value} value={o.label}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Membro</label>
+                    <select value={editando.membro_id || ''} onChange={(e) => setEditando({ ...editando, membro_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {membros.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="field">
+                    <label>Descrição *</label>
+                    <input value={editando.descricao || ''} onChange={(e) => setEditando({ ...editando, descricao: e.target.value })} />
+                  </div>
+                  <div className="field">
+                    <label>Categoria *</label>
+                    <select
+                      value={editando.categoria_id || ''}
+                      onChange={(e) =>
+                        setEditando({
+                          ...editando,
+                          categoria_id: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">Selecione</option>
+                      {categorias.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Credor</label>
+                    <select value={editando.credor_id || ''} onChange={(e) => setEditando({ ...editando, credor_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {credores.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+              <div className="field">
+                <label>Caixa *</label>
+                <select value={editando.tipo_caixa_id || ''} onChange={(e) => setEditando({ ...editando, tipo_caixa_id: e.target.value })}>
+                  <option value="">Selecione</option>
+                  {caixas.options.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>Valor *</label>
+                <MoneyInput value={editando.valor} onChange={(valor) => setEditando({ ...editando, valor })} className={editando.origemRegistro === 'receita' ? 'incomeMoney' : 'expenseMoney'} />
+              </div>
+              <div className="field">
+                <label>Forma de pagamento</label>
+                <select
+                  value={editando.forma_pagamento || ''}
+                  onChange={(e) =>
+                    setEditando({
+                      ...editando,
+                      forma_pagamento: e.target.value,
+                    })
+                  }
+                >
+                  <option value="">Selecione</option>
+                  {formasPagamento.options.map((o) => (
+                    <option key={o.value} value={o.label}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {editando.origemRegistro === 'receita' && (
+                <div className="field full">
+                  <label>Culto / evento</label>
+                  <input value={editando.culto || ''} onChange={(e) => setEditando({ ...editando, culto: e.target.value })} />
+                </div>
+              )}
+              <div className="field full">
+                <label>Observações</label>
+                <textarea value={editando.observacoes || ''} onChange={(e) => setEditando({ ...editando, observacoes: e.target.value })} />
+              </div>
+            </div>
+            <div className="modalActions">
+              <button type="button" className="secondary" onClick={() => setEditando(null)} disabled={saving}>
+                Cancelar
+              </button>
+              <button type="submit" disabled={saving}>
+                {saving ? 'Salvando…' : 'Salvar alterações'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function FechamentoPage({ toastApi }) {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const { referencia: referenciaGlobal } = useGlobalFilters();
+  const initialRef = referenciaParts(referenciaGlobal || currentReferencia());
+  const [mes, setMes] = useState(initialRef.mes);
+  const [ano, setAno] = useState(initialRef.ano);
+  useEffect(() => {
+    const next = referenciaParts(referenciaGlobal || currentReferencia());
+    setMes(next.mes);
+    setAno(next.ano);
+  }, [referenciaGlobal]);
+  const caixas = useLookup('tipos_caixa');
+  const [resumo, setResumo] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [selectedCaixas, setSelectedCaixas] = useState([]);
+  const [secureAction, setSecureAction] = useState(null);
+  const [reopenTarget, setReopenTarget] = useState(null);
+  const [justificativa, setJustificativa] = useState('');
+  const { toasts, push, close } = useToasts();
+
+  const calcular = useCallback(async () => {
+    if (!supabase || caixas.rows.length === 0) return;
+    setLoading(true);
+    const inicio = `${ano}-${String(mes).padStart(2, '0')}-01`;
+    const fimDate = new Date(ano, mes, 0).getDate();
+    const fim = `${ano}-${String(mes).padStart(2, '0')}-${String(fimDate).padStart(2, '0')}`;
+
+    const referencia = `${ano}-${String(mes).padStart(2, '0')}`;
+
+    const [{ data: lanc }, { data: desp }, { data: transf }, { data: fech }] = await Promise.all([supabase.from('lancamentos_financeiros').select('tipo_caixa_id,valor,data,referencia'), supabase.from('despesas').select('tipo_caixa_id,categoria_id,valor,data,referencia'), supabase.from('transferencias_caixas').select('caixa_origem_id,caixa_destino_id,valor,data,referencia,status'), supabase.from('fechamentos_mensais').select('*').eq('mes', mes).eq('ano', ano)]);
+
+    const isRef = (r) => (r.referencia || referenciaFromDate(r.data)) === referencia;
+    const lancPeriodo = (lanc || []).filter(isRef);
+    const despPeriodo = (desp || []).filter(isRef);
+    const transfPeriodo = (transf || []).filter((r) => isRef(r) && transferenciaAtiva(r));
+
+    const linhas = caixas.rows.map((c) => {
+      const entradas = lancPeriodo.filter((l) => l.tipo_caixa_id === c.id).reduce((s, l) => s + Number(l.valor), 0);
+      const saidas = despPeriodo.filter((d) => d.tipo_caixa_id === c.id).reduce((s, d) => s + Number(d.valor), 0);
+      const transferenciasEntrada = transfPeriodo.filter((t) => t.caixa_destino_id === c.id).reduce((s, t) => s + Number(t.valor), 0);
+      const transferenciasSaida = transfPeriodo.filter((t) => t.caixa_origem_id === c.id).reduce((s, t) => s + Number(t.valor), 0);
+      const pendencias = despPeriodo.filter((d) => d.tipo_caixa_id === c.id && !d.categoria_id).length;
+      const existente = (fech || []).find((f) => f.tipo_caixa_id === c.id);
+      const divergenciaPosFechamento = existente?.status === 'fechado' && (Math.abs(Number(existente.total_entradas || 0) - entradas) > 0.005 || Math.abs(Number(existente.total_despesas || 0) - saidas) > 0.005 || Math.abs(Number(existente.total_transferencias_entrada || 0) - transferenciasEntrada) > 0.005 || Math.abs(Number(existente.total_transferencias_saida || 0) - transferenciasSaida) > 0.005);
+      return {
+        caixa: c,
+        entradas,
+        saidas,
+        transferenciasEntrada,
+        transferenciasSaida,
+        saldo: entradas - saidas + transferenciasEntrada - transferenciasSaida,
+        pendencias: pendencias + (divergenciaPosFechamento ? 1 : 0),
+        divergenciaPosFechamento,
+        status: existente?.status || 'aberto',
+        fechamentoId: existente?.id,
+      };
+    });
+    setResumo(linhas);
+    setLoading(false);
+  }, [mes, ano, caixas.rows]);
+
+  useEffect(() => {
+    calcular();
+  }, [calcular]);
+
+  const payloadFechamento = (linha, userId) => ({
+    empresa_id: tenant?.empresaId,
+    mes,
+    ano,
+    tipo_caixa_id: linha.caixa.id,
+    total_entradas: linha.entradas,
+    total_despesas: linha.saidas,
+    total_transferencias_entrada: linha.transferenciasEntrada || 0,
+    total_transferencias_saida: linha.transferenciasSaida || 0,
+    status: 'fechado',
+    observacoes: justificativa.trim() || null,
+    fechado_por: userId,
+    fechado_em: new Date().toISOString(),
+  });
+
+  const executarFechamento = async (linhas) => {
+    const { data: userData } = await supabase.auth.getUser();
+    const payloads = linhas.map((linha) => payloadFechamento(linha, userData?.user?.id));
+    const { error } = await supabase.from('fechamentos_mensais').upsert(payloads, { onConflict: 'empresa_id,mes,ano,tipo_caixa_id' });
+    if (error) throw error;
+    push(`${linhas.length} caixa(s) fechado(s) com segurança.`);
+    setSecureAction(null);
+    setBatchOpen(false);
+    setSelectedCaixas([]);
+    setJustificativa('');
+    await calcular();
+  };
+
+  const fechar = (linha) => {
+    if (!access.can('financeiro', 'create')) {
+      push('Seu perfil não permite fechar caixas.', 'error');
+      return;
+    }
+    setSecureAction({
+      title: `Autorizar fechamento — ${linha.caixa.nome}`,
+      label: 'Fechar caixa',
+      run: () => executarFechamento([linha]),
+    });
+  };
+
+  const abrirFechamentoLote = () => {
+    const abertas = resumo.filter((l) => l.status !== 'fechado');
+    if (!abertas.length) {
+      push('Todos os caixas desta competência já estão fechados.');
+      return;
+    }
+    setSelectedCaixas(abertas.filter((l) => l.pendencias === 0).map((l) => l.caixa.id));
+    setJustificativa('');
+    setBatchOpen(true);
+  };
+
+  const confirmarFechamentoLote = () => {
+    const linhas = resumo.filter((l) => selectedCaixas.includes(l.caixa.id) && l.status !== 'fechado');
+    if (!linhas.length) {
+      push('Selecione pelo menos um caixa pronto para fechamento.', 'error');
+      return;
+    }
+    setBatchOpen(false);
+    setSecureAction({
+      title: `Autorizar fechamento de ${linhas.length} caixa(s)`,
+      label: 'Fechar competência',
+      run: () => executarFechamento(linhas),
+    });
+  };
+
+  const reabrir = (linha) => {
+    if (!access.can('financeiro', 'update')) {
+      push('Seu perfil não permite reabrir caixas.', 'error');
+      return;
+    }
+    setReopenTarget(linha);
+    setJustificativa('');
+  };
+  const confirmarReabertura = () => {
+    if (justificativa.trim().length < 8) {
+      push('Informe uma justificativa com pelo menos 8 caracteres.', 'error');
+      return;
+    }
+    const linha = reopenTarget;
+    setReopenTarget(null);
+    setSecureAction({
+      title: `Autorizar reabertura — ${linha.caixa.nome}`,
+      label: 'Reabrir caixa',
+      run: async () => {
+        const { error } = await supabase
+          .from('fechamentos_mensais')
+          .update({
+            status: 'aberto',
+            observacoes: `REABERTURA: ${justificativa.trim()}`,
+            fechado_por: null,
+            fechado_em: null,
+          })
+          .eq('id', linha.fechamentoId);
+        if (error) throw error;
+        push('Caixa reaberto. A justificativa foi registrada na auditoria.');
+        setSecureAction(null);
+        setJustificativa('');
+        await calcular();
+      },
+    });
+  };
+
+  const totalGeral = resumo.reduce((s, l) => s + l.saldo, 0);
+  const totalFechados = resumo.filter((l) => l.status === 'fechado').length;
+  const totalAbertos = resumo.length - totalFechados;
+  const totalPendencias = resumo.reduce((s, l) => s + l.pendencias, 0);
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2 style={{ margin: 0 }}>Fechamento Mensal por Referência</h2>
+          <small className="muted">Confira os caixas e proteja a competência contra alterações posteriores.</small>
+        </div>
+        <div className="row">
+          <select value={mes} onChange={(e) => setMes(Number(e.target.value))}>
+            {MESES.map((m, i) => (
+              <option key={m} value={i + 1}>
+                {m}
+              </option>
+            ))}
+          </select>
+          <input type="number" value={ano} onChange={(e) => setAno(Number(e.target.value))} style={{ width: 100 }} />
+          <button className="green" disabled={loading || totalAbertos === 0} onClick={abrirFechamentoLote}>
+            Fechar competência
+          </button>
+        </div>
+      </div>
+      <div className="grid auto fechamentoKpis" style={{ marginBottom: 18 }}>
+        <div className="card kpi">
+          <div className="label">Saldo Geral do Período</div>
+          <div className="value">{fmtMoney(totalGeral)}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Caixas fechados</div>
+          <div className="value">
+            {totalFechados} de {resumo.length}
+          </div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Caixas abertos</div>
+          <div className="value">{totalAbertos}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Pendências encontradas</div>
+          <div className="value">{totalPendencias}</div>
+        </div>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Caixa</th>
+              <th>Entradas</th>
+              <th>Despesas</th>
+              <th>Transferências</th>
+              <th>Saldo</th>
+              <th>Conferência</th>
+              <th>Status</th>
+              <th className="center">Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={8} className="center">
+                  Calculando…
+                </td>
+              </tr>
+            )}
+            {!loading && resumo.length === 0 && (
+              <tr>
+                <td colSpan={8} className="center muted">
+                  Cadastre um Tipo de Caixa para começar.
+                </td>
+              </tr>
+            )}
+            {resumo.map((l) => (
+              <tr key={l.caixa.id}>
+                <td>{l.caixa.nome}</td>
+                <td>{fmtMoney(l.entradas)}</td>
+                <td>{fmtMoney(l.saidas)}</td>
+                <td className={l.transferenciasEntrada - l.transferenciasSaida < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(l.transferenciasEntrada - l.transferenciasSaida)}</td>
+                <td className={l.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}>
+                  <b>{fmtMoney(l.saldo)}</b>
+                </td>
+                <td>
+                  {l.divergenciaPosFechamento ? (
+                    <span className="badge Pendente" title="Existem lançamentos diferentes dos totais gravados no fechamento">
+                      Alterado após fechar
+                    </span>
+                  ) : l.pendencias ? (
+                    <span className="badge Pendente">{l.pendencias} pendência(s)</span>
+                  ) : (
+                    <span className="badge Recebido">Pronto</span>
+                  )}
+                </td>
+                <td>
+                  <span className={`badge ${l.status === 'fechado' ? 'Recebido' : 'Pendente'}`}>{l.status === 'fechado' ? 'Fechado' : 'Aberto'}</span>
+                </td>
+                <td className="center">
+                  {l.status === 'fechado' ? (
+                    <button className="smallBtn secondary" onClick={() => reabrir(l)}>
+                      Reabrir
+                    </button>
+                  ) : (
+                    <button className="smallBtn green" onClick={() => fechar(l)}>
+                      Fechar mês
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {batchOpen && (
+        <Modal title={`Fechar competência — ${MESES[mes - 1]}/${ano}`} wide onClose={() => setBatchOpen(false)}>
+          <div className="infoBox">
+            <b>Conferência antes do fechamento</b>
+            <br />
+            Selecione os caixas que serão protegidos. Caixas com pendências ficam desmarcados para revisão.
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Caixa</th>
+                  <th>Saldo</th>
+                  <th>Conferência</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumo
+                  .filter((l) => l.status !== 'fechado')
+                  .map((l) => (
+                    <tr key={l.caixa.id}>
+                      <td>
+                        <input type="checkbox" disabled={l.pendencias > 0} checked={selectedCaixas.includes(l.caixa.id)} onChange={() => setSelectedCaixas((old) => (old.includes(l.caixa.id) ? old.filter((id) => id !== l.caixa.id) : [...old, l.caixa.id]))} />
+                      </td>
+                      <td>
+                        <b>{l.caixa.nome}</b>
+                      </td>
+                      <td className={l.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(l.saldo)}</td>
+                      <td>{l.pendencias ? <span className="badge Pendente">Revisar {l.pendencias}</span> : <span className="badge Recebido">Pronto</span>}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="field">
+            <label>Observação do fechamento (opcional)</label>
+            <textarea value={justificativa} onChange={(e) => setJustificativa(e.target.value)} placeholder="Ex.: Conferido com extratos e documentos do mês." />
+          </div>
+          <div className="modalActions">
+            <button className="secondary" onClick={() => setBatchOpen(false)}>
+              Cancelar
+            </button>
+            <button disabled={!selectedCaixas.length} onClick={confirmarFechamentoLote}>
+              Continuar e validar senha
+            </button>
+          </div>
+        </Modal>
+      )}
+      {reopenTarget && (
+        <Modal title={`Reabrir — ${reopenTarget.caixa.nome}`} onClose={() => setReopenTarget(null)}>
+          <div className="alert">A reabertura permitirá alterações na competência e ficará registrada na auditoria.</div>
+          <div className="field">
+            <label>Justificativa obrigatória *</label>
+            <textarea autoFocus value={justificativa} onChange={(e) => setJustificativa(e.target.value)} placeholder="Informe por que o caixa precisa ser reaberto." />
+          </div>
+          <div className="modalActions">
+            <button className="secondary" onClick={() => setReopenTarget(null)}>
+              Cancelar
+            </button>
+            <button onClick={confirmarReabertura}>Continuar e validar senha</button>
+          </div>
+        </Modal>
+      )}
+      {secureAction && <SecurePasswordModal title={secureAction.title} actionLabel={secureAction.label} onCancel={() => setSecureAction(null)} onConfirmed={secureAction.run} />}
+    </div>
+  );
+}
+
+function ImportacaoBancariaPage({ onHistorico } = {}) {
+  const tenant = React.useContext(TenantContext);
+  const igrejaRecibo = useChurchReceiptIdentity();
+  const bancos = useLookup('bancos');
+  const caixas = useLookup('tipos_caixa');
+  const tiposReceita = useLookupLabels('tipos_receita');
+  const categorias = useLookup('categorias_despesas');
+  const membros = useLookup('membros');
+  const credores = useLookup('credores');
+  const formasPagto = useLookupLabels('formas_pagamento');
+  const regras = useTable('regras_importacao_bancaria', {
+    order: 'padrao',
+    ascending: true,
+  });
+  const { referencia: referenciaGlobal, caixaId: caixaGlobalId, caixaIds: caixaGlobalIds } = useGlobalFilters();
+  const { toasts, push, close } = useToasts();
+  const fileRef = useRef(null);
+  const caixaDestinoGlobal = Array.isArray(caixaGlobalIds) && caixaGlobalIds.length === 1 ? caixaGlobalIds[0] : caixaGlobalId || '';
+  const caixaAutoRef = useRef('');
+  const importDraftKey = `igreja:${tenant?.empresaId || 'global'}:financeiro:importacao:draft`;
+  const draftLoadedRef = useRef(false);
+  const draftSaveTimerRef = useRef(null);
+  const [bancoId, setBancoId] = useState('');
+  const [caixaId, setCaixaId] = useState(() => caixaDestinoGlobal || '');
+  const [referencia, setReferencia] = useState(() => ensureReferencia(referenciaGlobal || currentReferencia()));
+  const [fileName, setFileName] = useState('');
+  const [itens, setItens] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [filtroTexto, setFiltroTexto] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('todos');
+  const [filtroStatus, setFiltroStatus] = useState('todos');
+  const [filtroIdentificacao, setFiltroIdentificacao] = useState('todos');
+  const [acaoTipo, setAcaoTipo] = useState('');
+  const [acaoCategoria, setAcaoCategoria] = useState('');
+  const [acaoReferencia, setAcaoReferencia] = useState('');
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
+  const [resumoImportacao, setResumoImportacao] = useState(null);
+  const importCacheRef = useRef({
+    membros: new Map(),
+    credores: new Map(),
+    categorias_despesas: new Map(),
+    tipos_receita: new Map(),
+  });
+
+  useEffect(() => {
+    draftLoadedRef.current = false;
+  }, [importDraftKey]);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = storageGet(importDraftKey, '');
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (!draft || typeof draft !== 'object') return;
+      if (draft.bancoId) setBancoId(draft.bancoId);
+      if (draft.caixaId) {
+        setCaixaId(draft.caixaId);
+        caixaAutoRef.current = draft.caixaId;
+      }
+      if (draft.referencia) setReferencia(ensureReferencia(draft.referencia));
+      if (draft.fileName) setFileName(draft.fileName);
+      if (Array.isArray(draft.itens) && draft.itens.length) {
+        setItens(draft.itens);
+        setFiltrosAbertos(!!draft.filtrosAbertos);
+        setFiltroTexto(draft.filtroTexto || '');
+        setFiltroTipo(draft.filtroTipo || 'todos');
+        setFiltroStatus(draft.filtroStatus || 'todos');
+        setFiltroIdentificacao(draft.filtroIdentificacao || 'todos');
+        setTimeout(() => push(`Rascunho da importação recuperado: ${draft.itens.length} movimentações.`, 'warning'), 80);
+      }
+    } catch {
+      storageRemove(importDraftKey);
+    }
+  }, [importDraftKey]);
+
+  useEffect(() => {
+    if (itens.length) return;
+    const next = ensureReferencia(referenciaGlobal || currentReferencia());
+    setReferencia((prev) => (prev === next ? prev : next));
+  }, [referenciaGlobal, itens.length]);
+
+  useEffect(() => {
+    if (itens.length) return;
+    if (!caixaDestinoGlobal) return;
+    setCaixaId((prev) => {
+      if (!prev || prev === caixaAutoRef.current) return caixaDestinoGlobal;
+      return prev;
+    });
+    caixaAutoRef.current = caixaDestinoGlobal;
+  }, [caixaDestinoGlobal, itens.length]);
+
+  useEffect(() => {
+    if (!draftLoadedRef.current || saving) return;
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = setTimeout(() => {
+      const hasDraft = !!(bancoId || caixaId || fileName || itens.length);
+      if (!hasDraft) {
+        storageRemove(importDraftKey);
+        return;
+      }
+      const draft = {
+        bancoId,
+        caixaId,
+        referencia: ensureReferencia(referencia || referenciaGlobal || currentReferencia()),
+        fileName,
+        itens,
+        filtroTexto,
+        filtroTipo,
+        filtroStatus,
+        filtroIdentificacao,
+        filtrosAbertos,
+        updatedAt: new Date().toISOString(),
+      };
+      storageSet(importDraftKey, JSON.stringify(draft));
+    }, 250);
+    return () => {
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    };
+  }, [importDraftKey, bancoId, caixaId, referencia, referenciaGlobal, fileName, itens, filtroTexto, filtroTipo, filtroStatus, filtroIdentificacao, filtrosAbertos, saving]);
+
+  const limparRascunhoImportacao = useCallback(
+    (showToast = true) => {
+      setItens([]);
+      setFileName('');
+      if (fileRef.current) fileRef.current.value = '';
+      storageRemove(importDraftKey);
+      if (showToast) push('Rascunho da importação limpo.');
+    },
+    [importDraftKey, push],
+  );
+
+  const bancoNome = bancos.rows.find((b) => b.id === bancoId)?.nome || '';
+  const caixaNome = caixas.rows.find((c) => c.id === caixaId)?.nome || '';
+  const membroImportMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m])), [membros.rows]);
+  const tipoEntradaOptions = useMemo(() => {
+    const nomes = (tiposReceita.rows || [])
+      .filter((r) => r.ativo !== false)
+      .map((r) => String(r.nome || '').trim())
+      .filter(Boolean);
+    return Array.from(new Map(nomes.map((nome) => [normalizeBankText(nome), nome])).values())
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+      .map((nome) => ({ value: nome, label: nome }));
+  }, [tiposReceita.rows]);
+  const categoriaDespesaOptions = useMemo(() => {
+    const nomes = (categorias.rows || [])
+      .filter((r) => r.ativo !== false)
+      .map((r) => String(r.nome || '').trim())
+      .filter(Boolean);
+    return Array.from(new Map(nomes.map((nome) => [normalizeBankText(nome), nome])).values())
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+      .map((nome) => ({ value: nome, label: nome }));
+  }, [categorias.rows]);
+  const categoriaOptionsForTipo = useCallback(
+    (tipo, currentValue = '') => {
+      const base = tipo === 'despesa' ? categoriaDespesaOptions : tipoEntradaOptions;
+      const current = String(currentValue || '').trim();
+      if (!current) return base;
+      const exists = base.some((o) => normalizeBankText(o.value) === normalizeBankText(current));
+      return exists ? base : [{ value: current, label: `${current} (não cadastrado)` }, ...base];
+    },
+    [categoriaDespesaOptions, tipoEntradaOptions],
+  );
+  const defaultCategoriaForTipo = useCallback(
+    (tipo, currentValue = '') => {
+      const options = categoriaOptionsForTipo(tipo, currentValue).filter((o) => !String(o.label || '').includes('(não cadastrado)'));
+      return options[0]?.value || (tipo === 'despesa' ? 'Despesas Bancárias' : 'Entrada Bancária');
+    },
+    [categoriaOptionsForTipo],
+  );
+  const tipoAcaoParaCategoria = acaoTipo || (filtroTipo === 'receita' || filtroTipo === 'despesa' ? filtroTipo : '');
+  const acaoCategoriaOptions = tipoAcaoParaCategoria ? categoriaOptionsForTipo(tipoAcaoParaCategoria, acaoCategoria) : [];
+  const normalizeCadastroNome = (nome) =>
+    String(nome || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toUpperCase();
+  const isDizimoTipo = (tipo) => /\bDIZIM/.test(normalizeBankText(tipo || ''));
+  const isDuplicateError = (error) =>
+    ['23505', 'PGRST116'].includes(error?.code) ||
+    String(error?.message || '')
+      .toLowerCase()
+      .includes('duplicate key');
+  const cacheGet = (bucket, key) => importCacheRef.current[bucket]?.get(key);
+  const cacheSet = (bucket, key, value) => {
+    if (!importCacheRef.current[bucket]) importCacheRef.current[bucket] = new Map();
+    importCacheRef.current[bucket].set(key, value);
+    return value;
+  };
+
+  const getOrCreate = async (table, nome) => {
+    const clean = String(nome || '').trim() || 'Outros';
+    const cleanNorm = normalizeBankText(clean);
+    const rows = table === 'categorias_despesas' ? categorias.rows : tiposReceita.rows;
+    const cached = cacheGet(table, cleanNorm);
+    if (cached) return cached;
+    const existing = rows.find((x) => normalizeBankText(x.nome) === cleanNorm);
+    if (existing) return cacheSet(table, cleanNorm, existing);
+
+    const payload = { nome: clean, ativo: true, empresa_id: tenant.empresaId };
+    const { data, error } = await supabase.from(table).insert(payload).select('*').single();
+    if (error) {
+      if (!isDuplicateError(error)) throw error;
+      const query = supabase.from(table).select('*').eq('nome', clean).maybeSingle();
+      const { data: foundByExact } = await query;
+      if (foundByExact) return cacheSet(table, cleanNorm, foundByExact);
+      const { data: allRows, error: listErr } = await supabase.from(table).select('*').eq('empresa_id', tenant.empresaId);
+      if (listErr) throw listErr;
+      const foundByNorm = (allRows || []).find((x) => normalizeBankText(x.nome) === cleanNorm);
+      if (foundByNorm) return cacheSet(table, cleanNorm, foundByNorm);
+      throw error;
+    }
+    if (table === 'categorias_despesas') categorias.reload();
+    else tiposReceita.reload();
+    return cacheSet(table, cleanNorm, data);
+  };
+
+  const getOrCreateCredor = async (nome) => {
+    const clean = normalizeCadastroNome(nome || 'Banco');
+    const cached = cacheGet('credores', clean);
+    if (cached) return cached;
+    const found = findByName(credores.rows, clean);
+    if (found) return cacheSet('credores', clean, found);
+
+    const { data: existentes, error: searchErr } = await supabase.from('credores').select('*').eq('empresa_id', tenant.empresaId).ilike('nome', clean);
+    if (searchErr) throw searchErr;
+    const encontrado = (existentes || []).find((x) => normalizeCadastroNome(x.nome) === clean);
+    if (encontrado) return cacheSet('credores', clean, encontrado);
+
+    const { data, error } = await supabase.from('credores').upsert({ empresa_id: tenant.empresaId, nome: clean, ativo: true }, { onConflict: 'empresa_id,nome' }).select('*').single();
+    if (error) {
+      if (!isDuplicateError(error)) throw error;
+      const { data: retryRows, error: retryErr } = await supabase.from('credores').select('*').eq('empresa_id', tenant.empresaId).ilike('nome', clean);
+      if (retryErr) throw retryErr;
+      const retry = (retryRows || []).find((x) => normalizeCadastroNome(x.nome) === clean);
+      if (retry) return cacheSet('credores', clean, retry);
+      throw error;
+    }
+    credores.reload();
+    return cacheSet('credores', clean, data);
+  };
+
+  const lerArquivo = async (file) => {
+    if (!file) return;
+    if (!bancoId || !caixaId) {
+      push('Informe Banco e Caixa destino antes de carregar o OFX.', 'error');
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith('.ofx')) {
+      push('Use arquivo OFX. PDF, TXT, CSV e XLSX não são confiáveis para conciliação bancária.', 'error');
+      return;
+    }
+    setFileName(file.name);
+    const text = await file.text();
+    const parsed = parseOfx(text).map((m) => suggestBankMovement(m, regras.rows));
+    if (!parsed.length) {
+      push('Nenhuma movimentação encontrada no arquivo OFX.', 'error');
+      return;
+    }
+
+    const hashes = await Promise.all(parsed.map((m) => simpleHash(`${tenant.empresaId}|${bancoId}|${caixaId}|${m.fitid}|${m.data}|${m.valor}|${m.historico}`)));
+    const withHash = parsed.map((m, i) => {
+      const resolucao = m.nome_identificado ? resolveMembroImportacao(membros.rows, m.nome_identificado, m.documento_transacao) : { membro: null, status: 'sem_vinculo', motivo: '' };
+      const membro = resolucao.membro;
+      const credor = m.credor_identificado ? findByName(credores.rows, m.credor_identificado) : null;
+      const categoria = String(m.categoria || '').trim() || defaultCategoriaForTipo(m.tipo);
+      return {
+        ...m,
+        categoria,
+        referencia: ensureReferencia(referencia),
+        hash_importacao: hashes[i],
+        membro_id: membro?.id || '',
+        membro_status: resolucao.status,
+        membro_confirmado: resolucao.status === 'confirmado',
+        membro_motivo: resolucao.motivo,
+        criar_membro: false,
+        credor_id: credor?.id || '',
+        credor_status: credor ? 'localizado' : m.credor_identificado ? 'pre_cadastro' : '',
+      };
+    });
+    const [{ data: existLanc }, { data: existDesp }] = await Promise.all([supabase.from('lancamentos_financeiros').select('hash_importacao').in('hash_importacao', hashes), supabase.from('despesas').select('hash_importacao').in('hash_importacao', hashes)]);
+    const exists = new Set([...(existLanc || []), ...(existDesp || [])].map((x) => x.hash_importacao));
+    setItens(withHash.map((m) => (exists.has(m.hash_importacao) ? { ...m, selecionado: false, status: 'duplicado' } : m)));
+    push(`${withHash.length} movimentações lidas. Revise antes de importar.`);
+  };
+
+  const atualizarItem = (idx, patch) => setItens((old) => old.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  const selecionados = itens.filter((i) => i.selecionado && i.status !== 'duplicado');
+  const itensFiltrados = itens
+    .map((item, index) => ({ ...item, index }))
+    .filter((it) => {
+      const texto = normalizeBankText(filtroTexto);
+      const textoOk = !texto || normalizeBankText([it.historico, it.nome_identificado, it.credor_identificado, it.categoria, String(it.valorAbs || '')].join(' ')).includes(texto);
+      const tipoOk = filtroTipo === 'todos' || it.tipo === filtroTipo;
+      const statusOk = filtroStatus === 'todos' || it.status === filtroStatus || (filtroStatus === 'novo' && it.status !== 'duplicado');
+      const identificado = it.tipo === 'receita' ? !!it.nome_identificado : !!it.credor_identificado;
+      const identOk = filtroIdentificacao === 'todos' || (filtroIdentificacao === 'identificado' ? identificado : !identificado);
+      return textoOk && tipoOk && statusOk && identOk;
+    });
+  const alterarSelecaoFiltrados = (selecionado) => setItens((old) => old.map((it, i) => (itensFiltrados.some((f) => f.index === i) && it.status !== 'duplicado' ? { ...it, selecionado } : it)));
+  const aplicarReferenciaPadraoNosItens = () => {
+    const ref = ensureReferencia(referencia || referenciaGlobal || currentReferencia());
+    setItens((old) => old.map((it) => (it.status === 'duplicado' ? it : { ...it, referencia: ref })));
+    push(`Referência ${fmtReferencia(ref)} aplicada aos itens novos da importação.`);
+  };
+  const usarReferenciaGlobal = () => {
+    const ref = ensureReferencia(referenciaGlobal || currentReferencia());
+    setReferencia(ref);
+    if (itens.length) setItens((old) => old.map((it) => (it.status === 'duplicado' ? it : { ...it, referencia: ref })));
+    push(`Referência global ${fmtReferencia(ref)} aplicada.`);
+  };
+  const aplicarCaixaGlobal = () => {
+    if (!caixaDestinoGlobal) {
+      push('Selecione apenas um caixa no filtro global para aplicar como destino.', 'warning');
+      return;
+    }
+    setCaixaId(caixaDestinoGlobal);
+    caixaAutoRef.current = caixaDestinoGlobal;
+    push('Caixa global aplicado como destino da importação.');
+  };
+  const aplicarAcaoMassa = () => {
+    const patchBase = {};
+    if (acaoTipo) patchBase.tipo = acaoTipo;
+    if (acaoCategoria.trim()) patchBase.categoria = acaoCategoria.trim();
+    if (acaoReferencia) patchBase.referencia = acaoReferencia;
+    if (!Object.keys(patchBase).length) {
+      push('Informe uma ação em massa para aplicar.', 'error');
+      return;
+    }
+    setItens((old) =>
+      old.map((it, i) => {
+        const visivel = itensFiltrados.some((f) => f.index === i);
+        if (!visivel || !it.selecionado || it.status === 'duplicado') return it;
+        const patch = { ...patchBase };
+        if (acaoTipo && !acaoCategoria.trim()) patch.categoria = defaultCategoriaForTipo(acaoTipo);
+        return { ...it, ...patch };
+      }),
+    );
+    push('Ação em massa aplicada aos itens selecionados e filtrados.');
+  };
+
+  const criarCategoriaRapida = async (tipo, atual = '', onSelect) => {
+    const isDespesa = tipo === 'despesa';
+    const label = isDespesa ? 'categoria de despesa' : 'tipo de entrada';
+    const table = isDespesa ? 'categorias_despesas' : 'tipos_receita';
+    const sugestao = String(atual || '')
+      .replace(/\s*\(não cadastrado\)\s*/i, '')
+      .trim();
+    const nome = window.prompt(`Informe o nome do novo ${label}:`, sugestao || '');
+    if (!nome || !nome.trim()) return;
+    try {
+      const row = await getOrCreate(table, nome.trim());
+      const nomeFinal = row?.nome || nome.trim();
+      onSelect?.(nomeFinal);
+      push(`${isDespesa ? 'Categoria de despesa' : 'Tipo de entrada'} cadastrado: ${nomeFinal}.`);
+    } catch (e) {
+      push(e.message || `Não foi possível cadastrar o novo ${label}.`, 'error');
+    }
+  };
+
+  const importar = async () => {
+    if (!tenant?.empresaId) {
+      push('Selecione uma igreja/empresa antes de importar.', 'error');
+      return;
+    }
+    if (!bancoId || !caixaId || !referencia) {
+      push('Informe Banco, Caixa e Referência antes de importar.', 'error');
+      return;
+    }
+    if (!selecionados.length) {
+      push('Nenhum item novo selecionado para importação.', 'error');
+      return;
+    }
+    const pendentesConfirmacao = selecionados.filter((item) => item.tipo === 'receita' && item.membro_status === 'sugerido' && !item.membro_confirmado);
+    if (pendentesConfirmacao.length) {
+      push(`Confirme o membro sugerido em ${pendentesConfirmacao.length} lançamento(s) antes de importar. Ex.: ${pendentesConfirmacao[0].nome_identificado || pendentesConfirmacao[0].historico}`, 'error');
+      return;
+    }
+    const dizimosSemMembro = selecionados.filter((item) => item.tipo === 'receita' && isDizimoTipo(item.categoria) && !item.membro_id);
+    if (dizimosSemMembro.length) {
+      push(`Existem ${dizimosSemMembro.length} dízimo(s) sem membro vinculado. Abra o item ou confira o nome antes de importar. Ex.: ${dizimosSemMembro[0].nome_identificado || dizimosSemMembro[0].historico}`, 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: importacao, error: impErr } = await supabase
+        .from('importacoes_bancarias')
+        .insert({
+          empresa_id: tenant.empresaId,
+          banco_id: bancoId,
+          tipo_caixa_id: caixaId,
+          referencia: ensureReferencia(referencia),
+          arquivo_nome: fileName,
+          total_itens: itens.length,
+          total_importados: selecionados.length,
+          status: 'importado',
+          created_by: userData?.user?.id ?? null,
+        })
+        .select('*')
+        .single();
+      if (impErr) throw impErr;
+
+      let receitas = 0;
+      let despesasN = 0;
+      let totalReceitas = 0;
+      let totalDespesas = 0;
+      const linhasResumo = [];
+      for (const item of selecionados) {
+        if (item.tipo === 'receita') {
+          await getOrCreate('tipos_receita', item.categoria);
+          const membro = item.membro_id ? { id: item.membro_id } : null;
+          const { data: lanc, error } = await supabase
+            .from('lancamentos_financeiros')
+            .insert({
+              empresa_id: tenant.empresaId,
+              data: item.data,
+              referencia: ensureReferencia(item.referencia || referencia, item.data),
+              tipo: item.categoria,
+              membro_id: membro?.id || null,
+              tipo_caixa_id: caixaId,
+              valor: item.valorAbs,
+              forma_pagamento: 'Transferência',
+              culto: bancoNome,
+              observacoes: `${item.historico} | Importação OFX ${bancoNome} / ${caixaNome}`,
+              banco_id: bancoId,
+              importacao_id: importacao.id,
+              ofx_fitid: item.fitid,
+              hash_importacao: item.hash_importacao,
+              conciliado: true,
+              created_by: userData?.user?.id ?? null,
+            })
+            .select('id')
+            .single();
+          if (error) throw error;
+          await supabase.from('importacao_bancaria_itens').insert({
+            empresa_id: tenant.empresaId,
+            importacao_id: importacao.id,
+            lancamento_id: lanc?.id,
+            data: item.data,
+            referencia: ensureReferencia(item.referencia || referencia, item.data),
+            historico: item.historico,
+            valor: item.valorAbs,
+            tipo: 'receita',
+            categoria_sugerida: item.categoria,
+            nome_identificado: item.nome_identificado || null,
+            documento_transacao: item.documento_transacao || null,
+            hora_transacao: item.hora_transacao || null,
+            membro_id: membro?.id || null,
+            hash_importacao: item.hash_importacao,
+            status: 'importado',
+          });
+          linhasResumo.push({
+            origem: 'receita',
+            id: lanc?.id,
+            data: item.data,
+            referencia: ensureReferencia(item.referencia || referencia, item.data),
+            historico: item.historico,
+            identificado: item.nome_identificado || 'Contribuinte',
+            categoria: item.categoria,
+            valor: Number(item.valorAbs) || 0,
+            caixa: caixaNome,
+            banco: bancoNome,
+            raw: item,
+          });
+          receitas += 1;
+          totalReceitas += Number(item.valorAbs) || 0;
+        } else {
+          const categoria = await getOrCreate('categorias_despesas', item.categoria);
+          const credor = item.credor_id ? { id: item.credor_id } : item.criar_credor !== false ? await getOrCreateCredor(item.credor_identificado || item.categoria) : null;
+          const { data: desp, error } = await supabase
+            .from('despesas')
+            .insert({
+              empresa_id: tenant.empresaId,
+              data: item.data,
+              referencia: ensureReferencia(item.referencia || referencia, item.data),
+              categoria_id: categoria.id,
+              credor_id: credor?.id || null,
+              tipo_caixa_id: caixaId,
+              descricao: item.historico,
+              valor: item.valorAbs,
+              forma_pagamento: 'Transferência',
+              observacoes: `Importação OFX ${bancoNome} / ${caixaNome}`,
+              banco_id: bancoId,
+              importacao_id: importacao.id,
+              ofx_fitid: item.fitid,
+              hash_importacao: item.hash_importacao,
+              conciliado: true,
+              created_by: userData?.user?.id ?? null,
+            })
+            .select('id')
+            .single();
+          if (error) throw error;
+          await supabase.from('importacao_bancaria_itens').insert({
+            empresa_id: tenant.empresaId,
+            importacao_id: importacao.id,
+            despesa_id: desp?.id,
+            data: item.data,
+            referencia: ensureReferencia(item.referencia || referencia, item.data),
+            historico: item.historico,
+            valor: item.valorAbs,
+            tipo: 'despesa',
+            categoria_sugerida: item.categoria,
+            credor_identificado: item.credor_identificado || null,
+            documento_transacao: item.documento_transacao || null,
+            hora_transacao: item.hora_transacao || null,
+            credor_id: credor?.id || null,
+            hash_importacao: item.hash_importacao,
+            status: 'importado',
+          });
+          linhasResumo.push({
+            origem: 'despesa',
+            id: desp?.id,
+            data: item.data,
+            referencia: ensureReferencia(item.referencia || referencia, item.data),
+            historico: item.historico,
+            identificado: item.credor_identificado || item.categoria || 'Credor',
+            categoria: item.categoria,
+            valor: Number(item.valorAbs) || 0,
+            caixa: caixaNome,
+            banco: bancoNome,
+            raw: item,
+          });
+          despesasN += 1;
+          totalDespesas += Number(item.valorAbs) || 0;
+        }
+
+        if (item.memorizar) {
+          await supabase.from('regras_importacao_bancaria').upsert(
+            {
+              empresa_id: tenant.empresaId,
+              padrao: item.historico.slice(0, 120),
+              tipo: item.tipo,
+              categoria_nome: item.categoria,
+              ativo: true,
+            },
+            { onConflict: 'empresa_id,padrao' },
+          );
+        }
+      }
+      const { error: totaisErr } = await supabase
+        .from('importacoes_bancarias')
+        .update({
+          total_receitas: receitas,
+          total_despesas: despesasN,
+          total_receitas_valor: totalReceitas,
+          total_despesas_valor: totalDespesas,
+          total_importados: receitas + despesasN,
+          status: 'importado',
+        })
+        .eq('id', importacao.id);
+      if (totaisErr) throw totaisErr;
+      window.dispatchEvent(
+        new CustomEvent('igreja:tableRefresh', {
+          detail: { table: 'importacoes_bancarias' },
+        }),
+      );
+      const resumo = {
+        id: importacao.id,
+        arquivo_nome: fileName,
+        banco: bancoNome,
+        caixa: caixaNome,
+        referencia: ensureReferencia(referencia),
+        receitas,
+        despesas: despesasN,
+        totalReceitas,
+        totalDespesas,
+        liquido: totalReceitas - totalDespesas,
+        itens: linhasResumo.sort((a, b) => String(a.data).localeCompare(String(b.data)) || a.historico.localeCompare(b.historico)),
+      };
+      setResumoImportacao(resumo);
+      push(`Importação concluída: ${receitas} receitas e ${despesasN} despesas lançadas.`);
+      limparRascunhoImportacao(false);
+    } catch (e) {
+      push(e.message || 'Erro ao importar OFX.', 'error');
+    }
+    setSaving(false);
+  };
+  const executarImportacao = async () => {
+    try {
+      await importar();
+    } catch (error) {
+      setSaving(false);
+      push(`Não foi possível importar: ${error?.message || 'erro inesperado'}.`, 'error');
+    }
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <h2 style={{ margin: 0 }}>Importação Bancária OFX</h2>
+        <button
+          className="smallBtn secondary"
+          onClick={() => {
+            bancos.reload();
+            caixas.reload();
+            regras.reload();
+            membros.reload();
+            credores.reload();
+          }}
+        >
+          Atualizar cadastros
+        </button>
+      </div>
+      <div className="alert">
+        <b>BB e Bradesco:</b> exporte o extrato em <b>OFX</b>. O sistema separa nome/documento/hora do PIX, sugere membros existentes para confirmação, classifica a categoria, evita duplicidade e lança no caixa/referência escolhidos. Nenhum membro é criado automaticamente.
+      </div>
+      {resumoImportacao && (
+        <div className="card successCard" style={{ marginBottom: 16 }}>
+          <div className="toolbar">
+            <div>
+              <h3 style={{ margin: 0 }}>Conferência da importação</h3>
+              <p className="muted" style={{ margin: '6px 0 0' }}>
+                Arquivo: <b>{resumoImportacao.arquivo_nome}</b> • Banco: <b>{resumoImportacao.banco}</b> • Caixa: <b>{resumoImportacao.caixa}</b> • Referência: <b>{fmtReferencia(resumoImportacao.referencia)}</b>
+              </p>
+            </div>
+            <div className="row">
+              <button className="secondary" onClick={() => window.print()}>
+                Imprimir conferência
+              </button>
+              <button className="smallBtn" onClick={() => setResumoImportacao(null)}>
+                Fechar resumo
+              </button>
+            </div>
+          </div>
+          <div className="grid auto" style={{ marginBottom: 12 }}>
+            <div className="card kpi financeIncome">
+              <div className="label">Receitas</div>
+              <div className="value">{resumoImportacao.receitas}</div>
+              <small>{fmtMoney(resumoImportacao.totalReceitas)}</small>
+            </div>
+            <div className="card kpi financeExpense">
+              <div className="label">Despesas</div>
+              <div className="value">{resumoImportacao.despesas}</div>
+              <small>{fmtMoney(resumoImportacao.totalDespesas)}</small>
+            </div>
+            <div className="card kpi">
+              <div className="label">Saldo líquido</div>
+              <div className="value">{fmtMoney(resumoImportacao.liquido)}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Total importado</div>
+              <div className="value">{resumoImportacao.itens.length}</div>
+            </div>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tipo</th>
+                  <th>Data</th>
+                  <th>Referência</th>
+                  <th>Identificado</th>
+                  <th>Histórico</th>
+                  <th>Categoria/Tipo</th>
+                  <th>Valor</th>
+                  <th>Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumoImportacao.itens.map((it, idx) => (
+                  <tr key={`${it.origem}-${it.id || idx}`}>
+                    <td>
+                      <span className={`badge ${it.origem === 'receita' ? 'Receita' : 'Despesa'}`}>{it.origem === 'receita' ? 'Receita' : 'Despesa'}</span>
+                    </td>
+                    <td>{fmtDate(it.data)}</td>
+                    <td>{fmtReferencia(it.referencia)}</td>
+                    <td>
+                      <b>{it.identificado}</b>
+                    </td>
+                    <td>{it.historico}</td>
+                    <td>{it.categoria}</td>
+                    <td className={it.origem === 'receita' ? 'moneyIncome' : 'moneyExpense'}>
+                      <b>{fmtMoney(it.valor)}</b>
+                    </td>
+                    <td>
+                      {it.origem === 'receita' ? (
+                        <button
+                          className="smallBtn secondary"
+                          onClick={() =>
+                            abrirRecibo({
+                              igreja: igrejaRecibo,
+                              numero: incomeReceiptNumber(it.raw || it),
+                              nome: it.identificado,
+                              valor: it.valor,
+                              referencia: it.referencia,
+                              tipo: it.categoria,
+                              data: it.data,
+                              caixa: it.caixa,
+                              historico: it.historico,
+                            })
+                          }
+                        >
+                          Recibo 2 vias
+                        </button>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+            <button className="secondary" onClick={() => onHistorico?.()}>
+              Ver no histórico
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="card">
+        <div className="grid cols2">
+          <div className="field">
+            <label>Banco *</label>
+            <select value={bancoId} onChange={(e) => setBancoId(e.target.value)}>
+              <option value="">Selecione...</option>
+              {bancos.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Caixa destino *</label>
+            <div className="quickSelectRow">
+              <select value={caixaId} onChange={(e) => setCaixaId(e.target.value)}>
+                <option value="">Selecione...</option>
+                {caixas.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {caixaDestinoGlobal && (
+                <button type="button" className="smallBtn secondary nowrapBtn" onClick={aplicarCaixaGlobal}>
+                  Usar caixa global
+                </button>
+              )}
+            </div>
+            <div className="muted smallText">Quando houver apenas um caixa selecionado no filtro global, ele entra como destino padrão.</div>
+          </div>
+          <div className="field">
+            <label>Referência da importação *</label>
+            <div className="quickSelectRow">
+              <input type="month" value={referencia} onChange={(e) => setReferencia(e.target.value)} />
+              {referenciaGlobal && (
+                <button type="button" className="smallBtn secondary nowrapBtn" onClick={usarReferenciaGlobal}>
+                  Usar referência global
+                </button>
+              )}
+            </div>
+            <div className="muted smallText">Padrão: {fmtReferencia(referenciaGlobal || currentReferencia())}. Os movimentos mantêm a data real do extrato, mas entram na competência escolhida.</div>
+          </div>
+          <div className="field">
+            <label>Arquivo OFX *</label>
+            <input ref={fileRef} type="file" accept=".ofx" onChange={(e) => lerArquivo(e.target.files?.[0])} />
+          </div>
+        </div>
+      </div>
+      {!!itens.length && (
+        <>
+          <div className="grid auto" style={{ marginTop: 16 }}>
+            <div className="card kpi">
+              <div className="label">Movimentações</div>
+              <div className="value">{itens.length}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Selecionadas</div>
+              <div className="value">{selecionados.length}</div>
+            </div>
+            <div className="card kpi financeIncome">
+              <div className="label">Receitas</div>
+              <div className="value">{itens.filter((i) => i.selecionado && i.tipo === 'receita').length}</div>
+            </div>
+            <div className="card kpi financeExpense">
+              <div className="label">Despesas</div>
+              <div className="value">{itens.filter((i) => i.selecionado && i.tipo === 'despesa').length}</div>
+            </div>
+          </div>
+          <div className="card compactFilters" style={{ marginTop: 16 }}>
+            <div
+              className="toolbar"
+              style={{
+                alignItems: 'center',
+                marginBottom: filtrosAbertos ? 12 : 0,
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0 }}>Filtros e ações</h3>
+                <p className="muted" style={{ margin: '4px 0 0' }}>
+                  {itensFiltrados.length} visíveis • {selecionados.length} selecionados
+                </p>
+              </div>
+              <div className="row">
+                <button className="smallBtn secondary" onClick={() => alterarSelecaoFiltrados(true)}>
+                  Marcar filtrados
+                </button>
+                <button className="smallBtn secondary" onClick={() => alterarSelecaoFiltrados(false)}>
+                  Desmarcar filtrados
+                </button>
+                <button className="smallBtn secondary" onClick={aplicarReferenciaPadraoNosItens}>
+                  Aplicar referência padrão
+                </button>
+                <button className="smallBtn secondary" onClick={() => setFiltrosAbertos((v) => !v)}>
+                  {filtrosAbertos ? 'Ocultar filtros' : 'Mostrar filtros'}
+                </button>
+                <button className="smallBtn secondary" onClick={() => limparRascunhoImportacao(true)}>
+                  Limpar rascunho
+                </button>
+                <button className="primary" disabled={saving || !selecionados.length} onClick={executarImportacao}>
+                  {saving ? 'Importando...' : 'Importar selecionados'}
+                </button>
+              </div>
+            </div>
+            {!filtrosAbertos && (
+              <div className="row compactFilterChips">
+                <span className="badge Recebido">Tipo: {filtroTipo === 'todos' ? 'Todos' : filtroTipo}</span>
+                <span className="badge Recebido">Status: {filtroStatus === 'todos' ? 'Todos' : filtroStatus}</span>
+                <span className="badge Recebido">Identificação: {filtroIdentificacao === 'todos' ? 'Todos' : filtroIdentificacao}</span>
+                {filtroTexto && <span className="badge Recebido">Busca: {filtroTexto}</span>}
+              </div>
+            )}
+            {filtrosAbertos && (
+              <>
+                <div className="grid importFiltersGrid">
+                  <div className="field wide">
+                    <label>Buscar</label>
+                    <input value={filtroTexto} onChange={(e) => setFiltroTexto(e.target.value)} placeholder="Nome, histórico, categoria ou valor..." />
+                  </div>
+                  <div className="field">
+                    <label>Tipo</label>
+                    <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value)}>
+                      <option value="todos">Todos</option>
+                      <option value="receita">Receitas</option>
+                      <option value="despesa">Despesas</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Status</label>
+                    <select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)}>
+                      <option value="todos">Todos</option>
+                      <option value="novo">Novos</option>
+                      <option value="duplicado">Duplicados</option>
+                      <option value="importado">Importados</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Identificação</label>
+                    <select value={filtroIdentificacao} onChange={(e) => setFiltroIdentificacao(e.target.value)}>
+                      <option value="todos">Todos</option>
+                      <option value="identificado">Identificados</option>
+                      <option value="nao_identificado">Não identificados</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid importBulkGrid" style={{ marginTop: 10 }}>
+                  <div className="field">
+                    <label>Ação em massa: Tipo</label>
+                    <select
+                      value={acaoTipo}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setAcaoTipo(next);
+                        setAcaoCategoria(next ? defaultCategoriaForTipo(next) : '');
+                      }}
+                    >
+                      <option value="">Manter</option>
+                      <option value="receita">Receita</option>
+                      <option value="despesa">Despesa</option>
+                    </select>
+                  </div>
+                  <div className="field wide">
+                    <label>Categoria/Tipo</label>
+                    <div className="quickSelectRow importCategoryBulkControl">
+                      <select value={acaoCategoria} onChange={(e) => setAcaoCategoria(e.target.value)} disabled={!tipoAcaoParaCategoria}>
+                        <option value="">{tipoAcaoParaCategoria ? 'Selecione...' : 'Escolha Receita ou Despesa'}</option>
+                        {acaoCategoriaOptions.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" className={`smallBtn ${tipoAcaoParaCategoria === 'despesa' ? 'red' : 'green'} nowrapBtn`} disabled={!tipoAcaoParaCategoria} onClick={() => criarCategoriaRapida(tipoAcaoParaCategoria, acaoCategoria, setAcaoCategoria)}>
+                        + Novo
+                      </button>
+                    </div>
+                    <div className="muted smallText">Receita usa Tipos de entrada. Despesa usa Categorias de despesas.</div>
+                  </div>
+                  <div className="field">
+                    <label>Referência</label>
+                    <input type="month" value={acaoReferencia} onChange={(e) => setAcaoReferencia(e.target.value)} />
+                  </div>
+                  <div className="field btnBottom">
+                    <button className="primary" onClick={aplicarAcaoMassa}>
+                      Aplicar nos selecionados
+                    </button>
+                  </div>
+                </div>
+                <p className="muted" style={{ marginBottom: 0 }}>
+                  A ação em massa afeta apenas os itens marcados dentro do filtro atual.
+                </p>
+              </>
+            )}
+          </div>
+          <div className="tablewrap" style={{ marginTop: 16 }}>
+            <table className="importTable">
+              <thead>
+                <tr>
+                  <th>Importar</th>
+                  <th>Data</th>
+                  <th>Histórico</th>
+                  <th>Identificado</th>
+                  <th>Valor</th>
+                  <th>Tipo</th>
+                  <th>Categoria/Tipo</th>
+                  <th>Ref.</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {itensFiltrados.map((it) => (
+                  <tr key={it.hash_importacao} className={`financialRow ${it.tipo}`}>
+                    <td className="center">
+                      <input
+                        type="checkbox"
+                        checked={!!it.selecionado}
+                        disabled={it.status === 'duplicado'}
+                        onChange={(e) =>
+                          atualizarItem(it.index, {
+                            selecionado: e.target.checked,
+                          })
+                        }
+                      />
+                    </td>
+                    <td>{fmtDate(it.data)}</td>
+                    <td>
+                      <div>{it.historico}</div>
+                      {it.hora_transacao && (
+                        <small className="muted">
+                          Hora: {it.hora_transacao} {it.documento_transacao ? ` • Doc: ${it.documento_transacao}` : ''}
+                        </small>
+                      )}
+                    </td>
+                    <td>
+                      {it.tipo === 'receita' ? (
+                        <div className="memberImportMatch">
+                          <b>Arquivo: {it.nome_identificado || '—'}</b>
+                          <select
+                            value={it.membro_id || ''}
+                            onChange={(e) =>
+                              atualizarItem(it.index, {
+                                membro_id: e.target.value,
+                                membro_status: e.target.value ? 'confirmado' : 'sem_vinculo',
+                                membro_confirmado: !!e.target.value,
+                                criar_membro: false,
+                              })
+                            }
+                          >
+                            <option value="">Sem membro vinculado</option>
+                            {membros.options.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                          {it.membro_status === 'sugerido' && !it.membro_confirmado ? (
+                            <div className="memberSuggestion">
+                              <small>
+                                Sugerido: <b>{membroImportMap[it.membro_id]?.nome || '—'}</b>. É este membro?
+                              </small>
+                              <span>
+                                <button
+                                  type="button"
+                                  className="smallBtn green"
+                                  onClick={() =>
+                                    atualizarItem(it.index, {
+                                      membro_status: 'confirmado',
+                                      membro_confirmado: true,
+                                      criar_membro: false,
+                                    })
+                                  }
+                                >
+                                  Sim, confirmar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="smallBtn secondary"
+                                  onClick={() =>
+                                    atualizarItem(it.index, {
+                                      membro_id: '',
+                                      membro_status: 'sem_vinculo',
+                                      membro_confirmado: false,
+                                      criar_membro: false,
+                                    })
+                                  }
+                                >
+                                  Não é
+                                </button>
+                              </span>
+                            </div>
+                          ) : (
+                            <small className="muted">{it.membro_confirmado && it.membro_id ? `Vinculado a ${membroImportMap[it.membro_id]?.nome || 'membro cadastrado'}` : 'Selecione um membro cadastrado; nenhum novo membro será criado.'}</small>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          <b>{it.credor_identificado || '—'}</b>
+                          <br />
+                          <small className="muted">{it.credor_status === 'localizado' ? 'Credor localizado' : 'Criar pré-cadastro de credor'}</small>
+                        </>
+                      )}
+                    </td>
+                    <td className={it.tipo === 'receita' ? 'moneyIncome' : 'moneyExpense'}>
+                      <b>{fmtMoney(it.valorAbs)}</b>
+                    </td>
+                    <td className="importTypeCell">
+                      <select
+                        className={`financeTypeSelect ${it.tipo}`}
+                        value={it.tipo}
+                        onChange={(e) => {
+                          const nextTipo = e.target.value;
+                          atualizarItem(it.index, {
+                            tipo: nextTipo,
+                            categoria: defaultCategoriaForTipo(nextTipo),
+                          });
+                        }}
+                      >
+                        <option value="receita">Receita</option>
+                        <option value="despesa">Despesa</option>
+                      </select>
+                    </td>
+                    <td className="importCategoryCell">
+                      <div className="importCategoryControl">
+                        <select
+                          className="compactCategorySelect"
+                          value={it.categoria || ''}
+                          onChange={(e) =>
+                            atualizarItem(it.index, {
+                              categoria: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Selecione...</option>
+                          {categoriaOptionsForTipo(it.tipo, it.categoria).map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button type="button" className={`smallBtn ${it.tipo === 'despesa' ? 'red' : 'green'} importNewCategoryBtn`} onClick={() => criarCategoriaRapida(it.tipo, it.categoria, (nome) => atualizarItem(it.index, { categoria: nome }))}>
+                          + Novo
+                        </button>
+                      </div>
+                    </td>
+                    <td className="importRefCell">
+                      <input
+                        className="compactMonthInput"
+                        type="month"
+                        value={it.referencia || referencia}
+                        onChange={(e) =>
+                          atualizarItem(it.index, {
+                            referencia: e.target.value,
+                          })
+                        }
+                      />
+                    </td>
+                    <td>
+                      <span className={`badge ${it.status === 'duplicado' ? 'Pendente' : 'Recebido'}`}>{it.status === 'duplicado' ? 'Duplicado' : 'Novo'}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+            <button className="primary" disabled={saving || !selecionados.length} onClick={executarImportacao}>
+              {saving ? 'Importando...' : 'Importar selecionados'}
+            </button>
+          </div>
+        </>
+      )}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>Regras automáticas ativas</h3>
+        <p className="muted">Exemplos: “TAR. AGRUPADAS” vira Despesa em “Tarifas Bancárias” e credor Banco; “PIX RECEBIDO 20:11 123 JOÃO” vira Receita, identifica JOÃO e pede confirmação quando o nome for apenas semelhante ao cadastro.</p>
+      </div>
+    </div>
+  );
+}
+
+function HistoricoImportacoesBancariasPage() {
+  const tenant = React.useContext(TenantContext);
+  const igrejaRecibo = useChurchReceiptIdentity();
+  const { referencia, caixaIds } = useGlobalFilters();
+  const [filter, setFilter] = useFinancialPeriodFilter(referencia);
+  const importacoes = useTable('importacoes_bancarias', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const bancos = useLookup('bancos');
+  const caixas = useLookup('tipos_caixa');
+  const categorias = useLookup('categorias_despesas');
+  const tiposReceita = useLookupLabels('tipos_receita');
+  const membros = useLookup('membros');
+  const credores = useLookup('credores');
+  const { toasts, push, close } = useToasts();
+  const [detalhe, setDetalhe] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [loadingItens, setLoadingItens] = useState(false);
+  const [editando, setEditando] = useState(null);
+  const [totaisCalculados, setTotaisCalculados] = useState({});
+
+  const bancoNome = (id) => bancos.rows.find((b) => b.id === id)?.nome || '—';
+  const caixaNome = (id) => caixas.rows.find((c) => c.id === id)?.nome || '—';
+  const membroNome = (id) => membros.rows.find((m) => m.id === id)?.nome || '';
+  const credorNome = (id) => credores.rows.find((c) => c.id === id)?.nome || '';
+  const normalizeCadastroNome = (nome) =>
+    String(nome || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toUpperCase();
+  const isDizimoTipo = (tipo) => /\bDIZIM/.test(normalizeBankText(tipo || ''));
+  const membroOptions = useMemo(() => (membros.options || []).map((o) => ({ value: o.value, label: o.label })), [membros.options]);
+  const tipoReceitaOptionsForEdit = useCallback(
+    (currentValue = '') => {
+      const base = (tiposReceita.options || []).map((o) => ({
+        value: o.value,
+        label: o.label,
+      }));
+      const current = String(currentValue || '').trim();
+      if (!current) return base;
+      const exists = base.some((o) => normalizeBankText(o.value) === normalizeBankText(current));
+      return exists ? base : [{ value: current, label: `${current} (não cadastrado)` }, ...base];
+    },
+    [tiposReceita.options],
+  );
+  const extrairNomeReceita = (linha) => extractOfxPessoa(linha?.historico || '', 'receita').nome_identificado || '';
+
+  const getOrCreateMembroHistorico = async (nome, documento = '') => {
+    const clean = normalizeCadastroNome(nome);
+    const doc = onlyDigits(documento);
+    if (!clean) return null;
+    const encontradoLocal = findMembroByImportIdentity(membros.rows, clean, doc);
+    if (encontradoLocal) return encontradoLocal;
+
+    const { data: existentes, error: searchErr } = await supabase.from('membros').select('*').eq('empresa_id', tenant.empresaId);
+    if (searchErr) throw searchErr;
+    const encontrado = findMembroByImportIdentity(existentes || [], clean, doc);
+    if (encontrado) return encontrado;
+
+    if (!isReliablePersonName(clean)) {
+      throw new Error('Nome identificado muito curto ou ambíguo. Selecione um membro existente antes de salvar para evitar duplicidade.');
+    }
+
+    const { data, error } = await supabase
+      .from('membros')
+      .insert({
+        empresa_id: tenant.empresaId,
+        nome: clean,
+        ativo: true,
+        pre_cadastro: true,
+        observacoes: 'Pré-cadastro criado ao editar lançamento importado de receita/dízimo.',
+      })
+      .select('*')
+      .single();
+    if (error) throw error;
+    membros.reload();
+    return data;
+  };
+
+  const criarMembroDaReceitaEditada = async () => {
+    try {
+      const nomeSugerido = extrairNomeReceita(editando);
+      const nome = nomeSugerido || window.prompt('Informe o nome do membro/contribuinte:');
+      if (!nome) return;
+      const membro = await getOrCreateMembroHistorico(nome, editando?.raw?.documento_transacao || editando?.documento_transacao || '');
+      if (!membro?.id) throw new Error('Não foi possível criar/localizar o membro.');
+      setEditando((old) => ({ ...old, membro_id: membro.id }));
+      push(`Membro vinculado: ${membro.nome}.`);
+    } catch (e) {
+      push(e.message || 'Erro ao criar/vincular membro.', 'error');
+    }
+  };
+
+  const criarTipoReceitaRapidoHistorico = async () => {
+    try {
+      const nome = window.prompt('Nome do novo tipo de receita:', editando?.categoria || '');
+      const clean = String(nome || '').trim();
+      if (!clean) return;
+      const existente = (tiposReceita.rows || []).find((r) => normalizeBankText(r.nome) === normalizeBankText(clean));
+      if (existente) {
+        setEditando((old) => ({ ...old, categoria: existente.nome }));
+        return;
+      }
+      const { data, error } = await supabase.from('tipos_receita').insert({ empresa_id: tenant.empresaId, nome: clean, ativo: true }).select('*').single();
+      if (error) throw error;
+      tiposReceita.reload();
+      setEditando((old) => ({ ...old, categoria: data?.nome || clean }));
+      push('Tipo de receita cadastrado.');
+    } catch (e) {
+      push(e.message || 'Erro ao cadastrar tipo de receita.', 'error');
+    }
+  };
+
+  const criarCategoriaDespesaRapidaHistorico = async () => {
+    try {
+      const nome = window.prompt('Nome da nova categoria de despesa:', editando?.categoria || '');
+      const clean = String(nome || '').trim();
+      if (!clean) return;
+      const existente = (categorias.rows || []).find((r) => normalizeBankText(r.nome) === normalizeBankText(clean));
+      if (existente) {
+        setEditando((old) => ({
+          ...old,
+          categoria_id: existente.id,
+          categoria: existente.nome,
+        }));
+        return;
+      }
+      const { data, error } = await supabase.from('categorias_despesas').insert({ empresa_id: tenant.empresaId, nome: clean, ativo: true }).select('*').single();
+      if (error) throw error;
+      categorias.reload();
+      setEditando((old) => ({
+        ...old,
+        categoria_id: data?.id || old.categoria_id,
+        categoria: data?.nome || clean,
+      }));
+      push('Categoria de despesa cadastrada.');
+    } catch (e) {
+      push(e.message || 'Erro ao cadastrar categoria de despesa.', 'error');
+    }
+  };
+
+  const carregarItens = async (imp) => {
+    setDetalhe(imp);
+    setLoadingItens(true);
+    const [{ data: receitas }, { data: despesas }] = await Promise.all([supabase.from('lancamentos_financeiros').select('*').eq('importacao_id', imp.id).order('data', { ascending: true }), supabase.from('despesas').select('*, categorias_despesas(nome)').eq('importacao_id', imp.id).order('data', { ascending: true })]);
+    const linhas = [
+      ...(receitas || []).map((r) => ({
+        origem: 'receita',
+        id: r.id,
+        data: r.data,
+        referencia: r.referencia,
+        historico: r.observacoes || r.culto || r.tipo,
+        categoria: r.tipo,
+        valor: Number(r.valor || 0),
+        membro_id: r.membro_id,
+        tipo_caixa_id: r.tipo_caixa_id,
+        raw: r,
+      })),
+      ...(despesas || []).map((d) => ({
+        origem: 'despesa',
+        id: d.id,
+        data: d.data,
+        referencia: d.referencia,
+        historico: d.descricao,
+        categoria_id: d.categoria_id,
+        categoria: d.categorias_despesas?.nome || '—',
+        valor: Number(d.valor || 0),
+        credor_id: d.credor_id,
+        tipo_caixa_id: d.tipo_caixa_id,
+        raw: d,
+      })),
+    ].sort((a, b) => String(a.data).localeCompare(String(b.data)) || a.historico.localeCompare(b.historico));
+    setItens(linhas);
+    setLoadingItens(false);
+  };
+
+  const cancelarImportacao = async (imp) => {
+    const ok = window.confirm('Deseja cancelar esta importação? Os lançamentos financeiros vinculados serão removidos e a importação ficará no histórico como cancelada.');
+    if (!ok) return;
+    try {
+      const { error: e1 } = await supabase.from('lancamentos_financeiros').delete().eq('importacao_id', imp.id);
+      if (e1) throw e1;
+      const { error: e2 } = await supabase.from('despesas').delete().eq('importacao_id', imp.id);
+      if (e2) throw e2;
+      const { error: eItens } = await supabase.from('importacao_bancaria_itens').update({ status: 'cancelado' }).eq('importacao_id', imp.id);
+      if (eItens) throw eItens;
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: e3 } = await supabase
+        .from('importacoes_bancarias')
+        .update({
+          status: 'cancelado',
+          cancelado_em: new Date().toISOString(),
+          cancelado_por: userData?.user?.id ?? null,
+          total_importados: 0,
+          total_receitas: 0,
+          total_despesas: 0,
+          total_receitas_valor: 0,
+          total_despesas_valor: 0,
+        })
+        .eq('id', imp.id);
+      if (e3) throw e3;
+      push('Importação cancelada e lançamentos removidos.');
+      await importacoes.reload();
+      window.dispatchEvent(
+        new CustomEvent('igreja:tableRefresh', {
+          detail: { table: 'importacoes_bancarias' },
+        }),
+      );
+      if (detalhe?.id === imp.id) setDetalhe(null);
+    } catch (e) {
+      push(e.message || 'Erro ao cancelar importação.', 'error');
+    }
+  };
+
+  const salvarEdicao = async () => {
+    try {
+      if (!editando?.id) return;
+      if (editando.origem === 'receita') {
+        let membroId = editando.membro_id || null;
+        const nomeExtraido = extrairNomeReceita(editando);
+        if (!membroId && nomeExtraido) {
+          const membroExistente = findMembroByImportIdentity(membros.rows, nomeExtraido, editando?.raw?.documento_transacao || editando?.documento_transacao || '');
+          if (membroExistente?.id) membroId = membroExistente.id;
+        }
+        if (isDizimoTipo(editando.categoria) && !membroId) {
+          if (nomeExtraido) {
+            const membroCriado = await getOrCreateMembroHistorico(nomeExtraido, editando?.raw?.documento_transacao || editando?.documento_transacao || '');
+            membroId = membroCriado?.id || null;
+          }
+          if (!membroId) throw new Error('Para lançamento de Dízimo, selecione o membro ou crie/vincule pelo nome identificado no histórico.');
+        }
+        const { error } = await supabase
+          .from('lancamentos_financeiros')
+          .update({
+            data: editando.data,
+            referencia: ensureReferencia(editando.referencia, editando.data),
+            tipo: editando.categoria,
+            membro_id: membroId,
+            valor: Number(editando.valor || 0),
+            observacoes: editando.historico,
+          })
+          .eq('id', editando.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('despesas')
+          .update({
+            data: editando.data,
+            referencia: ensureReferencia(editando.referencia, editando.data),
+            categoria_id: editando.categoria_id || null,
+            descricao: editando.historico,
+            valor: Number(editando.valor || 0),
+          })
+          .eq('id', editando.id);
+        if (error) throw error;
+      }
+      push('Lançamento importado atualizado.');
+      setEditando(null);
+      carregarItens(detalhe);
+    } catch (e) {
+      push(e.message || 'Erro ao editar lançamento importado.', 'error');
+    }
+  };
+
+  const refFiltro = ensureReferencia(referencia || currentReferencia());
+  const caixaFiltroIds = Array.isArray(caixaIds) ? caixaIds : [];
+  const historicoGlobalFilters = useMemo(() => ({ referencia: refFiltro, caixaIds: caixaFiltroIds }), [refFiltro, caixaFiltroIds]);
+  const importacoesVisiveis = useMemo(
+    () =>
+      (importacoes.rows || []).filter((imp) => {
+        const rowDate = String(imp.created_at || '').slice(0, 10);
+        return rowMatchesFinanceFilter(
+          {
+            ...imp,
+            data: rowDate,
+            referencia: ensureReferencia(imp.referencia || referenciaFromDate(rowDate), rowDate),
+            tipo_caixa_id: imp.tipo_caixa_id,
+          },
+          filter,
+          historicoGlobalFilters,
+        );
+      }),
+    [importacoes.rows, filter, historicoGlobalFilters],
+  );
+
+  useEffect(() => {
+    const ids = importacoesVisiveis.map((imp) => imp.id).filter(Boolean);
+    if (!ids.length) {
+      setTotaisCalculados({});
+      return;
+    }
+    let alive = true;
+    (async () => {
+      const [{ data: recs }, { data: deps }] = await Promise.all([supabase.from('lancamentos_financeiros').select('importacao_id,valor').in('importacao_id', ids), supabase.from('despesas').select('importacao_id,valor').in('importacao_id', ids)]);
+      if (!alive) return;
+      const map = {};
+      ids.forEach((id) => {
+        map[id] = {
+          receitas: 0,
+          despesas: 0,
+          receitasValor: 0,
+          despesasValor: 0,
+        };
+      });
+      (recs || []).forEach((r) => {
+        if (!map[r.importacao_id]) return;
+        map[r.importacao_id].receitas += 1;
+        map[r.importacao_id].receitasValor += Number(r.valor || 0);
+      });
+      (deps || []).forEach((d) => {
+        if (!map[d.importacao_id]) return;
+        map[d.importacao_id].despesas += 1;
+        map[d.importacao_id].despesasValor += Number(d.valor || 0);
+      });
+      setTotaisCalculados(map);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [importacoesVisiveis.map((imp) => `${imp.id}:${imp.status}:${imp.total_importados}:${imp.total_receitas_valor}:${imp.total_despesas_valor}`).join('|')]);
+
+  const totalReceitas = (imp) => {
+    const calc = totaisCalculados[imp.id];
+    return Number(calc?.receitasValor ?? imp.total_receitas_valor ?? 0);
+  };
+  const totalDespesas = (imp) => {
+    const calc = totaisCalculados[imp.id];
+    return Number(calc?.despesasValor ?? imp.total_despesas_valor ?? 0);
+  };
+  const totalItensImportados = (imp) => {
+    const calc = totaisCalculados[imp.id];
+    return Number((calc ? calc.receitas + calc.despesas : null) ?? imp.total_importados ?? imp.total_itens ?? 0);
+  };
+  const historicoResumo = useMemo(() => {
+    const receitas = importacoesVisiveis.reduce((sum, imp) => sum + totalReceitas(imp), 0);
+    const despesas = importacoesVisiveis.reduce((sum, imp) => sum + totalDespesas(imp), 0);
+    const registros = importacoesVisiveis.reduce((sum, imp) => sum + totalItensImportados(imp), 0);
+    return { receitas, despesas, saldo: receitas - despesas, registros };
+  }, [importacoesVisiveis, totaisCalculados]);
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <h2 style={{ margin: 0 }}>Histórico de Importações Bancárias</h2>
+        <button className="smallBtn secondary" onClick={() => importacoes.reload()}>
+          Atualizar
+        </button>
+      </div>
+      <div className="alert">
+        <b>Rastreabilidade:</b> toda importação fica vinculada aos lançamentos criados. Use o filtro abaixo para revisar uma referência, um período, um ano ou todo o histórico.
+      </div>
+      <FinancePeriodPanel filter={filter} setFilter={setFilter} referenciaGlobal={referencia} resumo={historicoResumo} compact />
+      <div className="tablewrap financeHistoryTable">
+        <table>
+          <thead>
+            <tr>
+              <th>Data/hora</th>
+              <th>Banco</th>
+              <th>Caixa</th>
+              <th>Referência</th>
+              <th>Arquivo</th>
+              <th>Itens</th>
+              <th>Receitas</th>
+              <th>Despesas</th>
+              <th>Status</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {importacoesVisiveis.map((imp) => (
+              <tr key={imp.id}>
+                <td>{new Date(imp.created_at).toLocaleString('pt-BR')}</td>
+                <td>{bancoNome(imp.banco_id)}</td>
+                <td>{caixaNome(imp.tipo_caixa_id)}</td>
+                <td>{fmtReferencia(imp.referencia)}</td>
+                <td>{imp.arquivo_nome || '—'}</td>
+                <td>{totalItensImportados(imp)}</td>
+                <td className="moneyIncome">
+                  <b>{fmtMoney(totalReceitas(imp))}</b>
+                </td>
+                <td className="moneyExpense">
+                  <b>{fmtMoney(totalDespesas(imp))}</b>
+                </td>
+                <td>
+                  <span className={`badge ${imp.status === 'cancelado' ? 'Cancelado' : 'Recebido'}`}>{imp.status === 'cancelado' ? 'Cancelado' : imp.status || 'Importado'}</span>
+                </td>
+                <td className="actions">
+                  <button className="smallBtn secondary" onClick={() => carregarItens(imp)}>
+                    Visualizar
+                  </button>
+                  {imp.status !== 'cancelado' && (
+                    <button className="smallBtn danger" onClick={() => cancelarImportacao(imp)}>
+                      Cancelar
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!importacoesVisiveis.length && <div className="empty">Nenhuma importação bancária encontrada para a referência/caixa selecionados.</div>}
+      </div>
+
+      {detalhe && (
+        <Modal title={`Importação — ${detalhe.arquivo_nome || fmtReferencia(detalhe.referencia)}`} onClose={() => setDetalhe(null)} wide>
+          {loadingItens ? (
+            <p>Carregando lançamentos...</p>
+          ) : (
+            <div className="tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tipo</th>
+                    <th>Data</th>
+                    <th>Referência</th>
+                    <th>Identificado</th>
+                    <th>Histórico</th>
+                    <th>Categoria/Tipo</th>
+                    <th>Valor</th>
+                    <th>Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {itens.map((it) => (
+                    <tr key={`${it.origem}-${it.id}`}>
+                      <td>
+                        <span className={`badge ${it.origem === 'receita' ? 'Receita' : 'Despesa'}`}>{it.origem === 'receita' ? 'Receita' : 'Despesa'}</span>
+                      </td>
+                      <td>{fmtDate(it.data)}</td>
+                      <td>{fmtReferencia(it.referencia)}</td>
+                      <td>{it.origem === 'receita' ? membroNome(it.membro_id) || extrairNomeReceita(it) || '—' : credorNome(it.credor_id) || '—'}</td>
+                      <td>{it.historico}</td>
+                      <td>{it.categoria}</td>
+                      <td className={it.origem === 'receita' ? 'moneyIncome' : 'moneyExpense'}>
+                        <b>{fmtMoney(it.valor)}</b>
+                      </td>
+                      <td className="actions">
+                        <button
+                          className="smallBtn secondary"
+                          onClick={() => {
+                            const nomeExtraido = it.origem === 'receita' ? extrairNomeReceita(it) : '';
+                            const membroSugerido = nomeExtraido ? findMembroByImportIdentity(membros.rows, nomeExtraido, it.raw?.documento_transacao || it.documento_transacao || '') : null;
+                            setEditando({
+                              ...it,
+                              membro_id: it.membro_id || membroSugerido?.id || '',
+                            });
+                          }}
+                        >
+                          Editar
+                        </button>
+                        {it.origem === 'receita' && (
+                          <button
+                            className="smallBtn"
+                            onClick={() =>
+                              abrirRecibo({
+                                igreja: igrejaRecibo,
+                                numero: incomeReceiptNumber(it.raw || it),
+                                nome: membroNome(it.membro_id) || extractOfxPessoa(it.historico, 'receita').nome_identificado || 'Contribuinte',
+                                valor: it.valor,
+                                referencia: it.referencia,
+                                tipo: it.categoria,
+                                data: it.data,
+                                caixa: caixaNome(it.tipo_caixa_id),
+                                historico: it.historico,
+                              })
+                            }
+                          >
+                            Recibo 2 vias
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!itens.length && <div className="empty">Nenhum lançamento vinculado. A importação pode ter sido cancelada.</div>}
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {editando && (
+        <Modal title="Editar lançamento importado" onClose={() => setEditando(null)} wide className={`financeEditModal ${editando.origem === 'receita' ? 'receita' : 'despesa'}`}>
+          <div className={`financeEditBanner ${editando.origem === 'receita' ? 'receita' : 'despesa'}`}>
+            <b>{editando.origem === 'receita' ? 'Receita' : 'Despesa'}</b>
+            <span>{editando.origem === 'receita' ? 'Valores e campos de receita ficam em verde. Dízimo exige vínculo com membro.' : 'Valores e campos de despesa ficam em vermelho.'}</span>
+          </div>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Data</label>
+              <div className="inlineSelectAction">
+                <input type="date" value={editando.data || ''} onChange={(e) => setEditando({ ...editando, data: e.target.value })} />
+                <button type="button" className="smallBtn secondary nowrapBtn" onClick={() => setEditando({ ...editando, data: todayISO() })}>
+                  Hoje
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>Referência</label>
+              <input type="month" value={editando.referencia || currentReferencia()} onChange={(e) => setEditando({ ...editando, referencia: e.target.value })} />
+            </div>
+            <div className="field">
+              <label>Valor</label>
+              <MoneyInput value={editando.valor ?? '0.00'} onChange={(valor) => setEditando({ ...editando, valor })} className={editando.origem === 'despesa' ? 'expenseMoney' : 'incomeMoney'} />
+            </div>
+            {editando.origem === 'receita' ? (
+              <div className="field">
+                <label>Tipo de receita</label>
+                <div className="inlineSelectAction">
+                  <SearchableSelect value={editando.categoria || ''} onChange={(valor) => setEditando({ ...editando, categoria: valor })} options={tipoReceitaOptionsForEdit(editando.categoria)} placeholder="Selecione o tipo de receita..." />
+                  <button type="button" className="smallBtn green nowrapBtn" onClick={criarTipoReceitaRapidoHistorico}>
+                    + Novo
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="field">
+                <label>Categoria de despesa</label>
+                <div className="inlineSelectAction">
+                  <SearchableSelect
+                    value={editando.categoria_id || ''}
+                    onChange={(valor) =>
+                      setEditando({
+                        ...editando,
+                        categoria_id: valor,
+                        categoria: categorias.options.find((o) => String(o.value) === String(valor))?.label || editando.categoria,
+                      })
+                    }
+                    options={categorias.options}
+                    placeholder="Selecione a categoria..."
+                  />
+                  <button type="button" className="smallBtn red nowrapBtn" onClick={criarCategoriaDespesaRapidaHistorico}>
+                    + Novo
+                  </button>
+                </div>
+              </div>
+            )}
+            {editando.origem === 'receita' && (
+              <div className="field full">
+                <label>Membro / contribuinte {isDizimoTipo(editando.categoria) ? '*' : ''}</label>
+                <div className="inlineSelectAction">
+                  <SearchableSelect value={editando.membro_id || ''} onChange={(valor) => setEditando({ ...editando, membro_id: valor })} options={membroOptions} placeholder="Pesquisar membro cadastrado..." />
+                  <button type="button" className="smallBtn green nowrapBtn" onClick={criarMembroDaReceitaEditada}>
+                    Criar/vincular
+                  </button>
+                </div>
+                <small className="muted">
+                  Nome identificado no histórico: <b>{extrairNomeReceita(editando) || 'não identificado'}</b>. Para Dízimo, o lançamento precisa ficar vinculado a um membro.
+                </small>
+              </div>
+            )}
+            <div className="field full">
+              <label>Histórico/descrição</label>
+              <textarea value={editando.historico || ''} onChange={(e) => setEditando({ ...editando, historico: e.target.value })} />
+            </div>
+          </div>
+          <div className="formActions">
+            <button className="secondary" onClick={() => setEditando(null)}>
+              Cancelar
+            </button>
+            <button className={editando.origem === 'despesa' ? 'red' : 'green'} onClick={salvarEdicao}>
+              Salvar alterações
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function SecurePasswordModal({ title, actionLabel = 'Confirmar ação', onCancel, onConfirmed }) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const confirmar = async (event) => {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    const { data } = await supabase.auth.getUser();
+    const email = data?.user?.email;
+    if (!email) {
+      setError('Sessão do usuário não encontrada.');
+      setBusy(false);
+      return;
+    }
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (authError) {
+      setError('Senha incorreta. A ação não foi realizada.');
+      setBusy(false);
+      return;
+    }
+    try {
+      await onConfirmed();
+    } catch (actionError) {
+      setError(actionError?.message || 'Não foi possível concluir a ação.');
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+  };
+  return (
+    <Modal title={title} onClose={() => !busy && onCancel()}>
+      <form className="secureAction" onSubmit={confirmar}>
+        <div className="secureActionIntro">
+          <span>🔐</span>
+          <div>
+            <b>Confirmação de segurança</b>
+            <p>Digite sua senha atual. Ela será validada diretamente pelo serviço de autenticação e não será armazenada.</p>
+          </div>
+        </div>
+        {error && <div className="alert">{error}</div>}
+        <div className="field">
+          <label>Senha do usuário *</label>
+          <input autoFocus type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Digite sua senha atual" />
+        </div>
+        <div className="modalActions">
+          <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
+            Cancelar
+          </button>
+          <button type="submit" disabled={busy || !password}>
+            {busy ? 'Validando…' : actionLabel}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function TransferenciaPage() {
+  // Compatibilidade: “Repetir próximo mês” continua sendo uma preparação manual; “Agendar recorrência” cria a agenda.
+  const tenant = React.useContext(TenantContext);
+  const { referencia } = useGlobalFilters();
+  const access = usePermissions();
+  const caixas = useLookup('tipos_caixa');
+  const transferencias = useTable('transferencias_caixas', {
+    order: 'data',
+    ascending: false,
+  });
+  const agendamentos = useTable('transferencias_agendadas', {
+    order: 'proxima_data',
+    ascending: true,
+  });
+  const fechamentos = useTable('fechamentos_mensais', {
+    order: 'ano',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const empty = () => ({
+    data: todayISO(),
+    referencia: ensureReferencia(referencia || currentReferencia()),
+    caixa_origem_id: '',
+    caixa_destino_id: '',
+    valor: '0.00',
+    descricao: 'Transferência entre caixas',
+    observacoes: '',
+  });
+  const [form, setForm] = useState(empty);
+  const [editing, setEditing] = useState(null);
+  const [secureAction, setSecureAction] = useState(null);
+  const [scheduleModal, setScheduleModal] = useState(null);
+  const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  useEffect(() => setForm((f) => (editing ? f : { ...f, referencia: ensureReferencia(referencia || f.referencia) })), [referencia, editing]);
+  const fechado = (caixaId, ref) => {
+    const [ano, mes] = ensureReferencia(ref).split('-').map(Number);
+    return fechamentos.rows.some((f) => f.tipo_caixa_id === caixaId && Number(f.ano) === ano && Number(f.mes) === mes && f.status === 'fechado');
+  };
+  const validar = () => {
+    if (!form.data || !form.referencia || !form.caixa_origem_id || !form.caixa_destino_id) return 'Preencha data, referência, origem e destino.';
+    if (form.caixa_origem_id === form.caixa_destino_id) return 'Origem e destino devem ser caixas diferentes.';
+    const origem = caixas.rows.find((c) => String(c.id) === String(form.caixa_origem_id));
+    const destino = caixas.rows.find((c) => String(c.id) === String(form.caixa_destino_id));
+    if (!caixaEstaAtivo(origem) || !caixaEstaAtivo(destino)) return 'Caixas inativos não podem receber novas transferências. Selecione caixas ativos.';
+    if (Number(form.valor) <= 0) return 'Informe um valor maior que zero.';
+    if (fechado(form.caixa_origem_id, form.referencia) || fechado(form.caixa_destino_id, form.referencia)) return 'Um dos caixas está fechado nesta referência. Reabra o fechamento antes da transferência.';
+    return '';
+  };
+  const salvar = async () => {
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = {
+      empresa_id: tenant.empresaId,
+      data: form.data,
+      referencia: form.referencia,
+      caixa_origem_id: form.caixa_origem_id,
+      caixa_destino_id: form.caixa_destino_id,
+      valor: Number(form.valor),
+      descricao: form.descricao || 'Transferência entre caixas',
+      observacoes: form.observacoes || null,
+    };
+    const { error } = editing ? await supabase.from('transferencias_caixas').update(payload).eq('id', editing.id) : await supabase.from('transferencias_caixas').insert({ ...payload, created_by: userData?.user?.id || null });
+    if (error) throw error;
+    push(editing ? 'Transferência atualizada com segurança.' : 'Transferência realizada com segurança.');
+    setEditing(null);
+    setForm(empty());
+    setSecureAction(null);
+    transferencias.reload();
+  };
+  const solicitarSalvar = () => {
+    const error = validar();
+    if (error) {
+      push(error, 'error');
+      return;
+    }
+    const permission = editing ? 'update' : 'create';
+    if (!access.can('financeiro', permission)) {
+      push('Seu perfil não tem permissão para esta operação.', 'error');
+      return;
+    }
+    setSecureAction({
+      title: editing ? 'Autorizar edição da transferência' : 'Autorizar transferência',
+      label: editing ? 'Salvar alteração' : 'Confirmar transferência',
+      run: salvar,
+    });
+  };
+  const editar = (row) => {
+    setEditing(row);
+    setForm({
+      data: row.data,
+      referencia: row.referencia,
+      caixa_origem_id: row.caixa_origem_id,
+      caixa_destino_id: row.caixa_destino_id,
+      valor: String(row.valor),
+      descricao: row.descricao || '',
+      observacoes: row.observacoes || '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const solicitarEstorno = (row) => {
+    if (!access.can('financeiro', 'delete')) {
+      push('Seu perfil não tem permissão para estornar transferências.', 'error');
+      return;
+    }
+    if (fechado(row.caixa_origem_id, row.referencia) || fechado(row.caixa_destino_id, row.referencia)) {
+      push('Transferência de período fechado. Reabra os dois caixas antes de estornar.', 'error');
+      return;
+    }
+    setSecureAction({
+      title: 'Autorizar estorno da transferência',
+      label: 'Confirmar estorno',
+      run: async () => {
+        const { data: userData } = await supabase.auth.getUser();
+        const { error } = await supabase
+          .from('transferencias_caixas')
+          .update({
+            status: 'estornada',
+            estornada_em: new Date().toISOString(),
+            estornada_por: userData?.user?.id || null,
+          })
+          .eq('id', row.id);
+        if (error) throw error;
+        push('Transferência estornada. O histórico foi preservado.');
+        setSecureAction(null);
+        transferencias.reload();
+      },
+    });
+  };
+  const repetir = (row) => {
+    const [ano, mes] = row.referencia.split('-').map(Number);
+    const next = new Date(ano, mes, 1);
+    setEditing(null);
+    setForm({
+      ...empty(),
+      data: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`,
+      referencia: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`,
+      caixa_origem_id: row.caixa_origem_id,
+      caixa_destino_id: row.caixa_destino_id,
+      valor: String(row.valor),
+      descricao: row.descricao,
+      observacoes: row.observacoes || '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const proximoMes = (ref) => {
+    const [a, m] = ensureReferencia(ref).split('-').map(Number);
+    const d = new Date(a, m, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  };
+  const abrirAgendamento = (row) =>
+    setScheduleModal({
+      id: null,
+      caixa_origem_id: row.caixa_origem_id,
+      caixa_destino_id: row.caixa_destino_id,
+      valor: String(row.valor),
+      descricao: row.descricao || 'Transferência entre caixas',
+      observacoes: row.observacoes || '',
+      proxima_data: proximoMes(row.referencia),
+      frequencia: 'mensal',
+      dia_execucao: 1,
+      data_fim: '',
+      max_ocorrencias: '',
+      ativo: true,
+    });
+  const editarAgendamento = (row) =>
+    setScheduleModal({
+      ...row,
+      valor: String(row.valor),
+      data_fim: row.data_fim || '',
+      max_ocorrencias: row.max_ocorrencias || '',
+    });
+  const validarAgendamento = () => {
+    const a = scheduleModal;
+    if (!a?.caixa_origem_id || !a?.caixa_destino_id || !a?.proxima_data) return 'Preencha origem, destino e próxima data.';
+    if (a.caixa_origem_id === a.caixa_destino_id) return 'Origem e destino devem ser diferentes.';
+    const origem = caixas.rows.find((c) => String(c.id) === String(a.caixa_origem_id));
+    const destino = caixas.rows.find((c) => String(c.id) === String(a.caixa_destino_id));
+    if (!caixaEstaAtivo(origem) || !caixaEstaAtivo(destino)) return 'Substitua o caixa inativo antes de salvar a recorrência.';
+    if (Number(a.valor) <= 0) return 'Informe um valor maior que zero.';
+    if (a.data_fim && a.data_fim < a.proxima_data) return 'A data final deve ser posterior à próxima ocorrência.';
+    return '';
+  };
+  const solicitarSalvarAgendamento = () => {
+    const error = validarAgendamento();
+    if (error) {
+      push(error, 'error');
+      return;
+    }
+    setSecureAction({
+      title: scheduleModal.id ? 'Autorizar edição do agendamento' : 'Autorizar novo agendamento',
+      label: scheduleModal.id ? 'Salvar agendamento' : 'Criar agendamento',
+      run: async () => {
+        const { data: userData } = await supabase.auth.getUser();
+        const payload = {
+          empresa_id: tenant.empresaId,
+          caixa_origem_id: scheduleModal.caixa_origem_id,
+          caixa_destino_id: scheduleModal.caixa_destino_id,
+          valor: Number(scheduleModal.valor),
+          descricao: scheduleModal.descricao || 'Transferência entre caixas',
+          observacoes: scheduleModal.observacoes || null,
+          proxima_data: scheduleModal.proxima_data,
+          frequencia: scheduleModal.frequencia,
+          dia_execucao: Number(scheduleModal.dia_execucao) || 1,
+          data_fim: scheduleModal.data_fim || null,
+          max_ocorrencias: scheduleModal.max_ocorrencias ? Number(scheduleModal.max_ocorrencias) : null,
+          status: 'ativo',
+        };
+        const { error } = scheduleModal.id ? await supabase.from('transferencias_agendadas').update(payload).eq('id', scheduleModal.id) : await supabase.from('transferencias_agendadas').insert({ ...payload, created_by: userData?.user?.id || null });
+        if (error) throw error;
+        push(scheduleModal.id ? 'Agendamento atualizado.' : 'Recorrência agendada. Nenhum valor foi movimentado.');
+        setScheduleModal(null);
+        setSecureAction(null);
+        agendamentos.reload();
+      },
+    });
+  };
+  const confirmarAgendamento = (row) => {
+    const origem = caixas.rows.find((c) => String(c.id) === String(row.caixa_origem_id));
+    const destino = caixas.rows.find((c) => String(c.id) === String(row.caixa_destino_id));
+    if (!caixaEstaAtivo(origem) || !caixaEstaAtivo(destino)) {
+      push('Esta recorrência usa um caixa inativo. Edite e substitua o caixa antes de confirmar.', 'error');
+      return;
+    }
+    const ref = referenciaFromDate(row.proxima_data);
+    if (fechado(row.caixa_origem_id, ref) || fechado(row.caixa_destino_id, ref)) {
+      push('Um dos caixas está fechado na referência programada. Reabra-o antes de confirmar.', 'error');
+      return;
+    }
+    setSecureAction({
+      title: 'Autorizar transferência programada',
+      label: 'Confirmar transferência',
+      run: async () => {
+        const { error } = await supabase.rpc('executar_transferencia_agendada', { p_agendamento_id: row.id });
+        if (error) throw error;
+        push('Transferência programada confirmada e registrada.');
+        setSecureAction(null);
+        agendamentos.reload();
+        transferencias.reload();
+      },
+    });
+  };
+  const adiarAgendamento = (row) =>
+    setSecureAction({
+      title: 'Autorizar adiamento',
+      label: 'Adiar 7 dias',
+      run: async () => {
+        const d = new Date(`${row.proxima_data}T12:00:00`);
+        d.setDate(d.getDate() + 7);
+        const { error } = await supabase
+          .from('transferencias_agendadas')
+          .update({ proxima_data: d.toISOString().slice(0, 10) })
+          .eq('id', row.id);
+        if (error) throw error;
+        push('Agendamento adiado por 7 dias.');
+        setSecureAction(null);
+        agendamentos.reload();
+      },
+    });
+  const cancelarAgendamento = (row) =>
+    setSecureAction({
+      title: 'Autorizar encerramento da recorrência',
+      label: 'Encerrar recorrência',
+      run: async () => {
+        const { error } = await supabase
+          .from('transferencias_agendadas')
+          .update({
+            status: 'cancelado',
+            cancelado_em: new Date().toISOString(),
+          })
+          .eq('id', row.id);
+        if (error) throw error;
+        push('Recorrência encerrada. O histórico foi preservado.');
+        setSecureAction(null);
+        agendamentos.reload();
+      },
+    });
+  const agendamentosAtivos = agendamentos.rows.filter((a) => a.status === 'ativo');
+  const statusAgendamento = (a) => (a.status !== 'ativo' ? 'Encerrado' : a.proxima_data < todayISO() ? 'Vencida' : a.proxima_data === todayISO() ? 'Aguardando' : 'Programada');
+  const ativas = transferencias.rows.filter((t) => t.status !== 'estornada');
+  const total = ativas.reduce((s, t) => s + Number(t.valor || 0), 0);
+  return (
+    <div className="transferPage">
+      <ToastStack toasts={toasts} close={close} />
+      <section className="transferHero">
+        <div>
+          <span className="eyebrow">Movimentação interna</span>
+          <h2>Transferência entre caixas</h2>
+          <p>Mova recursos sem registrar receita ou despesa. Cada operação mantém origem, destino, usuário e histórico.</p>
+        </div>
+        <div className="transferHeroStat">
+          <span>Transferido</span>
+          <b>{fmtMoney(total)}</b>
+          <small>
+            {ativas.length} efetivada(s) · {agendamentosAtivos.length} programada(s)
+          </small>
+        </div>
+      </section>
+      <section className="card transferComposer">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">{editing ? 'Ajuste autorizado' : 'Nova transferência'}</span>
+            <h2>{editing ? 'Editar transferência' : 'Origem → destino'}</h2>
+          </div>
+          {editing && (
+            <button
+              className="secondary"
+              onClick={() => {
+                setEditing(null);
+                setForm(empty());
+              }}
+            >
+              Cancelar edição
+            </button>
+          )}
+        </div>
+        <div className="transferRoute">
+          <div className="field">
+            <label>Caixa de origem *</label>
+            <select value={form.caixa_origem_id} onChange={(e) => setForm({ ...form, caixa_origem_id: e.target.value })}>
+              <option value="">Selecione a origem</option>
+              {caixas.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <span className="transferArrow">→</span>
+          <div className="field">
+            <label>Caixa de destino *</label>
+            <select value={form.caixa_destino_id} onChange={(e) => setForm({ ...form, caixa_destino_id: e.target.value })}>
+              <option value="">Selecione o destino</option>
+              {caixas.options
+                .filter((o) => o.value !== form.caixa_origem_id)
+                .map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid cols4">
+          <div className="field">
+            <label>Valor *</label>
+            <MoneyInput value={form.valor} onChange={(valor) => setForm({ ...form, valor })} />
+          </div>
+          <div className="field">
+            <label>Data *</label>
+            <input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Referência *</label>
+            <input type="month" value={form.referencia} onChange={(e) => setForm({ ...form, referencia: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Finalidade</label>
+            <input value={form.descricao} onChange={(e) => setForm({ ...form, descricao: e.target.value })} placeholder="Ex.: Reserva para compra do barco" />
+          </div>
+          <div className="field full">
+            <label>Observações</label>
+            <textarea value={form.observacoes} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} placeholder="Informações para conferência e auditoria" />
+          </div>
+        </div>
+        <div className="transferConfirmBar">
+          <div>
+            <b>Protegido por confirmação de senha</b>
+            <span>A operação somente será gravada após validar a senha do usuário atual.</span>
+          </div>
+          <button onClick={solicitarSalvar}>{editing ? 'Salvar com senha' : 'Transferir com segurança'}</button>
+        </div>
+      </section>
+      <section className="card scheduledTransfers">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">Agenda financeira</span>
+            <h2>Transferências programadas</h2>
+            <p className="muted">Nenhum valor é movimentado automaticamente. Cada ocorrência exige confirmação por senha.</p>
+          </div>
+          <span className="badge">{agendamentosAtivos.length} ativa(s)</span>
+        </div>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Próxima data</th>
+                <th>Rota</th>
+                <th>Valor</th>
+                <th>Recorrência</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agendamentos.rows.map((a) => {
+                const status = statusAgendamento(a);
+                return (
+                  <tr key={a.id} className={a.status !== 'ativo' ? 'transferCancelled' : ''}>
+                    <td>
+                      <b>{fmtDate(a.proxima_data)}</b>
+                      <small className="blockText muted">{a.ocorrencias_executadas || 0} executada(s)</small>
+                    </td>
+                    <td>
+                      {caixaMap[a.caixa_origem_id] || '—'} → {caixaMap[a.caixa_destino_id] || '—'}
+                    </td>
+                    <td>
+                      <b>{fmtMoney(a.valor)}</b>
+                    </td>
+                    <td>{a.frequencia === 'mensal' ? 'Mensal' : a.frequencia === 'trimestral' ? 'Trimestral' : 'Anual'}</td>
+                    <td>
+                      <span className={`badge ${status === 'Vencida' ? 'Pendente' : status === 'Aguardando' ? 'Recebido' : ''}`}>{status}</span>
+                    </td>
+                    <td>
+                      <div className="actionsInline">
+                        {a.status === 'ativo' && (
+                          <>
+                            <button className="smallBtn green" onClick={() => confirmarAgendamento(a)}>
+                              Confirmar
+                            </button>
+                            <button className="smallBtn secondary" onClick={() => adiarAgendamento(a)}>
+                              Adiar
+                            </button>
+                            <button className="smallBtn secondary" onClick={() => editarAgendamento(a)}>
+                              Editar
+                            </button>
+                            <button className="smallBtn red" onClick={() => cancelarAgendamento(a)}>
+                              Encerrar
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!agendamentos.rows.length && (
+                <tr>
+                  <td colSpan="6">
+                    <div className="emptyState">
+                      <b>Nenhum agendamento</b>
+                      <span>Use “Agendar recorrência” em uma transferência do histórico.</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="card">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">Auditoria</span>
+            <h2>Histórico de transferências</h2>
+          </div>
+          <span className="badge">{transferencias.rows.length} registros</span>
+        </div>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data/Referência</th>
+                <th>Rota</th>
+                <th>Finalidade</th>
+                <th>Valor</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transferencias.rows.map((row) => (
+                <tr key={row.id} className={row.status === 'estornada' ? 'transferCancelled' : ''}>
+                  <td>
+                    {fmtDate(row.data)}
+                    <small className="blockText muted">{fmtReferencia(row.referencia)}</small>
+                  </td>
+                  <td>
+                    <b>
+                      {caixaMap[row.caixa_origem_id] || '—'} → {caixaMap[row.caixa_destino_id] || '—'}
+                    </b>
+                  </td>
+                  <td>
+                    {row.descricao}
+                    <small className="blockText muted">{row.observacoes || 'Sem observações'}</small>
+                  </td>
+                  <td>
+                    <b>{fmtMoney(row.valor)}</b>
+                  </td>
+                  <td>
+                    <span className={`badge ${row.status === 'estornada' ? 'Cancelada' : 'Recebido'}`}>{row.status === 'estornada' ? 'Estornada' : 'Efetivada'}</span>
+                  </td>
+                  <td>
+                    <div className="actionsInline">
+                      {row.status !== 'estornada' && (
+                        <>
+                          {access.can('financeiro', 'update') && (
+                            <button className="smallBtn secondary" onClick={() => editar(row)}>
+                              Editar
+                            </button>
+                          )}
+                          <button className="smallBtn secondary" onClick={() => repetir(row)}>
+                            Repetir agora
+                          </button>
+                          <button className="smallBtn secondary" onClick={() => abrirAgendamento(row)}>
+                            Agendar recorrência
+                          </button>
+                          {access.can('financeiro', 'delete') && (
+                            <button className="smallBtn red" onClick={() => solicitarEstorno(row)}>
+                              Estornar
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!transferencias.rows.length && (
+                <tr>
+                  <td colSpan="6">
+                    <div className="emptyState">
+                      <b>Nenhuma transferência realizada</b>
+                      <span>Escolha a origem, o destino e confirme a primeira movimentação.</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {scheduleModal && (
+        <Modal title={scheduleModal.id ? 'Editar agendamento' : 'Agendar recorrência'} wide onClose={() => setScheduleModal(null)}>
+          <div className="infoBox">
+            <b>Agendamento seguro:</b> o sistema apenas lembrará a transferência. O dinheiro só será movimentado após confirmação por senha.
+          </div>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Caixa de origem *</label>
+              <select
+                value={scheduleModal.caixa_origem_id}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    caixa_origem_id: e.target.value,
+                  })
+                }
+              >
+                {caixas.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Caixa de destino *</label>
+              <select
+                value={scheduleModal.caixa_destino_id}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    caixa_destino_id: e.target.value,
+                  })
+                }
+              >
+                {caixas.options
+                  .filter((o) => o.value !== scheduleModal.caixa_origem_id)
+                  .map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Valor *</label>
+              <MoneyInput value={scheduleModal.valor} onChange={(valor) => setScheduleModal({ ...scheduleModal, valor })} />
+            </div>
+            <div className="field">
+              <label>Próxima data *</label>
+              <input
+                type="date"
+                value={scheduleModal.proxima_data}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    proxima_data: e.target.value,
+                    dia_execucao: Number(e.target.value.slice(8, 10)) || 1,
+                  })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Frequência</label>
+              <select
+                value={scheduleModal.frequencia}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    frequencia: e.target.value,
+                  })
+                }
+              >
+                <option value="mensal">Mensal</option>
+                <option value="trimestral">Trimestral</option>
+                <option value="anual">Anual</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Quantidade máxima (opcional)</label>
+              <input
+                type="number"
+                min="1"
+                value={scheduleModal.max_ocorrencias}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    max_ocorrencias: e.target.value,
+                  })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Data final (opcional)</label>
+              <input
+                type="date"
+                value={scheduleModal.data_fim}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    data_fim: e.target.value,
+                  })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Finalidade</label>
+              <input
+                value={scheduleModal.descricao}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    descricao: e.target.value,
+                  })
+                }
+              />
+            </div>
+            <div className="field full">
+              <label>Observações</label>
+              <textarea
+                value={scheduleModal.observacoes}
+                onChange={(e) =>
+                  setScheduleModal({
+                    ...scheduleModal,
+                    observacoes: e.target.value,
+                  })
+                }
+              />
+            </div>
+          </div>
+          <div className="modalActions">
+            <button className="secondary" onClick={() => setScheduleModal(null)}>
+              Cancelar
+            </button>
+            <button onClick={solicitarSalvarAgendamento}>Continuar e validar senha</button>
+          </div>
+        </Modal>
+      )}
+      {secureAction && <SecurePasswordModal title={secureAction.title} actionLabel={secureAction.label} onCancel={() => setSecureAction(null)} onConfirmed={secureAction.run} />}
+    </div>
+  );
+}
+
+function financeFilterBounds(filter, referenciaGlobal) {
+  const modo = filter?.modo || 'referencia_global';
+  const ref = ensureReferencia(filter?.referencia || referenciaGlobal || currentReferencia());
+  if (modo === 'referencia_global' || modo === 'mes')
+    return {
+      startDate: `${ref}-01`,
+      endDate: monthLastDayISO(ref),
+      startRef: ref,
+      endRef: ref,
+    };
+  if (modo === 'periodo')
+    return {
+      startDate: filter?.dataInicio || '',
+      endDate: filter?.dataFim || '',
+      startRef: referenciaFromDate(filter?.dataInicio),
+      endRef: referenciaFromDate(filter?.dataFim),
+    };
+  if (modo === 'ano') {
+    const ano = String(filter?.ano || ref.slice(0, 4));
+    return {
+      startDate: `${ano}-01-01`,
+      endDate: `${ano}-12-31`,
+      startRef: `${ano}-01`,
+      endRef: `${ano}-12`,
+    };
+  }
+  return { startDate: '', endDate: '', startRef: '', endRef: '' };
+}
+function financeRowIsBefore(row, bounds, filter) {
+  const modo = filter?.modo || 'referencia_global';
+  if (!bounds?.startDate && !bounds?.startRef) return false;
+  if (modo === 'periodo') return String(row?.data || '') < String(bounds.startDate || '0000-00-00');
+  return getRowReferencia(row) < String(bounds.startRef || '0000-00');
+}
+function previousReferencia(ref) {
+  const safe = ensureReferencia(ref || currentReferencia());
+  const [ano, mes] = safe.split('-').map(Number);
+  const date = new Date(ano, mes - 2, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+async function financeClosureFor(tipoCaixaId, referencia) {
+  if (!supabase || !tipoCaixaId || !referencia) return null;
+  const ref = ensureReferencia(referencia);
+  const [ano, mes] = ref.split('-').map(Number);
+  const { data, error } = await supabase.from('fechamentos_mensais').select('id,status').eq('tipo_caixa_id', tipoCaixaId).eq('ano', ano).eq('mes', mes).eq('status', 'fechado').maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+async function ensureFinancePeriodOpen(row) {
+  const fechamento = await financeClosureFor(row?.tipo_caixa_id, row?.referencia || referenciaFromDate(row?.data));
+  if (fechamento) throw new Error(`A competência ${fmtReferencia(row?.referencia || referenciaFromDate(row?.data))} está fechada para este caixa. Reabra o caixa no Fechamento Mensal antes de alterar lançamentos.`);
+}
+function reportTitleFromFilter(filter, referenciaGlobal) {
+  const modo = filter?.modo || 'referencia_global';
+  const ref = ensureReferencia(filter?.referencia || referenciaGlobal || currentReferencia());
+  if (modo === 'referencia_global' || modo === 'mes') return `RELATÓRIO FINANCEIRO DO MÊS DE ${fmtReferencia(ref).toUpperCase()}`;
+  if (modo === 'periodo') return `RELATÓRIO FINANCEIRO DO PERÍODO ${fmtDate(filter?.dataInicio)} A ${fmtDate(filter?.dataFim)}`;
+  if (modo === 'ano') return `RELATÓRIO FINANCEIRO DO ANO DE ${filter?.ano || ref.slice(0, 4)}`;
+  return 'RELATÓRIO FINANCEIRO GERAL';
+}
+function RelatorioFinanceiroPrintHtml({ titulo, linhas, resumo, labelPeriodo, geradoEm }) {
+  const optionalMoney = (value) => (value === null || value === undefined ? '—' : fmtMoney(value));
+  const sheetRow = (label, value, cls = '') => `<div class="sheetRow ${cls}"><span>${safeHtml(label)}</span><b>${optionalMoney(value)}</b></div>`;
+  const caixaRows = linhas.map((l) => `<tr><td><b>${safeHtml(l.nome)}</b></td><td class="moneyIncome">${fmtMoney(l.entradas)}</td><td class="moneyExpense">${fmtMoney(l.despesas)}</td><td class="${l.transferencias < 0 ? 'moneyExpense' : 'moneyIncome'}">${fmtMoney(l.transferencias)}</td><td class="${l.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}"><b>${fmtMoney(l.saldo)}</b></td><td class="${l.saldoAnterior < 0 ? 'moneyExpense' : ''}">${optionalMoney(l.saldoAnterior)}</td><td class="${l.saldoTotal < 0 ? 'moneyExpense' : 'moneyBlue'}"><b>${fmtMoney(l.saldoTotal)}</b></td></tr>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${safeHtml(titulo)}</title><style>
+    :root{--blue:#0969da;--blue-dark:#12395f;--green:#059669;--red:#dc2626;--line:#d8e4f1;--text:#0f172a;--muted:#64748b}*{box-sizing:border-box}body{font-family:Inter,Arial,Helvetica,sans-serif;margin:18px;color:var(--text);background:#f3f6fa}.printActions{position:sticky;top:0;z-index:5;padding:10px 0;background:linear-gradient(180deg,#f3f6fa 70%,rgba(243,246,250,0));}button{border:0;background:var(--blue);color:#fff;border-radius:12px;padding:12px 18px;font-weight:950;cursor:pointer}.financialSheetCard{background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);border:1px solid #cfe0f2;border-radius:22px;padding:18px;margin:0 auto 14px;box-shadow:0 14px 34px rgba(15,41,66,.10);max-width:980px}.financialSheetCard h3{margin:0 auto 14px;text-align:center;border:0;border-radius:14px;color:#fff;background:linear-gradient(135deg,#10243f,#1f5ea8);font-size:22px;padding:13px 16px;box-shadow:0 10px 22px rgba(15,41,66,.10);letter-spacing:.03em}.meta{font-size:13px;color:var(--muted);text-align:center;margin:-5px 0 14px;font-weight:850}.sheetRows{max-width:760px;margin:0 auto;display:grid;gap:10px}.sheetRow{display:grid;grid-template-columns:1fr 230px;align-items:center;border:1px solid var(--line);border-radius:14px;min-height:42px;background:#fff;font-weight:950;letter-spacing:.02em;overflow:hidden;box-shadow:0 4px 12px rgba(15,41,66,.04)}.sheetRow span{padding:9px 14px;text-align:right;text-transform:uppercase;border-right:1px solid var(--line);font-size:14px}.sheetRow b{padding:9px 14px;text-align:right;font-size:22px}.sheetRow.income span,.sheetRow.income b{color:#00a651}.sheetRow.expense span,.sheetRow.expense b{color:#e60000}.sheetRow.total span,.sheetRow.total b{color:#0070c0}.tablewrap{max-width:1120px;margin:0 auto;background:#fff;border:1px solid #cfe0f2;border-radius:18px;overflow:hidden;box-shadow:0 12px 30px rgba(15,41,66,.08)}table{border-collapse:separate;border-spacing:0;width:100%;font-size:14px}th{background:#153f63;color:#fff;text-align:left;text-transform:uppercase;letter-spacing:.055em;font-size:12px}th,td{padding:12px 14px;border-bottom:1px solid #e5edf5;white-space:nowrap}td:nth-child(n+2),th:nth-child(n+2){text-align:right}.moneyIncome{color:#059669;font-weight:950}.moneyExpense{color:#dc2626;font-weight:950}tr:last-child td{border-bottom:0}.printNote{max-width:1120px;margin:12px auto 0;text-align:center;color:#64748b;font-size:12px;font-weight:850}@media print{body{margin:8mm;background:#fff}.printActions{display:none}.financialSheetCard,.tablewrap{box-shadow:none}.financialSheetCard{break-inside:avoid}.tablewrap{break-inside:auto}.financialSheetCard h3{font-size:22px}.sheetRow b{font-size:22px}th,td{font-size:13px;padding:10px 11px}@page{size:portrait;margin:8mm}}
+  </style></head><body><div class="printActions"><button onclick="print()">Imprimir</button></div><main class="financialSheetCard"><h3>${safeHtml(titulo)}</h3><div class="meta">${safeHtml(labelPeriodo)} • Gerado em ${safeHtml(geradoEm)}</div><div class="sheetRows">
+    ${sheetRow(`ENTRADA DO PERÍODO`, resumo.entradas, 'income')}
+    ${sheetRow(`DESPESA DO PERÍODO`, resumo.despesas, 'expense')}
+    ${sheetRow(`SALDO DO PERÍODO`, resumo.saldoPeriodo, resumo.saldoPeriodo < 0 ? 'expense' : 'income')}
+    ${sheetRow(`SALDO ANTERIOR`, resumo.saldoAnterior, resumo.saldoAnterior < 0 ? 'expense' : 'income')}
+    ${sheetRow(`SALDO TOTAL DO PERÍODO`, resumo.saldoTotalPeriodo, resumo.saldoTotalPeriodo < 0 ? 'expense' : 'total')}
+    ${sheetRow(`SALDO ATUAL`, resumo.saldoAtual, resumo.saldoAtual < 0 ? 'expense' : 'total')}
+  </div></main><div class="tablewrap"><table><thead><tr><th>Caixa</th><th>Entradas</th><th>Despesas</th><th>Transferências</th><th>Saldo do período</th><th>Saldo anterior</th><th>Saldo total</th></tr></thead><tbody>${caixaRows || '<tr><td colspan="7">Sem caixas no filtro.</td></tr>'}</tbody></table></div><div class="printNote">Impressão fiel ao relatório exibido no sistema.</div></body></html>`;
+}
+
+function resumoAnualFinanceiro(ano, receitasBase = [], despesasBase = [], transferenciasBase = [], caixaIds = []) {
+  const safeAno =
+    String(ano || currentReferencia().slice(0, 4))
+      .replace(/\D/g, '')
+      .slice(0, 4) || currentReferencia().slice(0, 4);
+  const months = MESES.map((nome, index) => {
+    const ref = `${safeAno}-${String(index + 1).padStart(2, '0')}`;
+    const entradas = receitasBase.filter((r) => getRowReferencia(r) === ref).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const despesas = despesasBase.filter((r) => getRowReferencia(r) === ref).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const entradasAntes = receitasBase.filter((r) => getRowReferencia(r) < ref).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const despesasAntes = despesasBase.filter((r) => getRowReferencia(r) < ref).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const transferenciasMes = transferenciasBase.filter((r) => getRowReferencia(r) === ref);
+    const transferenciasAntes = transferenciasBase.filter((r) => getRowReferencia(r) < ref);
+    const resumoTransferenciasMes = transferenciaResumoPerimetro(transferenciasMes, caixaIds);
+    const transferencias = resumoTransferenciasMes.liquido;
+    const transferenciasMovimentadas = resumoTransferenciasMes.movimentadas;
+    const saldoAnterior = entradasAntes - despesasAntes + transferenciaImpacto(transferenciasAntes, caixaIds);
+    const saldoMensal = entradas - despesas + transferencias;
+    const saldoTotal = saldoAnterior + saldoMensal;
+    return {
+      ref,
+      nome,
+      entradas,
+      despesas,
+      transferencias,
+      transferenciasMovimentadas,
+      saldoAnterior,
+      saldoMensal,
+      saldoTotal,
+      temMovimento: entradas !== 0 || despesas !== 0 || transferenciasMes.length > 0,
+    };
+  });
+  const saldoAtual = months[months.length - 1]?.saldoTotal || 0;
+  return { ano: safeAno, months, saldoAtual };
+}
+function fmtAnnualMoney(value, dashZero = false) {
+  const num = Number(value) || 0;
+  if (dashZero && Math.abs(num) < 0.005) return '—';
+  return num.toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+const annualMoneyClass = (value) => `annualMoneyCell${Number(value) < 0 ? ' negativeMoney' : ''}`;
+function normalizeChurchReportIdentity(empresa = {}, tenant = {}) {
+  const safeEmpresa = empresa && typeof empresa === 'object' ? empresa : {};
+  const safeTenant = tenant && typeof tenant === 'object' ? tenant : {};
+  const nome = String(safeEmpresa.nome_fantasia || safeEmpresa.nome || safeTenant.empresaNome || 'Igreja').trim() || 'Igreja';
+  const local = [safeEmpresa.cidade, safeEmpresa.estado].filter(Boolean).join('/');
+  const dados = [safeEmpresa.cnpj ? `CNPJ: ${safeEmpresa.cnpj}` : '', local].filter(Boolean).join(' • ');
+  const logo = String(safeEmpresa.logomarca || safeEmpresa.logo || safeEmpresa.logo_base64 || '').trim();
+  return { nome, dados, logo };
+}
+function normalizeChurchReceiptIdentity(empresa = {}, tenant = {}) {
+  const safeEmpresa = empresa && typeof empresa === 'object' ? empresa : {};
+  const safeTenant = tenant && typeof tenant === 'object' ? tenant : {};
+  const nome = String(safeEmpresa.nome_fantasia || safeEmpresa.nome || safeTenant.empresaNome || 'Igreja').trim() || 'Igreja';
+  const local = [safeEmpresa.cidade, safeEmpresa.estado].filter(Boolean).join('/');
+  const endereco = [safeEmpresa.endereco, local, safeEmpresa.cep ? `CEP ${safeEmpresa.cep}` : ''].filter(Boolean).join(' • ');
+  const contato = [safeEmpresa.telefone, safeEmpresa.email].filter(Boolean).join(' • ');
+  const cnpj = safeEmpresa.cnpj ? `CNPJ: ${safeEmpresa.cnpj}` : '';
+  const logo = String(safeEmpresa.logomarca || safeEmpresa.logo || safeEmpresa.logo_base64 || '').trim();
+  return { nome, cnpj, endereco, contato, logo };
+}
+function useChurchReceiptIdentity() {
+  const tenant = React.useContext(TenantContext);
+  const empresas = useTable('empresas', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+  });
+  const empresa = useMemo(() => (empresas.rows || []).find((item) => item.id === tenant?.empresaId) || {}, [empresas.rows, tenant?.empresaId]);
+  return useMemo(() => normalizeChurchReceiptIdentity(empresa, tenant), [empresa, tenant]);
+}
+function ChurchReportHeader({ identity, annual = false }) {
+  const igreja = identity || { nome: 'Igreja', dados: '', logo: '' };
+  if (annual)
+    return (
+      <div className="annualFinanceChurchBlock">
+        {igreja.logo ? <img className="annualFinanceChurchLogo" src={igreja.logo} alt={`Logo de ${igreja.nome}`} /> : <span className="annualFinanceChurchFallback">⛪</span>}
+        <div>
+          <h3>Resumo anual por mês</h3>
+          <p>
+            <b>{igreja.nome}</b>
+            {igreja.dados ? ` • ${igreja.dados}` : ''}
+          </p>
+          <p>Valores em R$, incluindo o total movimentado por transferências. Transferências internas aparecem para conferência, sem alterar o saldo consolidado.</p>
+        </div>
+      </div>
+    );
+  return (
+    <div className="financeReportChurchHeader">
+      {igreja.logo ? <img src={igreja.logo} alt={`Logo de ${igreja.nome}`} /> : <span className="financeReportChurchFallback">⛪</span>}
+      <div>
+        <strong>{igreja.nome}</strong>
+        {igreja.dados && <small>{igreja.dados}</small>}
+      </div>
+    </div>
+  );
+}
+function AnnualFinancePrintHtml({ ano, resumo, geradoEm, caixasLabel }) {
+  const header = resumo.months.map((m) => `<th class="annualMonthHead">${safeHtml(m.nome.toUpperCase())}</th>`).join('');
+  const cells = (key, dashZero = false) => resumo.months.map((m) => `<td class="${annualMoneyClass(m[key])}"${Number(m[key]) < 0 ? ' style="color:#dc2626!important"' : ''}>${fmtAnnualMoney(m[key], dashZero)}</td>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Resumo anual ${safeHtml(ano)}</title><style>
+    :root{--blue:#0969da;--blue-dark:#12395f;--green:#059669;--green-soft:#ecfdf5;--red:#dc2626;--red-soft:#fff1f2;--line:#cbd5e1;--text:#0f172a;--muted:#64748b}*{box-sizing:border-box}body{font-family:Inter,Arial,Helvetica,sans-serif;margin:18px;color:var(--text);background:#f3f6fa}.printActions{position:sticky;top:0;z-index:5;padding:10px 0;background:linear-gradient(180deg,#f3f6fa 70%,rgba(243,246,250,0));}button{padding:12px 18px;border:0;background:var(--blue);color:#fff;border-radius:12px;font-weight:950;cursor:pointer}.annualFinanceCard{background:linear-gradient(180deg,#ffffff 0%,#f7fbff 100%);border:1px solid #cfe0f2;border-radius:24px;padding:20px;margin:0 auto;box-shadow:0 18px 45px rgba(15,41,66,.10);max-width:1420px}.annualFinanceHeader{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:12px;border-bottom:1px solid #e1ebf5;margin-bottom:14px}.annualFinanceHeader h3{margin:0 0 5px;font-size:22px;letter-spacing:-.02em}.annualFinanceHeader p{margin:0;color:#53647f;font-size:13px;line-height:1.45}.annualFinanceWrap{overflow:auto;border-radius:20px;border:1px solid #c7d9ec;background:#ffffff;box-shadow:0 10px 24px rgba(15,41,66,.06)}.annualFinanceTable{border-collapse:separate;border-spacing:0;background:#ffffff;font-size:12px;width:100%;min-width:1280px}.annualFinanceTable th,.annualFinanceTable td{border-right:1px solid #d8e4f1;border-bottom:1px solid #d8e4f1;padding:10px 11px;white-space:nowrap}.annualFinanceTable thead th,.annualFinanceTable .annualMonthHead{text-align:center;background:linear-gradient(180deg,#f5f9ff 0%,#e5f0ff 100%);color:#15304e;font-weight:950;text-transform:uppercase;letter-spacing:.055em}.annualFinanceTable thead th:first-child,.annualFinanceTable .annualYearHead{text-align:center;background:linear-gradient(135deg,#0b1f35 0%,#14539a 100%);color:#ffffff;min-width:155px;font-size:14px;letter-spacing:.09em}.annualFinanceTable tbody td:first-child{text-align:left;background:#f3f7fc;color:#0f172a;font-weight:950;letter-spacing:.02em}.annualFinanceTable tbody td.annualMoneyCell,.annualFinanceTable tbody td:not(:first-child){text-align:center;font-weight:900;min-width:92px}.annualFinanceTable tr.entrada td{color:#059669;background:#ecfdf5}.annualFinanceTable tr.entrada td:first-child{color:#047857;background:#d1fae5}.annualFinanceTable tr.despesa td{color:#dc2626;background:#fff1f2}.annualFinanceTable tr.despesa td:first-child{color:#b91c1c;background:#ffe4e6}.annualFinanceTable tr.mensal td{color:#047857;background:#f0fdf4}.annualFinanceTable tr.mensal td:first-child{background:#dcfce7;color:#047857}.annualFinanceTable tr.total td{color:#0969da;background:#eff6ff;font-size:13px;font-weight:950}.annualFinanceTable tr.total td:first-child{color:#0759b8;background:#dbeafe}.annualFinanceTable tr.saldoAnterior td{color:#24364b;background:#f8fafc}.annualFinanceTable tr:last-child td{border-bottom:0}.annualFinanceTable th:last-child,.annualFinanceTable td:last-child{border-right:0}.legend{margin-top:12px;font-size:12px;color:#64748b;text-align:center;font-weight:850}@media print{body{margin:8mm;background:#fff}.printActions{display:none}.annualFinanceCard{box-shadow:none;border:1px solid #cfe0f2;padding:14px;break-inside:avoid}.annualFinanceHeader{margin-bottom:12px}.annualFinanceWrap{box-shadow:none;overflow:visible}.annualFinanceTable{font-size:12px;min-width:0;width:100%;table-layout:fixed}.annualFinanceTable th,.annualFinanceTable td{padding:8px 6px;text-align:center}.annualFinanceTable thead th:first-child,.annualFinanceTable .annualYearHead{min-width:126px}.annualFinanceTable tbody td.annualMoneyCell,.annualFinanceTable tbody td:not(:first-child){min-width:0}.annualFinanceTable tr.total td{font-size:8.6px;line-height:1.05;padding:7px 2px;letter-spacing:-.06em;font-weight:950;font-variant-numeric:tabular-nums}.annualFinanceTable tr.total td:first-child{font-size:9.3px;letter-spacing:0;padding:7px 4px}.legend{font-size:11px}@page{size:landscape;margin:8mm}}
+  </style></head><body><div class="printActions"><button onclick="print()">Imprimir</button></div><div class="annualFinanceCard"><div class="annualFinanceHeader"><div><h3>Resumo financeiro anual — ${safeHtml(ano)}</h3><p>Caixas: ${safeHtml(caixasLabel || 'Todos os caixas')} • Gerado em ${safeHtml(geradoEm)}</p></div></div><div class="annualFinanceWrap"><table class="annualFinanceTable"><thead><tr><th class="annualYearHead">${safeHtml(ano)}</th>${header}</tr></thead><tbody><tr class="saldoAnterior"><td>SALDO ANTERIOR</td>${cells('saldoAnterior')}</tr><tr class="entrada"><td>ENTRADA</td>${cells('entradas', true)}</tr><tr class="despesa"><td>DESPESA</td>${cells('despesas', true)}</tr><tr><td>TRANSFERÊNCIAS</td>${cells('transferenciasMovimentadas', true)}</tr><tr class="mensal"><td>SALDO MENSAL</td>${cells('saldoMensal', true)}</tr><tr class="total"><td>SALDO TOTAL</td>${cells('saldoTotal')}</tr></tbody></table></div><div class="legend">Transferências mostram o total movimentado. Entre caixas selecionados, são informativas e não alteram o saldo consolidado.</div></div></body></html>`;
+}
+
+function RelatoriosFinanceirosPage() {
+  const tenant = React.useContext(TenantContext);
+  const { referencia, caixaIds } = useGlobalFilters();
+  const [filter, setFilter] = useFinancialPeriodFilter(referencia);
+  const [anoResumo, setAnoResumo] = useState(() => ensureReferencia(referencia || currentReferencia()).slice(0, 4));
+  const [annualFontPreset, setAnnualFontPreset] = useState('normal');
+  const empresasTable = useTable('empresas', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+  });
+  const empresaAtual = useMemo(() => (empresasTable.rows || []).find((e) => e.id === tenant?.empresaId) || {}, [empresasTable.rows, tenant?.empresaId]);
+  const igrejaRelatorio = useMemo(() => normalizeChurchReportIdentity(empresaAtual, tenant), [empresaAtual, tenant]);
+  const caixas = useLookup('tipos_caixa');
+  const receitasTable = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+  });
+  const despesasTable = useTable('despesas', {
+    order: 'data',
+    ascending: false,
+  });
+  const transferenciasTable = useTable('transferencias_caixas', {
+    order: 'data',
+    ascending: false,
+  });
+  const caixaFiltroIds = Array.isArray(caixaIds) ? caixaIds : [];
+  const caixaPermitida = useCallback((row) => caixaFiltroIds.length === 0 || caixaFiltroIds.includes(row?.tipo_caixa_id), [caixaFiltroIds]);
+  const globalFilters = useMemo(() => ({ referencia, caixaIds: caixaFiltroIds }), [referencia, caixaFiltroIds]);
+  const receitasBase = useMemo(() => (receitasTable.rows || []).filter(caixaPermitida), [receitasTable.rows, caixaPermitida]);
+  const despesasBase = useMemo(() => (despesasTable.rows || []).filter(caixaPermitida), [despesasTable.rows, caixaPermitida]);
+  const transferenciasBase = useMemo(() => (transferenciasTable.rows || []).filter(transferenciaAtiva), [transferenciasTable.rows]);
+  const resumoAnual = useMemo(() => resumoAnualFinanceiro(anoResumo, receitasBase, despesasBase, transferenciasBase, caixaFiltroIds), [anoResumo, receitasBase, despesasBase, transferenciasBase, caixaFiltroIds]);
+  const annualFontKey = normalizeAnnualSummaryFontPreset(annualFontPreset);
+  const annualFontConfig = ANNUAL_SUMMARY_FONT_PRESETS[annualFontKey];
+  const annualPrintStyle = useMemo(() => getAnnualSummaryFontVars(annualFontKey), [annualFontKey]);
+  const receitasPeriodo = useMemo(() => receitasBase.filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [receitasBase, filter, globalFilters]);
+  const despesasPeriodo = useMemo(() => despesasBase.filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [despesasBase, filter, globalFilters]);
+  const transferenciasPeriodo = useMemo(() => transferenciasBase.filter((r) => rowMatchesFinanceFilter(r, filter, { referencia, caixaIds: [] }) && (!caixaFiltroIds.length || caixaFiltroIds.includes(r.caixa_origem_id) || caixaFiltroIds.includes(r.caixa_destino_id))), [transferenciasBase, filter, referencia, caixaFiltroIds]);
+  const bounds = useMemo(() => financeFilterBounds(filter, referencia), [filter, referencia]);
+  const caixaMap = useMemo(() => Object.fromEntries((caixas.rows || []).map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  const caixasVisiveis = useMemo(() => {
+    const selected = caixaFiltroIds.length ? caixas.rows.filter((c) => caixaFiltroIds.includes(c.id)) : caixas.rows;
+    if (caixaFiltroIds.length) return selected;
+    const idsComMov = new Set([...receitasPeriodo, ...despesasPeriodo].map((r) => r.tipo_caixa_id).filter(Boolean));
+    transferenciasPeriodo.forEach((r) => {
+      if (r.caixa_origem_id) idsComMov.add(r.caixa_origem_id);
+      if (r.caixa_destino_id) idsComMov.add(r.caixa_destino_id);
+    });
+    const extras = [...idsComMov].filter((id) => !selected.some((c) => c.id === id)).map((id) => ({ id, nome: caixaMap[id] || 'Sem caixa' }));
+    return [...selected, ...extras];
+  }, [caixas.rows, caixaFiltroIds, receitasPeriodo, despesasPeriodo, transferenciasPeriodo, caixaMap]);
+  const caixasLabel = caixaFiltroIds.length ? caixasVisiveis.map((c) => c.nome).join(', ') : 'Todos os caixas';
+  const totalReceitas = receitasPeriodo.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const totalDespesas = despesasPeriodo.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const transferenciasResumo = transferenciaResumoPerimetro(transferenciasPeriodo, caixaFiltroIds);
+  const transferenciasLiquidas = transferenciasResumo.liquido;
+  const saldoPeriodo = totalReceitas - totalDespesas + transferenciasLiquidas;
+  const receitasAntes = receitasBase.filter((r) => financeRowIsBefore(r, bounds, filter)).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const despesasAntes = despesasBase.filter((r) => financeRowIsBefore(r, bounds, filter)).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+  const modoMensal = filter?.modo === 'referencia_global' || filter?.modo === 'mes';
+  const referenciaAnterior = previousReferencia(bounds?.startRef || filter?.referencia || referencia);
+  const receitasMesAnterior = receitasBase.filter((r) => getRowReferencia(r) === referenciaAnterior);
+  const despesasMesAnterior = despesasBase.filter((r) => getRowReferencia(r) === referenciaAnterior);
+  const transferenciasMesAnterior = transferenciasBase.filter((r) => getRowReferencia(r) === referenciaAnterior);
+  const houveMovimentoMesAnterior = receitasMesAnterior.length > 0 || despesasMesAnterior.length > 0 || transferenciasMesAnterior.length > 0;
+  const saldoAnterior =
+    filter?.modo === 'todos'
+      ? null
+      : modoMensal
+        ? houveMovimentoMesAnterior
+          ? receitasMesAnterior.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) - despesasMesAnterior.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) + transferenciaImpacto(transferenciasMesAnterior, caixaFiltroIds)
+          : null
+        : receitasAntes -
+          despesasAntes +
+          transferenciaImpacto(
+            transferenciasBase.filter((r) => financeRowIsBefore(r, bounds, filter)),
+            caixaFiltroIds,
+          );
+  const saldoTotalPeriodo = (saldoAnterior ?? 0) + saldoPeriodo;
+  const saldoAtual = receitasBase.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) - despesasBase.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) + transferenciaImpacto(transferenciasBase, caixaFiltroIds);
+  const linhasCaixa = caixasVisiveis.map((c) => {
+    const entradas = receitasPeriodo.filter((r) => r.tipo_caixa_id === c.id).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const despesas = despesasPeriodo.filter((r) => r.tipo_caixa_id === c.id).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const transferencias = transferenciaImpacto(transferenciasPeriodo, [c.id]);
+    const antesEntradas = receitasBase.filter((r) => r.tipo_caixa_id === c.id && financeRowIsBefore(r, bounds, filter)).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const antesDespesas = despesasBase.filter((r) => r.tipo_caixa_id === c.id && financeRowIsBefore(r, bounds, filter)).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const receitasAnterioresCaixa = receitasMesAnterior.filter((r) => r.tipo_caixa_id === c.id);
+    const despesasAnterioresCaixa = despesasMesAnterior.filter((r) => r.tipo_caixa_id === c.id);
+    const transferenciasAnterioresCaixa = transferenciasMesAnterior.filter((r) => r.caixa_origem_id === c.id || r.caixa_destino_id === c.id);
+    const houveMovimentoAnteriorCaixa = receitasAnterioresCaixa.length > 0 || despesasAnterioresCaixa.length > 0 || transferenciasAnterioresCaixa.length > 0;
+    const saldoAnteriorCaixa =
+      filter?.modo === 'todos'
+        ? null
+        : modoMensal
+          ? houveMovimentoAnteriorCaixa
+            ? receitasAnterioresCaixa.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) - despesasAnterioresCaixa.reduce((sum, r) => sum + (Number(r.valor) || 0), 0) + transferenciaImpacto(transferenciasAnterioresCaixa, [c.id])
+            : null
+          : antesEntradas -
+            antesDespesas +
+            transferenciaImpacto(
+              transferenciasBase.filter((r) => financeRowIsBefore(r, bounds, filter)),
+              [c.id],
+            );
+    return {
+      id: c.id,
+      nome: c.nome || 'Sem caixa',
+      entradas,
+      despesas,
+      transferencias,
+      saldo: entradas - despesas + transferencias,
+      saldoAnterior: saldoAnteriorCaixa,
+      saldoTotal: (saldoAnteriorCaixa ?? 0) + entradas - despesas + transferencias,
+    };
+  });
+  const totaisLinhasCaixa = linhasCaixa.reduce(
+    (totais, linha) => ({
+      entradas: totais.entradas + linha.entradas,
+      despesas: totais.despesas + linha.despesas,
+      transferencias: totais.transferencias + linha.transferencias,
+      saldo: totais.saldo + linha.saldo,
+      saldoAnterior: totais.saldoAnterior + (linha.saldoAnterior ?? 0),
+      saldoTotal: totais.saldoTotal + linha.saldoTotal,
+      temSaldoAnterior: totais.temSaldoAnterior || linha.saldoAnterior !== null,
+    }),
+    { entradas: 0, despesas: 0, transferencias: 0, saldo: 0, saldoAnterior: 0, saldoTotal: 0, temSaldoAnterior: false },
+  );
+  const resumoFiltro = {
+    receitas: totalReceitas,
+    despesas: totalDespesas,
+    saldo: saldoPeriodo,
+    registros: receitasPeriodo.length + despesasPeriodo.length,
+  };
+  const titulo = reportTitleFromFilter(filter, referencia);
+  const labelPeriodo = financialFilterLabel(filter, referencia);
+  const imprimirRelatorio = () =>
+    abrirImpressaoElemento('financeiro-relatorio-print-area', titulo, {
+      pageSize: 'portrait',
+    });
+  const imprimirResumoAnual = () => abrirImpressaoElemento('financeiro-resumo-anual-print-area', `Resumo anual ${anoResumo}`, { pageSize: 'landscape' });
+  return (
+    <div className="financeReportsPage">
+      <div className="financeReportsTopbar">
+        <div>
+          <h2>Relatórios Financeiros</h2>
+          <p>Use os filtros para analisar mês, período, ano ou todos os lançamentos. Os valores respeitam os caixas selecionados no topo.</p>
+        </div>
+        <button className="green" onClick={imprimirRelatorio}>
+          Imprimir relatório
+        </button>
+      </div>
+      <FinancePeriodPanel filter={filter} setFilter={setFilter} referenciaGlobal={referencia} resumo={resumoFiltro} compact />
+      <div id="financeiro-relatorio-print-area" className="financePrintArea">
+        <div className="financialSheetCard">
+          <ChurchReportHeader identity={igrejaRelatorio} />
+          <h3>{titulo}</h3>
+          <div className="sheetRows">
+            <div className="sheetRow income">
+              <span>ENTRADA DO PERÍODO</span>
+              <b>{fmtMoney(totalReceitas)}</b>
+            </div>
+            <div className="sheetRow expense">
+              <span>DESPESA DO PERÍODO</span>
+              <b>{fmtMoney(totalDespesas)}</b>
+            </div>
+            {transferenciasResumo.recebidas > 0 && (
+              <div className="sheetRow income">
+                <span>TRANSFERÊNCIAS RECEBIDAS DE CAIXAS FORA DO RELATÓRIO</span>
+                <b>{fmtMoney(transferenciasResumo.recebidas)}</b>
+              </div>
+            )}
+            {transferenciasResumo.enviadas > 0 && (
+              <div className="sheetRow expense">
+                <span>TRANSFERÊNCIAS ENVIADAS PARA CAIXAS FORA DO RELATÓRIO</span>
+                <b>{fmtMoney(transferenciasResumo.enviadas)}</b>
+              </div>
+            )}
+            {transferenciasResumo.internas > 0 && (
+              <div className="sheetRow transferNeutral">
+                <span>TRANSFERÊNCIAS ENTRE CAIXAS DESTE RELATÓRIO</span>
+                <b>{fmtMoney(transferenciasResumo.internas)}</b>
+              </div>
+            )}
+            <div className={`sheetRow ${saldoPeriodo < 0 ? 'expense' : 'income'}`}>
+              <span>SALDO DO PERÍODO</span>
+              <b>{fmtMoney(saldoPeriodo)}</b>
+            </div>
+            <div className={`sheetRow ${saldoAnterior !== null && saldoAnterior < 0 ? 'expense' : 'income'}`}>
+              <span>SALDO ANTERIOR</span>
+              <b>{saldoAnterior === null ? '—' : fmtMoney(saldoAnterior)}</b>
+            </div>
+            <div className={`sheetRow ${saldoTotalPeriodo < 0 ? 'expense' : 'total'}`}>
+              <span>SALDO TOTAL DO PERÍODO</span>
+              <b>{fmtMoney(saldoTotalPeriodo)}</b>
+            </div>
+            <div className={`sheetRow ${saldoAtual < 0 ? 'expense' : 'total'}`}>
+              <span>SALDO ATUAL</span>
+              <b>{fmtMoney(saldoAtual)}</b>
+            </div>
+          </div>
+        </div>
+        <div className="tablewrap financeReportTable">
+          <table>
+            <thead>
+              <tr>
+                <th>Caixa</th>
+                <th>Entradas</th>
+                <th>Despesas</th>
+                <th>Transferências</th>
+                <th>Saldo do período</th>
+                <th>Saldo anterior</th>
+                <th>Saldo total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhasCaixa.map((l) => (
+                <tr key={l.id}>
+                  <td>
+                    <b>{l.nome}</b>
+                  </td>
+                  <td className="moneyIncome">{fmtMoney(l.entradas)}</td>
+                  <td className="moneyExpense">{fmtMoney(l.despesas)}</td>
+                  <td className={l.transferencias < 0 ? 'moneyExpense' : 'moneyIncome'}>
+                    {l.transferencias > 0 ? '+' : ''}
+                    {fmtMoney(l.transferencias)}
+                  </td>
+                  <td className={l.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}>
+                    <b>{fmtMoney(l.saldo)}</b>
+                  </td>
+                  <td className={l.saldoAnterior !== null && l.saldoAnterior < 0 ? 'moneyExpense' : ''}>{l.saldoAnterior === null ? '—' : fmtMoney(l.saldoAnterior)}</td>
+                  <td className={l.saldoTotal < 0 ? 'moneyExpense' : 'moneyBlue'}>
+                    <b>{fmtMoney(l.saldoTotal)}</b>
+                  </td>
+                </tr>
+              ))}
+              {!linhasCaixa.length && (
+                <tr>
+                  <td colSpan={7} className="center muted">
+                    Nenhum caixa encontrado.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {linhasCaixa.length > 0 && (
+              <tfoot>
+                <tr className="reportTotalsRow">
+                  <td>TOTAIS</td>
+                  <td className="moneyIncome">{fmtMoney(totaisLinhasCaixa.entradas)}</td>
+                  <td className="moneyExpense">{fmtMoney(totaisLinhasCaixa.despesas)}</td>
+                  <td className={totaisLinhasCaixa.transferencias < 0 ? 'moneyExpense' : 'moneyIncome'}>
+                    {totaisLinhasCaixa.transferencias > 0 ? '+' : ''}
+                    {fmtMoney(totaisLinhasCaixa.transferencias)}
+                  </td>
+                  <td className={totaisLinhasCaixa.saldo < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(totaisLinhasCaixa.saldo)}</td>
+                  <td className={totaisLinhasCaixa.temSaldoAnterior && totaisLinhasCaixa.saldoAnterior < 0 ? 'moneyExpense' : ''}>{totaisLinhasCaixa.temSaldoAnterior ? fmtMoney(totaisLinhasCaixa.saldoAnterior) : '—'}</td>
+                  <td className={totaisLinhasCaixa.saldoTotal < 0 ? 'moneyExpense' : 'moneyBlue'}>{fmtMoney(totaisLinhasCaixa.saldoTotal)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+      <div id="financeiro-resumo-anual-print-area" className="annualFinanceCard" style={annualPrintStyle}>
+        <div className="annualFinanceHeader">
+          <ChurchReportHeader identity={igrejaRelatorio} annual />
+          <div className="annualFinanceActions">
+            <div className="field compact">
+              <label>Ano do resumo</label>
+              <input type="number" min="2000" max="2100" value={anoResumo} onChange={(e) => setAnoResumo(String(e.target.value || '').slice(0, 4))} />
+            </div>
+            <div className="field compact">
+              <label>Fonte da tabela</label>
+              <select value={annualFontKey} onChange={(e) => setAnnualFontPreset(e.target.value)}>
+                {Object.entries(ANNUAL_SUMMARY_FONT_PRESETS).map(([key, option]) => (
+                  <option key={key} value={key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <small className="muted">{annualFontConfig.desc}</small>
+            </div>
+            <button className="green" onClick={imprimirResumoAnual}>
+              Imprimir resumo anual
+            </button>
+          </div>
+        </div>
+        <div className="tablewrap annualFinanceWrap">
+          <table className="annualFinanceTable">
+            <thead>
+              <tr>
+                <th className="annualYearHead">{anoResumo}</th>
+                {resumoAnual.months.map((m) => (
+                  <th className="annualMonthHead" key={m.ref}>
+                    {m.nome.toUpperCase()}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="saldoAnterior">
+                <td>SALDO ANTERIOR</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.saldoAnterior)} key={m.ref}>
+                    {fmtAnnualMoney(m.saldoAnterior)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="entrada">
+                <td>ENTRADA</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.entradas)} key={m.ref}>
+                    {fmtAnnualMoney(m.entradas, true)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="despesa">
+                <td>DESPESA</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.despesas)} key={m.ref}>
+                    {fmtAnnualMoney(m.despesas, true)}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td>TRANSFERÊNCIAS</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.transferenciasMovimentadas)} key={m.ref}>
+                    {fmtAnnualMoney(m.transferenciasMovimentadas, true)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="mensal">
+                <td>SALDO MENSAL</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.saldoMensal)} key={m.ref}>
+                    {fmtAnnualMoney(m.saldoMensal, true)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="total">
+                <td>SALDO TOTAL</td>
+                {resumoAnual.months.map((m) => (
+                  <td className={annualMoneyClass(m.saldoTotal)} key={m.ref}>
+                    {fmtAnnualMoney(m.saldoTotal)}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="financeSplitNotice">
+        O relatório acima é calculado por lançamentos financeiros e despesas, usando competência/referência quando existir. Para fechar caixas individualmente, use o menu <b>Fechamento Mensal</b>.
+      </div>
+    </div>
+  );
+}
+
+const PRESTACAO_SLIDE_OPTIONS = [
+  {
+    id: 'capa',
+    label: 'Capa da prestação',
+    desc: 'Título, período e mensagem de transparência.',
+  },
+  {
+    id: 'movimentacao',
+    label: 'Movimentação mensal',
+    desc: 'Entrada, despesa, saldo mensal e saldo atual de cada mês.',
+  },
+  {
+    id: 'balanco',
+    label: 'Balanço do período',
+    desc: 'Saldo anterior, entrada total, despesa total, saldo do período e saldo total.',
+  },
+  {
+    id: 'encerramento',
+    label: 'Encerramento',
+    desc: 'Resumo final para transparência com responsabilidade.',
+  },
+];
+const DEFAULT_PRESTACAO_SLIDES = Object.fromEntries(PRESTACAO_SLIDE_OPTIONS.map((item) => [item.id, true]));
+const LEGACY_FIXED_PRESTACAO_SLIDES = new Set(['cofres', 'dizimo', 'investimentos']);
+const PRESTACAO_TRIMESTRES = [
+  { value: '1', label: '1º Trimestre', startMonth: 1, endMonth: 3 },
+  { value: '2', label: '2º Trimestre', startMonth: 4, endMonth: 6 },
+  { value: '3', label: '3º Trimestre', startMonth: 7, endMonth: 9 },
+  { value: '4', label: '4º Trimestre', startMonth: 10, endMonth: 12 },
+];
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+async function abrirImpressaoElemento(elementId, title = 'Impressão', options = {}) {
+  const source = document.getElementById(elementId);
+  if (!source) {
+    window.print();
+    return;
+  }
+  const w = window.open('', '_blank');
+  if (!w) return;
+  const pageSize = options.pageSize || 'portrait';
+  const isLandscape = String(pageSize).toLowerCase().includes('landscape');
+  const pageCssSize = isLandscape ? 'A4 landscape' : 'A4 portrait';
+  const pageClass = isLandscape ? 'printA4Landscape' : 'printA4Portrait';
+  const pageMargin = options.margin || (isLandscape ? '7mm' : '9mm');
+  const hideSelector = options.hideSelector || '.noPrint,.printHidden,.annualFinanceActions,.financeReportsTopbar button,.prestacaoSectionHeader button';
+  const stylesheetLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+  const stylesheetPayloads = await Promise.all(
+    stylesheetLinks.map(async (link) => {
+      try {
+        const response = await fetch(link.href, { credentials: 'same-origin', cache: 'no-cache' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return `<style data-print-source="${safeAttr(link.href)}">${await response.text()}</style>`;
+      } catch (_) {
+        return `<link rel="stylesheet" href="${safeAttr(link.href)}">`;
+      }
+    }),
+  );
+  const stylesheets = stylesheetPayloads.join('\n');
+  const inlineStyles = Array.from(document.querySelectorAll('style'))
+    .map((style) => `<style>${style.textContent || ''}</style>`)
+    .join('\n');
+  const extraCss = `
+    <style>
+      *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;box-sizing:border-box!important;}
+      html,body{margin:0!important;background:#e9edf3!important;font-family:Inter,Arial,Helvetica,sans-serif!important;color:#0f172a!important;}
+      .printHostToolbar{position:sticky;top:0;z-index:999;background:#f3f6fa;padding:10px 12px;border-bottom:1px solid #d8e4f1;display:flex;gap:10px;align-items:center;}
+      .printHostToolbar button{border:0;border-radius:12px;background:#2563eb;color:#fff;padding:10px 16px;font-weight:950;cursor:pointer;}
+      .printHostToolbar span{font-weight:800;color:#475569;}
+      .printClonePage{background:#fff;margin:12px auto;box-shadow:0 18px 42px rgba(15,41,66,.18);overflow:hidden;}
+      .printClonePage.printA4Portrait{width:210mm;min-height:297mm;padding:9mm;}
+      .printClonePage.printA4Landscape{width:297mm;min-height:210mm;padding:7mm;}
+      ${hideSelector}{display:none!important;}
+      .printClonePage .tablewrap{overflow:visible!important;max-height:none!important;width:100%!important;}
+      .printClonePage .financialSheetCard{box-shadow:none!important;margin:0 0 6mm!important;max-width:none!important;width:100%!important;}
+      .printClonePage .sheetRows{max-width:760px!important;width:100%!important;}
+      .printClonePage .sheetRow{display:grid!important;grid-template-columns:minmax(0,1fr) 230px!important;align-items:center!important;}
+      .printClonePage .sheetRow span{border-right:1px solid #d8e4f1!important;border-bottom:0!important;text-align:right!important;}
+      .printClonePage .sheetRow b{text-align:right!important;}
+      .printClonePage .financeReportTable table{width:100%!important;table-layout:fixed!important;}
+      .printClonePage .financeReportTable th,.printClonePage .financeReportTable td{font-size:9pt!important;padding:2.6mm 2mm!important;white-space:normal!important;line-height:1.15!important;}
+      .printClonePage .annualFinanceCard{max-width:none!important;width:100%!important;margin:0!important;box-shadow:none!important;border-radius:9px!important;padding:7mm!important;}
+      .printClonePage .annualFinanceHeader{margin-bottom:4mm!important;}
+      .printClonePage .annualFinanceHeader h3{font-size:15pt!important;margin:0 0 1mm!important;}
+      .printClonePage .annualFinanceHeader p{font-size:8pt!important;line-height:1.25!important;max-width:none!important;}
+      .printClonePage .annualFinanceWrap{overflow:visible!important;border-radius:8px!important;width:100%!important;}
+      .printClonePage .annualFinanceTable{min-width:0!important;width:100%!important;table-layout:fixed!important;border-collapse:separate!important;border-spacing:0!important;}
+      .printClonePage .annualFinanceTable th,.printClonePage .annualFinanceTable td{text-align:center!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;line-height:1.02!important;padding:1.8mm .45mm!important;}
+      .printClonePage .annualFinanceTable th:first-child,.printClonePage .annualFinanceTable td:first-child{position:static!important;left:auto!important;min-width:0!important;width:30mm!important;text-align:left!important;padding-left:1.4mm!important;}
+      .printClonePage .annualFinanceTable th:not(:first-child),.printClonePage .annualFinanceTable td:not(:first-child){width:calc((100% - 30mm) / 12)!important;}
+      .printClonePage .annualFinanceTable thead th.annualMonthHead{font-size:var(--annual-print-month-font,7pt)!important;letter-spacing:-.02em!important;}
+      .printClonePage .annualFinanceTable thead th.annualYearHead{font-size:var(--annual-print-year-font,10pt)!important;text-align:center!important;}
+      .printClonePage .annualFinanceTable tbody td.annualMoneyCell{font-size:var(--annual-print-value-font,8.2pt)!important;font-weight:900!important;letter-spacing:-.04em!important;font-variant-numeric:tabular-nums!important;}
+      .printClonePage .annualFinanceTable tbody td:first-child{font-size:var(--annual-print-label-font,7.2pt)!important;letter-spacing:-.04em!important;}
+      .printClonePage .annualFinanceTable tbody tr.total td.annualMoneyCell,.printClonePage .annualFinanceTable tbody tr.total td:not(:first-child){font-size:var(--annual-print-total-font,8.2pt)!important;letter-spacing:-.04em!important;line-height:1.02!important;font-variant-numeric:tabular-nums!important;}
+      .printClonePage .annualFinanceTable tbody tr.total td:first-child{font-size:var(--annual-print-total-label-font,7.2pt)!important;letter-spacing:-.04em!important;}
+      .printClonePage .prestacaoSlidesDeck{padding:0!important;background:#fff!important;border-radius:0!important;gap:0!important;box-shadow:none!important;width:100%!important;}
+      .printClonePage .prestacaoSlidesDeck .slide{width:283mm!important;height:196mm!important;margin:0 auto 8mm!important;border-radius:0!important;box-shadow:none!important;page-break-after:always!important;break-after:page!important;overflow:hidden!important;}
+      .printClonePage .prestacaoSlidesDeck .slide:last-child{page-break-after:auto!important;break-after:auto!important;margin-bottom:0!important;}
+      @media print{
+        html,body{background:#fff!important;width:100%!important;height:auto!important;}
+        .printHostToolbar{display:none!important;}
+        .printClonePage{box-shadow:none!important;margin:0!important;overflow:hidden!important;}
+        .printClonePage.printA4Portrait{width:210mm!important;min-height:297mm!important;padding:9mm!important;}
+        .printClonePage.printA4Landscape{width:297mm!important;min-height:210mm!important;padding:7mm!important;}
+        ${hideSelector}{display:none!important;}
+        .printClonePage .sheetRows{max-width:760px!important;width:100%!important;}
+        .printClonePage .sheetRow{display:grid!important;grid-template-columns:minmax(0,1fr) 230px!important;align-items:center!important;}
+        .printClonePage .sheetRow span{border-right:1px solid #d8e4f1!important;border-bottom:0!important;text-align:right!important;}
+        .printClonePage .sheetRow b{text-align:right!important;}
+        .printClonePage .annualFinanceCard{box-shadow:none!important;break-inside:avoid!important;}
+        .printClonePage .annualFinanceTable{page-break-inside:avoid!important;}
+        .printClonePage .prestacaoSlidesDeck .slide{width:calc(297mm - (${pageMargin} * 2))!important;height:calc(210mm - (${pageMargin} * 2))!important;margin:0!important;border-radius:0!important;box-shadow:none!important;}
+        @page{size:${pageCssSize};margin:0;}
+      }
+    </style>`;
+  w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${safeHtml(title)}</title>${stylesheets}${inlineStyles}${extraCss}</head><body><div class="printHostToolbar"><button onclick="print()" disabled>Imprimir</button><span id="printStatus" role="status">Preparando fontes e imagens…</span></div><main class="printClonePage ${pageClass}">${source.outerHTML}</main></body></html>`);
+  w.document.close();
+
+  const waitForImages = () => {
+    const images = Array.from(w.document.images || []);
+    if (!images.length) return Promise.resolve();
+    return Promise.all(
+      images.map(
+        (image) =>
+          new Promise((resolve) => {
+            if (image.complete) {
+              resolve();
+              return;
+            }
+            const finish = () => resolve();
+            image.addEventListener('load', finish, { once: true });
+            image.addEventListener('error', finish, { once: true });
+            setTimeout(finish, 5000);
+          }),
+      ),
+    );
+  };
+  const fontsReady = w.document.fonts?.ready ? w.document.fonts.ready.catch(() => undefined) : Promise.resolve();
+  Promise.all([fontsReady, waitForImages()]).then(() => {
+    w.document.documentElement.classList.add('printStylesReady');
+    const printButton = w.document.querySelector('.printHostToolbar button');
+    const status = w.document.getElementById('printStatus');
+    if (printButton) printButton.disabled = false;
+    if (status) status.textContent = `Prévia pronta em proporção A4 — ${isLandscape ? 'paisagem' : 'retrato'}`;
+    w.dispatchEvent(new Event('resize'));
+  });
+}
+
+function safeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[ch]);
+}
+function safeAttr(value) {
+  return safeHtml(value).replace(/`/g, '&#96;');
+}
+function prestacaoPeriod({ modo, ano, trimestre, dataInicio, dataFim, referencia }) {
+  const refBase = ensureReferencia(referencia || currentReferencia());
+  const safeAno =
+    String(ano || refBase.slice(0, 4) || currentReferencia().slice(0, 4))
+      .replace(/\D/g, '')
+      .slice(0, 4) || currentReferencia().slice(0, 4);
+  if (modo === 'personalizado') {
+    const start = dataInicio || `${safeAno}-01-01`;
+    const end = dataFim || `${safeAno}-12-31`;
+    return {
+      start,
+      end,
+      label: `${fmtDate(start)} a ${fmtDate(end)}`,
+      titulo: 'Período personalizado',
+      ano: safeAno,
+      modo: 'personalizado',
+      refs: [],
+    };
+  }
+  if (modo === 'mes') {
+    const ref = ensureReferencia(referencia || `${safeAno}-${pad2(Number(refBase.slice(5, 7)) || 1)}`);
+    return {
+      start: `${ref}-01`,
+      end: monthLastDayISO(ref),
+      label: fmtReferencia(ref),
+      titulo: 'Mês / referência',
+      ano: ref.slice(0, 4),
+      referencia: ref,
+      modo: 'mes',
+      refs: [ref],
+    };
+  }
+  const tri = PRESTACAO_TRIMESTRES.find((t) => t.value === String(trimestre || '1')) || PRESTACAO_TRIMESTRES[0];
+  const start = `${safeAno}-${pad2(tri.startMonth)}-01`;
+  const end = `${safeAno}-${pad2(tri.endMonth)}-${String(new Date(Number(safeAno), tri.endMonth, 0).getDate()).padStart(2, '0')}`;
+  const refs = [];
+  for (let m = tri.startMonth; m <= tri.endMonth; m += 1) refs.push(`${safeAno}-${pad2(m)}`);
+  return {
+    start,
+    end,
+    label: `${tri.label} de ${safeAno}`,
+    titulo: tri.label,
+    ano: safeAno,
+    trimestre: tri.value,
+    modo: 'trimestre',
+    refs,
+  };
+}
+function rowInDateRange(row, start, end) {
+  const data = String(row?.data || '');
+  return data >= String(start || '') && data <= String(end || '9999-12-31');
+}
+function rowInPrestacaoPeriod(row, period) {
+  if ((period?.refs || []).length) return period.refs.includes(getRowReferencia(row));
+  return rowInDateRange(row, period?.start, period?.end);
+}
+function rowBeforePrestacaoPeriod(row, period) {
+  if ((period?.refs || []).length) return getRowReferencia(row) < String(period.refs[0] || '0000-00');
+  return String(row?.data || '') < String(period?.start || '0000-00-00');
+}
+function monthRefsBetween(start, end) {
+  const refs = [];
+  const [sy, sm] = String(start || currentReferencia())
+    .slice(0, 7)
+    .split('-')
+    .map(Number);
+  const [ey, em] = String(end || currentReferencia())
+    .slice(0, 7)
+    .split('-')
+    .map(Number);
+  let y = sy || Number(currentReferencia().slice(0, 4));
+  let m = sm || 1;
+  const stopY = ey || y;
+  const stopM = em || m;
+  while (y < stopY || (y === stopY && m <= stopM)) {
+    refs.push(`${y}-${pad2(m)}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+    if (refs.length > 36) break;
+  }
+  return refs;
+}
+function expenseCategoryLabel(row, categoriaMap = {}) {
+  return row?.categoria || categoriaMap[row?.categoria_id] || row?.descricao || 'Sem categoria';
+}
+function suggestedDizimoExpense(row, categoriaMap = {}) {
+  const txt = normalizeText(`${row?.descricao || ''} ${expenseCategoryLabel(row, categoriaMap)} ${row?.observacoes || ''}`);
+  return ['mission', 'oferta', 'cesta', 'basica', 'ajuda', 'benefic', 'assist', 'social'].some((term) => txt.includes(term));
+}
+function suggestedInvestmentExpense(row, categoriaMap = {}) {
+  const txt = normalizeText(`${row?.descricao || ''} ${expenseCategoryLabel(row, categoriaMap)} ${row?.observacoes || ''}`);
+  return ['reforma', 'obra', 'material', 'mao de obra', 'mão de obra', 'biblia', 'bíblia', 'conferencia', 'conferência', 'equipamento', 'invest'].some((term) => txt.includes(term));
+}
+function groupDizimoExpense(row, categoriaMap = {}) {
+  const txt = normalizeText(`${row?.descricao || ''} ${expenseCategoryLabel(row, categoriaMap)}`);
+  if (txt.includes('cesta')) return 'Cestas básicas';
+  if (txt.includes('mission') || txt.includes('oferta')) return 'Missionários / Ofertas';
+  if (txt.includes('ajuda') || txt.includes('social') || txt.includes('benefic')) return 'Ajudas de custo / Social';
+  return expenseCategoryLabel(row, categoriaMap);
+}
+function sumRows(rows) {
+  return (rows || []).reduce((sum, row) => sum + (Number(row?.valor) || 0), 0);
+}
+function PrestacaoSlidesPrintHtml({ titulo, periodoLabel, slides }) {
+  const slidesHtml = slides.map((slide, index) => `<section class="slide ${slide.id === 'capa' ? 'coverSlide' : ''}"><div class="slideNumber">${index + 1}/${slides.length}</div>${slide.html}</section>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${safeHtml(titulo)}</title><style>
+    *{box-sizing:border-box}body{margin:0;background:#e5e7eb;font-family:Inter,Arial,Helvetica,sans-serif;color:#0f172a}button{position:fixed;top:12px;right:12px;z-index:9;border:0;border-radius:12px;background:#0f766e;color:#fff;padding:10px 16px;font-weight:900;box-shadow:0 10px 22px rgba(15,23,42,.16);cursor:pointer}.slide{width:1123px;height:794px;margin:22px auto;background:linear-gradient(145deg,#ffffff 0%,#f8fbff 100%);border-radius:26px;padding:54px 60px;position:relative;box-shadow:0 18px 60px rgba(15,23,42,.18);page-break-after:always;overflow:hidden}.slide:before{content:"";position:absolute;inset:0 0 auto 0;height:12px;background:linear-gradient(90deg,#0f766e,#2563eb,#7c3aed)}.slideNumber{position:absolute;right:30px;bottom:22px;color:#64748b;font-size:13px;font-weight:800}.kicker{text-transform:uppercase;letter-spacing:.14em;color:#0f766e;font-weight:950;font-size:15px;margin-bottom:10px}.slide h1{font-size:54px;line-height:1.05;margin:0 0 18px;color:#0f172a}.slide h2{font-size:34px;margin:0 0 22px;color:#10243f}.slide p{font-size:20px;color:#475569;line-height:1.4}.coverSlide{display:grid;grid-template-columns:1.35fr .75fr;gap:0;padding:0!important;background:#0f3f23!important}.coverSlide:before{height:0}.coverLeft{padding:72px 64px;background:linear-gradient(135deg,#073617 0%,#14532d 55%,#166534 100%);color:#fff;display:flex;flex-direction:column;justify-content:center;position:relative}.coverLeft:after{content:"";position:absolute;right:-12px;top:0;width:24px;height:100%;background:#22c55e;opacity:.75}.coverRight{background:linear-gradient(135deg,#166534,#2f8a37);display:flex;align-items:center;justify-content:center;padding:46px}.coverLogoBox{width:270px;height:270px;border-radius:28px;background:rgba(255,255,255,.92);display:flex;align-items:center;justify-content:center;box-shadow:0 28px 80px rgba(0,0,0,.32);padding:22px}.coverLogoBox img{max-width:100%;max-height:100%;object-fit:contain}.coverLogoFallback{font-size:96px}.coverKicker{font-size:16px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#bbf7d0;margin-bottom:22px}.coverTitle{font-size:72px!important;line-height:.98!important;color:#fff!important;margin:0 0 18px!important;letter-spacing:-.05em}.coverPeriod{font-size:34px;color:#d9f99d;font-weight:800;margin-bottom:18px}.coverChurch{font-size:24px;color:#fff;font-weight:900;margin-top:12px}.coverFooter{position:absolute;left:64px;bottom:56px;font-size:28px;font-weight:950;color:#dcfce7}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{border:1px solid #dbe5f0;background:#fff;border-radius:18px;padding:18px;box-shadow:0 10px 26px rgba(15,23,42,.08)}.card span{display:block;color:#64748b;font-weight:850;font-size:13px;text-transform:uppercase;letter-spacing:.08em}.card b{display:block;margin-top:8px;font-size:26px;color:#0f172a}.income b,.income{color:#059669!important}.expense b,.expense{color:#dc2626!important}.total b,.total{color:#0969da!important}.table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #dbe5f0;border-radius:16px;overflow:hidden;background:#fff}.table th{background:#10243f;color:#fff;text-align:left;font-size:13px;text-transform:uppercase;letter-spacing:.06em}.table th,.table td{padding:12px;border-bottom:1px solid #e5edf5}.table td{font-size:18px;font-weight:800}.table tr:last-child td{border-bottom:0}.monthlyTable{table-layout:fixed}.monthlyTable th,.monthlyTable td{padding:11px 6px;white-space:nowrap}.monthlyTable th{font-size:10px;letter-spacing:0}.monthlyTable td{font-size:14px}.monthlyTable th:first-child,.monthlyTable td:first-child{width:8%}.two{display:grid;grid-template-columns:1fr 1fr;gap:22px}.bigTotal{font-size:46px;font-weight:950;color:#0969da}.footerMsg{position:absolute;left:60px;bottom:44px;font-size:28px;font-weight:950;color:#0f766e}@media screen and (max-width:1160px){.slide{width:calc(100vw - 16px);padding-left:34px;padding-right:34px}.monthlyTable th{font-size:9px}.monthlyTable td{font-size:12px;padding-left:4px;padding-right:4px}}@media print{body{background:#fff}button{display:none}.slide{margin:0;border-radius:0;box-shadow:none;width:100vw;height:100vh;page-break-after:always}.monthlyTable th{font-size:9pt}.monthlyTable td{font-size:11pt}@page{size:landscape;margin:0}}
+  </style></head><body><button onclick="print()">Imprimir / salvar PDF</button>${slidesHtml}</body></html>`;
+}
+function PrestacaoContasPage() {
+  const tenant = React.useContext(TenantContext);
+  const { referencia, caixaIds } = useGlobalFilters();
+  const caixas = useLookup('tipos_caixa');
+  const categorias = useLookup('categorias_despesas');
+  const tiposReceitaLookup = useLookupLabels('tipos_receita');
+  const receitasTable = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+  });
+  const despesasTable = useTable('despesas', {
+    order: 'data',
+    ascending: false,
+  });
+  const transferenciasTable = useTable('transferencias_caixas', {
+    order: 'data',
+    ascending: false,
+  });
+  const cofresTable = useTable('prestacao_cofres_missionarios', {
+    order: 'data',
+    ascending: false,
+  });
+  const empresasTable = useTable('empresas', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+  });
+  const relatoriosPrestacao = useTable('prestacao_relatorios', {
+    order: 'ordem',
+    ascending: true,
+  });
+  const gruposPrestacao = useTable('prestacao_grupos_relatorio', {
+    order: 'ordem',
+    ascending: true,
+  });
+  const fontesSlideTable = useTable('prestacao_fontes_slide', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const ref = ensureReferencia(referencia || currentReferencia());
+  const [modo, setModo] = useState('mes');
+  const [ano, setAno] = useState(ref.slice(0, 4));
+  const [referenciaPrestacao, setReferenciaPrestacao] = useState(ref);
+  const [trimestre, setTrimestre] = useState(String(Math.floor((Number(ref.slice(5, 7)) - 1) / 3) + 1));
+  const [dataInicio, setDataInicio] = useState(`${ref.slice(0, 4)}-01-01`);
+  const [dataFim, setDataFim] = useState(monthLastDayISO(ref));
+  const [slideItems, setSlideItems] = useState(DEFAULT_PRESTACAO_SLIDES);
+  const [cofreForm, setCofreForm] = useState({
+    data: todayISO(),
+    descricao: 'Cofre Missionário',
+    valor: '0.00',
+    observacoes: '',
+  });
+  const [fonteForm, setFonteForm] = useState({
+    prestacao_relatorio_id: '',
+    tipo_origem: 'caixa',
+    origem_id: '',
+    tipo_movimento: 'receitas',
+    grupo: '',
+  });
+  const [showNovoRelatorio, setShowNovoRelatorio] = useState(false);
+  const [novoRelatorioForm, setNovoRelatorioForm] = useState({ nome: '', descricao: '' });
+  const [salvandoRelatorio, setSalvandoRelatorio] = useState(false);
+  const [capaFrase, setCapaFrase] = useState('Transparência com Responsabilidade');
+  useEffect(() => {
+    const nextRef = ensureReferencia(referencia || currentReferencia());
+    setReferenciaPrestacao((old) => (modo === 'mes' ? nextRef : old));
+    setAno((old) => (modo === 'mes' ? nextRef.slice(0, 4) : old));
+  }, [referencia, modo]);
+  const period = useMemo(
+    () =>
+      prestacaoPeriod({
+        modo,
+        ano,
+        trimestre,
+        dataInicio,
+        dataFim,
+        referencia: referenciaPrestacao,
+      }),
+    [modo, ano, trimestre, dataInicio, dataFim, referenciaPrestacao],
+  );
+  const prestacaoKey = `igreja:${tenant?.empresaId || 'global'}:prestacao:${period.start}:${period.end}`;
+  const [dizimoIds, setDizimoIds] = useState([]);
+  const [investimentoIds, setInvestimentoIds] = useState([]);
+  const [investimentoGrupos, setInvestimentoGrupos] = useState({});
+  const capaConfigKey = `igreja:${tenant?.empresaId || 'global'}:prestacao:capa`;
+  useEffect(() => {
+    try {
+      const savedCover = JSON.parse(storageGet(capaConfigKey, '{}')) || {};
+      setCapaFrase(savedCover.capaFrase || 'Transparência com Responsabilidade');
+    } catch {
+      setCapaFrase('Transparência com Responsabilidade');
+    }
+  }, [capaConfigKey]);
+  useEffect(() => {
+    storageSet(capaConfigKey, JSON.stringify({ capaFrase }));
+  }, [capaConfigKey, capaFrase]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(storageGet(prestacaoKey, '{}')) || {};
+      setDizimoIds(Array.isArray(saved.dizimoIds) ? saved.dizimoIds : []);
+      setInvestimentoIds(Array.isArray(saved.investimentoIds) ? saved.investimentoIds : []);
+      setInvestimentoGrupos(saved.investimentoGrupos || {});
+      setSlideItems({
+        ...DEFAULT_PRESTACAO_SLIDES,
+        ...(saved.slideItems || {}),
+      });
+    } catch {
+      setDizimoIds([]);
+      setInvestimentoIds([]);
+      setInvestimentoGrupos({});
+      setSlideItems(DEFAULT_PRESTACAO_SLIDES);
+    }
+  }, [prestacaoKey]);
+  useEffect(() => {
+    storageSet(
+      prestacaoKey,
+      JSON.stringify({
+        dizimoIds,
+        investimentoIds,
+        investimentoGrupos,
+        slideItems,
+      }),
+    );
+  }, [prestacaoKey, dizimoIds, investimentoIds, investimentoGrupos, slideItems]);
+  const caixaFiltroIds = Array.isArray(caixaIds) ? caixaIds : [];
+  const caixaPermitida = useCallback((row) => caixaFiltroIds.length === 0 || caixaFiltroIds.includes(row?.tipo_caixa_id), [caixaFiltroIds]);
+  const empresaAtual = useMemo(() => (empresasTable.rows || []).find((e) => e.id === tenant?.empresaId) || {}, [empresasTable.rows, tenant?.empresaId]);
+  const igrejaNome = String(empresaAtual.nome_fantasia || empresaAtual.nome || 'Igreja').trim() || 'Igreja';
+  const igrejaLogo = String(empresaAtual.logomarca || empresaAtual.logo || empresaAtual.logo_base64 || '').trim();
+  const categoriaMap = useMemo(() => Object.fromEntries((categorias.rows || []).map((c) => [c.id, c.nome])), [categorias.rows]);
+  const categoriaRelatorioMap = useMemo(() => Object.fromEntries((categorias.rows || []).map((c) => [c.id, c])), [categorias.rows]);
+  const relatorioPrestacaoMap = useMemo(() => Object.fromEntries((relatoriosPrestacao.rows || []).map((r) => [r.id, r])), [relatoriosPrestacao.rows]);
+  const grupoPrestacaoMap = useMemo(() => Object.fromEntries((gruposPrestacao.rows || []).map((g) => [g.id, g])), [gruposPrestacao.rows]);
+  const caixaMapPrestacao = useMemo(() => Object.fromEntries((caixas.rows || []).map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  const relatorioCofres = useMemo(() => (relatoriosPrestacao.rows || []).find((r) => String(r.codigo || '').trim() === 'cofres_missionarios') || (relatoriosPrestacao.rows || []).find((r) => normalizeText(r.nome || '').includes('cofres')), [relatoriosPrestacao.rows]);
+  const fonteRelatorioOptions = useMemo(() => (relatoriosPrestacao.rows || []).filter((r) => r.ativo !== false).map((r) => ({ value: r.id, label: r.nome })), [relatoriosPrestacao.rows]);
+  const fonteOrigemOptions = useMemo(() => {
+    if (fonteForm.tipo_origem === 'tipo_receita') return tiposReceitaLookup.options;
+    if (fonteForm.tipo_origem === 'categoria_despesa') return categorias.options;
+    return caixas.options;
+  }, [fonteForm.tipo_origem, tiposReceitaLookup.options, categorias.options, caixas.options]);
+  useEffect(() => {
+    const optionIds = new Set(fonteRelatorioOptions.map((option) => String(option.value)));
+    setFonteForm((old) => {
+      const currentId = String(old.prestacao_relatorio_id || '');
+      if (currentId && optionIds.has(currentId)) return old;
+      const preferredId = relatorioCofres?.id && optionIds.has(String(relatorioCofres.id))
+        ? relatorioCofres.id
+        : fonteRelatorioOptions[0]?.value || '';
+      if (String(preferredId || '') === currentId) return old;
+      return { ...old, prestacao_relatorio_id: preferredId };
+    });
+  }, [relatorioCofres?.id, fonteRelatorioOptions]);
+  const customSlideOptions = useMemo(
+    () =>
+      (relatoriosPrestacao.rows || [])
+        .filter((r) => r.ativo !== false)
+        .map((r) => ({
+          id: `relatorio_${r.id}`,
+          label: r.nome,
+          desc: r.descricao || 'Slide automático criado a partir das categorias vinculadas.',
+          defaultSelected: r.incluir_slide_default !== false,
+          reportId: r.id,
+        })),
+    [relatoriosPrestacao.rows],
+  );
+  const allSlideOptions = useMemo(() => [...PRESTACAO_SLIDE_OPTIONS, ...customSlideOptions], [customSlideOptions]);
+  const receitasPeriodo = useMemo(() => (receitasTable.rows || []).filter((r) => caixaPermitida(r) && rowInPrestacaoPeriod(r, period)), [receitasTable.rows, caixaPermitida, period]);
+  const despesasPeriodo = useMemo(() => (despesasTable.rows || []).filter((r) => caixaPermitida(r) && rowInPrestacaoPeriod(r, period)), [despesasTable.rows, caixaPermitida, period]);
+  const transferenciasAtivas = useMemo(() => (transferenciasTable.rows || []).filter(transferenciaAtiva), [transferenciasTable.rows]);
+  const transferenciasPeriodo = useMemo(() => transferenciasAtivas.filter((r) => rowInPrestacaoPeriod(r, period) && (!caixaFiltroIds.length || caixaFiltroIds.includes(r.caixa_origem_id) || caixaFiltroIds.includes(r.caixa_destino_id))), [transferenciasAtivas, period, caixaFiltroIds]);
+  const cofresPeriodo = useMemo(() => (cofresTable.rows || []).filter((r) => rowInDateRange(r, period.start, period.end) && r.incluir_slide !== false), [cofresTable.rows, period.start, period.end]);
+  const fontesAtivas = useMemo(() => (fontesSlideTable.rows || []).filter((f) => f.ativo !== false && f.incluir_slide !== false), [fontesSlideTable.rows]);
+  const fontesCofres = useMemo(
+    () =>
+      fontesAtivas.filter((f) => {
+        const report = relatorioPrestacaoMap[f.prestacao_relatorio_id];
+        return String(report?.codigo || '').trim() === 'cofres_missionarios' || (!f.prestacao_relatorio_id && relatorioCofres?.id);
+      }),
+    [fontesAtivas, relatorioPrestacaoMap, relatorioCofres?.id],
+  );
+  const fonteMatchesReceita = useCallback((fonte, row) => {
+    const mov = String(fonte?.tipo_movimento || 'receitas');
+    if (mov === 'despesas') return false;
+    if (fonte?.tipo_origem === 'caixa') return String(row?.tipo_caixa_id || '') === String(fonte?.origem_id || '');
+    if (fonte?.tipo_origem === 'tipo_receita') return normalizeText(row?.tipo || '') === normalizeText(fonte?.origem_id || fonte?.nome_exibicao || '');
+    return false;
+  }, []);
+  const fonteMatchesDespesa = useCallback((fonte, row) => {
+    const mov = String(fonte?.tipo_movimento || 'receitas');
+    if (mov === 'receitas') return false;
+    if (fonte?.tipo_origem === 'caixa') return String(row?.tipo_caixa_id || '') === String(fonte?.origem_id || '');
+    if (fonte?.tipo_origem === 'categoria_despesa') return String(row?.categoria_id || '') === String(fonte?.origem_id || '');
+    return false;
+  }, []);
+  const cofresSlideRows = useMemo(() => {
+    const manuais = cofresPeriodo.map((c) => ({
+      id: `manual_${c.id}`,
+      data: c.data,
+      descricao: c.descricao || 'Cofre Missionário',
+      valor: Number(c.valor) || 0,
+      origem: 'Manual',
+    }));
+    const autoReceitas = receitasPeriodo.flatMap((r) =>
+      fontesCofres
+        .filter((f) => fonteMatchesReceita(f, r))
+        .map((f) => ({
+          id: `rec_${f.id}_${r.id}`,
+          data: r.data,
+          descricao: r.observacoes || r.culto || r.tipo || 'Receita missionária',
+          valor: Number(r.valor) || 0,
+          origem: f.grupo || f.nome_exibicao || 'Origem automática',
+        })),
+    );
+    const autoDespesas = despesasPeriodo.flatMap((d) =>
+      fontesCofres
+        .filter((f) => fonteMatchesDespesa(f, d))
+        .map((f) => ({
+          id: `des_${f.id}_${d.id}`,
+          data: d.data,
+          descricao: d.descricao || 'Despesa vinculada',
+          valor: -Math.abs(Number(d.valor) || 0),
+          origem: f.grupo || f.nome_exibicao || 'Origem automática',
+        })),
+    );
+    return [...manuais, ...autoReceitas, ...autoDespesas].sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')) || String(a.descricao || '').localeCompare(String(b.descricao || '')));
+  }, [cofresPeriodo, receitasPeriodo, despesasPeriodo, fontesCofres, fonteMatchesReceita, fonteMatchesDespesa]);
+  const totalCofresMissionarios = sumRows(cofresSlideRows);
+  const receitasAntes = useMemo(() => (receitasTable.rows || []).filter((r) => caixaPermitida(r) && rowBeforePrestacaoPeriod(r, period)), [receitasTable.rows, caixaPermitida, period]);
+  const despesasAntes = useMemo(() => (despesasTable.rows || []).filter((r) => caixaPermitida(r) && rowBeforePrestacaoPeriod(r, period)), [despesasTable.rows, caixaPermitida, period]);
+  const transferenciasAntes = useMemo(() => transferenciasAtivas.filter((r) => rowBeforePrestacaoPeriod(r, period)), [transferenciasAtivas, period]);
+  const totalReceitas = sumRows(receitasPeriodo);
+  const totalDespesas = sumRows(despesasPeriodo);
+  const transferenciasResumo = transferenciaResumoPerimetro(transferenciasPeriodo, caixaFiltroIds);
+  const totalTransferenciasInternas = transferenciasResumo.internas;
+  const transferenciasRecebidas = transferenciasResumo.recebidas;
+  const transferenciasEnviadas = transferenciasResumo.enviadas;
+  const transferenciasLiquidas = transferenciasResumo.liquido;
+  const saldoAnterior = sumRows(receitasAntes) - sumRows(despesasAntes) + transferenciaImpacto(transferenciasAntes, caixaFiltroIds);
+  const saldoPeriodo = totalReceitas - totalDespesas + transferenciasLiquidas;
+  const saldoTotal = saldoAnterior + saldoPeriodo;
+  const months = useMemo(
+    () =>
+      ((period.refs || []).length ? period.refs : monthRefsBetween(period.start, period.end)).map((refMes) => {
+        const entradas = receitasPeriodo.filter((r) => getRowReferencia(r) === refMes).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+        const despesas = despesasPeriodo.filter((r) => getRowReferencia(r) === refMes).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+        const transferenciasMes = transferenciasPeriodo.filter((r) => getRowReferencia(r) === refMes);
+        const resumoTransferenciasMes = transferenciaResumoPerimetro(transferenciasMes, caixaFiltroIds);
+        const transferencias = resumoTransferenciasMes.liquido;
+        const transferenciasInternas = resumoTransferenciasMes.internas;
+        const antesEntradas = (receitasTable.rows || []).filter((r) => caixaPermitida(r) && getRowReferencia(r) < refMes).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+        const antesDespesas = (despesasTable.rows || []).filter((r) => caixaPermitida(r) && getRowReferencia(r) < refMes).reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+        const antesTransferencias = transferenciaImpacto(
+          transferenciasAtivas.filter((r) => getRowReferencia(r) < refMes),
+          caixaFiltroIds,
+        );
+        return {
+          ref: refMes,
+          nome: MESES[Number(refMes.slice(5, 7)) - 1],
+          entradas,
+          despesas,
+          transferencias,
+          transferenciasInternas,
+          transferenciasRecebidas: resumoTransferenciasMes.recebidas,
+          transferenciasEnviadas: resumoTransferenciasMes.enviadas,
+          saldoMensal: entradas - despesas + transferencias,
+          saldoAnterior: antesEntradas - antesDespesas + antesTransferencias,
+          saldoAtual: antesEntradas - antesDespesas + antesTransferencias + entradas - despesas + transferencias,
+        };
+      }),
+    [period, receitasPeriodo, despesasPeriodo, transferenciasPeriodo, transferenciasAtivas, receitasTable.rows, despesasTable.rows, caixaPermitida, caixaFiltroIds],
+  );
+  const categoriaReport = useCallback((d) => categoriaPrestacaoRelatorio(categoriaRelatorioMap[d?.categoria_id], relatorioPrestacaoMap), [categoriaRelatorioMap, relatorioPrestacaoMap]);
+  const categoriaGrupo = useCallback((d, fallback = '') => categoriaRelatorioGrupo(categoriaRelatorioMap[d?.categoria_id], fallback, grupoPrestacaoMap), [categoriaRelatorioMap, grupoPrestacaoMap]);
+  const isDizimoAutomatico = useCallback(
+    (d) => {
+      const report = categoriaReport(d);
+      return prestacaoReportKey(report) === 'dizimo_dos_dizimos' || report?.tipo_calculo === 'dizimo_dos_dizimos' || d?.prestacao_dizimo_dos_dizimos === true;
+    },
+    [categoriaReport],
+  );
+  const isInvestimentoAutomatico = useCallback(
+    (d) => {
+      const report = categoriaReport(d);
+      return prestacaoReportKey(report) === 'investimento_especifico' || report?.tipo_calculo === 'investimento_especifico' || d?.prestacao_investimento === true;
+    },
+    [categoriaReport],
+  );
+  const selectedDizimo = despesasPeriodo.filter((d) => isDizimoAutomatico(d) || dizimoIds.includes(d.id));
+  const selectedInvestimentos = despesasPeriodo.filter((d) => isInvestimentoAutomatico(d) || investimentoIds.includes(d.id));
+  const totalDizimoDistribuido = sumRows(selectedDizimo);
+  const mediaEntradaMensal = months.length ? totalReceitas / months.length : totalReceitas;
+  const dizimoIdeal = mediaEntradaMensal * 0.1;
+  const dizimoPorGrupo = selectedDizimo.reduce((acc, d) => {
+    const categoria = categoriaRelatorioMap[d?.categoria_id];
+    const key = categoriaGrupo(d, groupDizimoExpense(d, categoriaMap));
+    acc[key] = (acc[key] || 0) + (Number(d.valor) || 0);
+    return acc;
+  }, {});
+  const investimentosPorGrupo = selectedInvestimentos.reduce((acc, d) => {
+    const categoria = categoriaRelatorioMap[d?.categoria_id];
+    const key = investimentoGrupos[d.id] || d?.prestacao_grupo || categoriaGrupo(d, expenseCategoryLabel(d, categoriaMap));
+    acc[key] = (acc[key] || 0) + (Number(d.valor) || 0);
+    return acc;
+  }, {});
+  const totalInvestimentos = sumRows(selectedInvestimentos);
+  const customReportGroups = useMemo(() => {
+    const map = {};
+    (relatoriosPrestacao.rows || [])
+      .filter((report) => report.ativo !== false)
+      .forEach((report) => {
+        const reportId = report.id || prestacaoReportKey(report);
+        map[reportId] = { report, groups: {}, cashBoxes: [], total: 0, count: 0 };
+      });
+    const addToReport = (report, groupName, valor) => {
+      if (!report) return;
+      const reportId = report.id || prestacaoReportKey(report);
+      if (!map[reportId]) map[reportId] = { report, groups: {}, cashBoxes: [], total: 0, count: 0 };
+      const group = String(groupName || 'Outros').trim() || 'Outros';
+      map[reportId].groups[group] = (map[reportId].groups[group] || 0) + (Number(valor) || 0);
+      map[reportId].total += Number(valor) || 0;
+      map[reportId].count += 1;
+    };
+    despesasPeriodo.forEach((d) => {
+      const report = categoriaReport(d);
+      addToReport(report, categoriaGrupo(d, expenseCategoryLabel(d, categoriaMap)), Number(d.valor) || 0);
+    });
+    fontesAtivas.forEach((fonte) => {
+      const report = relatorioPrestacaoMap[fonte.prestacao_relatorio_id];
+      if (!report) return;
+      const grupo = fonte.grupo || fonte.nome_exibicao || report.nome;
+      if (fonte.tipo_origem === 'caixa') {
+        const caixaId = String(fonte.origem_id || '');
+        if (!caixaId || (caixaFiltroIds.length && !caixaFiltroIds.includes(caixaId))) return;
+        const reportId = report.id || prestacaoReportKey(report);
+        const reportItem = map[reportId];
+        if (!reportItem.cashBoxes.some((item) => String(item.caixaId) === caixaId)) {
+          const receitasAnterioresCaixa = (receitasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowBeforePrestacaoPeriod(row, period));
+          const despesasAnterioresCaixa = (despesasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowBeforePrestacaoPeriod(row, period));
+          const transferenciasAnterioresCaixa = transferenciasAtivas.filter((row) => rowBeforePrestacaoPeriod(row, period));
+          const receitasAtuais = (receitasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowInPrestacaoPeriod(row, period));
+          const despesasAtuais = (despesasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowInPrestacaoPeriod(row, period));
+          const transferenciasAtuais = transferenciasAtivas.filter((row) => rowInPrestacaoPeriod(row, period));
+          const transferenciasRecebidasCaixa = transferenciasAtuais.filter((row) => String(row.caixa_destino_id || '') === caixaId).reduce((sum, row) => sum + Math.abs(Number(row.valor) || 0), 0);
+          const transferenciasEnviadasCaixa = transferenciasAtuais.filter((row) => String(row.caixa_origem_id || '') === caixaId).reduce((sum, row) => sum + Math.abs(Number(row.valor) || 0), 0);
+          const saldoAnteriorCaixa = sumRows(receitasAnterioresCaixa) - sumRows(despesasAnterioresCaixa) + transferenciaImpacto(transferenciasAnterioresCaixa, [caixaId]);
+          const entradasCaixa = sumRows(receitasAtuais) + transferenciasRecebidasCaixa;
+          const saidasCaixa = sumRows(despesasAtuais) + transferenciasEnviadasCaixa;
+          const saldoAtualCaixa = saldoAnteriorCaixa + entradasCaixa - saidasCaixa;
+          reportItem.cashBoxes.push({
+            caixaId,
+            nome: caixaMapPrestacao[caixaId] || fonte.nome_exibicao || 'Caixa',
+            saldoAnterior: saldoAnteriorCaixa,
+            entradas: entradasCaixa,
+            saidas: saidasCaixa,
+            transferenciasRecebidas: transferenciasRecebidasCaixa,
+            transferenciasEnviadas: transferenciasEnviadasCaixa,
+            saldoAtual: saldoAtualCaixa,
+          });
+          reportItem.total += saldoAtualCaixa;
+          reportItem.count += 1;
+        }
+        return;
+      }
+      receitasPeriodo.forEach((r) => {
+        if (fonteMatchesReceita(fonte, r)) addToReport(report, grupo, Number(r.valor) || 0);
+      });
+      despesasPeriodo.forEach((d) => {
+        if (fonteMatchesDespesa(fonte, d)) addToReport(report, grupo, Number(d.valor) || 0);
+      });
+    });
+    cofresPeriodo.forEach((item) => {
+      addToReport(relatorioCofres, item.descricao || 'Lançamentos manuais', Number(item.valor) || 0);
+    });
+    return Object.values(map).sort((a, b) => (Number(a.report?.ordem) || 50) - (Number(b.report?.ordem) || 50) || String(a.report?.nome || '').localeCompare(String(b.report?.nome || '')));
+  }, [relatoriosPrestacao.rows, despesasPeriodo, receitasPeriodo, fontesAtivas, relatorioPrestacaoMap, categoriaReport, categoriaGrupo, categoriaMap, fonteMatchesReceita, fonteMatchesDespesa, cofresPeriodo, relatorioCofres, caixaFiltroIds, receitasTable.rows, despesasTable.rows, transferenciasAtivas, period, caixaMapPrestacao]);
+  const resultadoPorRelatorio = useMemo(
+    () => Object.fromEntries(customReportGroups.map((item) => [String(item.report.id), item])),
+    [customReportGroups],
+  );
+  const slideEnabled = useCallback((id, fallback = true) => (LEGACY_FIXED_PRESTACAO_SLIDES.has(id) ? false : slideItems[id] ?? fallback), [slideItems]);
+  const toggleId = (list, setList, id) => setList(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  const selecionarSugestoesDizimo = () => setDizimoIds(Array.from(new Set([...dizimoIds, ...despesasPeriodo.filter((d) => suggestedDizimoExpense(d, categoriaMap)).map((d) => d.id)])));
+  const selecionarSugestoesInvest = () => setInvestimentoIds(Array.from(new Set([...investimentoIds, ...despesasPeriodo.filter((d) => suggestedInvestmentExpense(d, categoriaMap)).map((d) => d.id)])));
+  const criarCofre = async () => {
+    if (!supabase) return;
+    const payload = {
+      ...cofreForm,
+      valor: Number(cofreForm.valor) || 0,
+      referencia: referenciaFromDate(cofreForm.data || todayISO()),
+      incluir_slide: true,
+    };
+    if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+    const { error } = await supabase.from('prestacao_cofres_missionarios').insert(payload);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Cofre missionário cadastrado.');
+    setCofreForm({
+      data: todayISO(),
+      descricao: 'Cofre Missionário',
+      valor: '0.00',
+      observacoes: '',
+    });
+    cofresTable.reload();
+  };
+  const excluirCofre = async (row) => {
+    if (!confirm('Excluir este cofre missionário?')) return;
+    const { error } = await supabase.from('prestacao_cofres_missionarios').delete().eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Cofre removido.');
+    cofresTable.reload();
+  };
+  const criarRelatorioSlide = async () => {
+    if (!supabase || salvandoRelatorio) return;
+    const nome = String(novoRelatorioForm.nome || '').trim();
+    if (!nome) {
+      push('Informe o nome do novo relatório/slide.', 'error');
+      return;
+    }
+    setSalvandoRelatorio(true);
+    try {
+      const maiorOrdem = (relatoriosPrestacao.rows || []).reduce((max, row) => Math.max(max, Number(row.ordem) || 0), 0);
+      const payload = {
+        nome,
+        descricao: String(novoRelatorioForm.descricao || '').trim() || 'Slide configurável por origens escolhidas pela igreja.',
+        tipo_calculo: 'despesas_agrupadas',
+        ordem: maiorOrdem + 10,
+        incluir_slide_default: true,
+        ativo: true,
+      };
+      if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+      const { data, error } = await supabase.from('prestacao_relatorios').insert(payload).select('id,nome').single();
+      if (error) throw error;
+      await relatoriosPrestacao.reload();
+      setFonteForm((old) => ({ ...old, prestacao_relatorio_id: data?.id || old.prestacao_relatorio_id, origem_id: '', grupo: '' }));
+      setNovoRelatorioForm({ nome: '', descricao: '' });
+      setShowNovoRelatorio(false);
+      push(`Slide “${data?.nome || nome}” criado. Agora escolha uma ou mais origens para alimentá-lo.`);
+    } catch (error) {
+      push(error?.message || 'Não foi possível criar o relatório/slide.', 'error');
+    } finally {
+      setSalvandoRelatorio(false);
+    }
+  };
+  const removerRelatorioSlide = async () => {
+    if (!supabase) return;
+    const reportId = String(fonteForm.prestacao_relatorio_id || '');
+    const report = relatorioPrestacaoMap[reportId];
+    if (!report) {
+      push('Selecione o relatório/slide que deseja remover.', 'error');
+      return;
+    }
+    const qtdOrigens = fontesAtivas.filter((fonte) => String(fonte.prestacao_relatorio_id) === reportId).length;
+    const mensagem = qtdOrigens
+      ? `Remover o slide “${report.nome}” e suas ${qtdOrigens} origem(ns) configurada(s)? Os lançamentos financeiros não serão apagados.`
+      : `Remover o slide “${report.nome}”? Os lançamentos financeiros não serão apagados.`;
+    if (!confirm(mensagem)) return;
+    const { error } = await supabase.from('prestacao_relatorios').delete().eq('id', reportId);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    setFonteForm((old) => ({ ...old, prestacao_relatorio_id: '', origem_id: '', grupo: '' }));
+    await Promise.all([relatoriosPrestacao.reload(), fontesSlideTable.reload(), gruposPrestacao.reload()]);
+    push('Relatório/slide removido. Os lançamentos financeiros foram preservados.');
+  };
+  const criarFonteSlide = async () => {
+    if (!supabase) return;
+    if (!fonteForm.prestacao_relatorio_id) {
+      push('Escolha o relatório/slide.', 'error');
+      return;
+    }
+    if (!fonteForm.origem_id) {
+      push('Escolha a origem que entrará no slide.', 'error');
+      return;
+    }
+    const selected = fonteOrigemOptions.find((o) => String(o.value) === String(fonteForm.origem_id));
+    const payload = {
+      prestacao_relatorio_id: fonteForm.prestacao_relatorio_id,
+      tipo_origem: fonteForm.tipo_origem,
+      origem_id: String(fonteForm.origem_id),
+      nome_exibicao: selected?.label || fonteForm.origem_id,
+      tipo_movimento: fonteForm.tipo_origem === 'categoria_despesa' ? 'despesas' : fonteForm.tipo_movimento,
+      grupo: fonteForm.grupo || selected?.label || '',
+      incluir_slide: true,
+      ativo: true,
+    };
+    if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+    const { error } = await supabase.from('prestacao_fontes_slide').insert(payload);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Origem adicionada ao slide.');
+    setFonteForm((old) => ({ ...old, origem_id: '', grupo: '' }));
+    fontesSlideTable.reload();
+  };
+  const excluirFonteSlide = async (row) => {
+    if (!confirm('Remover esta origem automática do slide?')) return;
+    const { error } = await supabase.from('prestacao_fontes_slide').delete().eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Origem removida.');
+    fontesSlideTable.reload();
+  };
+  const slideModels = useMemo(() => {
+    const list = [];
+    const add = (id, title, jsx, html, fallback = true) => {
+      if (slideEnabled(id, fallback)) list.push({ id, title, jsx, html });
+    };
+    const subtitle = `${period.label} • ${caixaFiltroIds.length ? 'Caixas filtrados' : 'Todos os caixas'}`;
+    const logoHtml = igrejaLogo ? `<img src="${safeAttr(igrejaLogo)}" alt="Logo da igreja" />` : '<div class="coverLogoFallback">⛪</div>';
+    const coverHtml = `<div class="coverLeft"><div class="coverKicker">Relatório Financeiro</div><h1 class="coverTitle">Relatório<br/>Financeiro</h1><div class="coverPeriod">${safeHtml(period.label)}</div><div class="coverChurch">${safeHtml(igrejaNome)}</div><div class="coverFooter">${safeHtml(capaFrase)}</div></div><div class="coverRight"><div class="coverLogoBox">${logoHtml}</div></div>`;
+    add(
+      'capa',
+      'Capa',
+      <div className="prestacaoSlideCover modernCoverPreview">
+        <div>
+          <span>Relatório Financeiro</span>
+          <h2>{period.label}</h2>
+          <p>{igrejaNome}</p>
+          <strong>{capaFrase}</strong>
+        </div>
+        {igrejaLogo ? <img src={igrejaLogo} alt="Logo da igreja" /> : <div className="coverPreviewFallback">⛪</div>}
+      </div>,
+      coverHtml,
+    );
+    const monthlyHtml = `<div class="kicker">Movimentação mensal</div><h2>${safeHtml(period.label)}</h2><table class="table monthlyTable"><thead><tr><th>Mês</th><th>Saldo anterior</th><th>Entrada</th><th>Despesa</th><th>Transf. recebidas</th><th>Transf. enviadas</th><th>Saldo mensal</th><th>Saldo atual</th></tr></thead><tbody>${months.map((m) => `<tr><td><b>${safeHtml(m.nome)}</b></td><td class="${m.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(m.saldoAnterior)}</td><td class="income">${fmtMoney(m.entradas)}</td><td class="expense">${fmtMoney(m.despesas)}</td><td class="income">${fmtMoney(m.transferenciasRecebidas)}</td><td class="expense">${fmtMoney(m.transferenciasEnviadas)}</td><td class="${m.saldoMensal < 0 ? 'expense' : 'income'}">${fmtMoney(m.saldoMensal)}</td><td class="${m.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(m.saldoAtual)}</td></tr>`).join('')}</tbody></table>`;
+    add(
+      'movimentacao',
+      'Movimentação mensal',
+      <div>
+        <h4>Movimentação mensal</h4>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Mês</th>
+                <th>Entrada</th>
+                <th>Despesa</th>
+                <th>Transf. recebidas</th>
+                <th>Transf. enviadas</th>
+                <th>Saldo</th>
+                <th>Saldo atual</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((m) => (
+                <tr key={m.ref}>
+                  <td>
+                    <b>{m.nome}</b>
+                  </td>
+                  <td className="moneyIncome">{fmtMoney(m.entradas)}</td>
+                  <td className="moneyExpense">{fmtMoney(m.despesas)}</td>
+                  <td className="moneyIncome">{fmtMoney(m.transferenciasRecebidas)}</td>
+                  <td className="moneyExpense">{fmtMoney(m.transferenciasEnviadas)}</td>
+                  <td className={m.saldoMensal < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(m.saldoMensal)}</td>
+                  <td className={m.saldoAtual < 0 ? 'moneyExpense' : 'moneyBlue'}>{fmtMoney(m.saldoAtual)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>,
+      monthlyHtml,
+    );
+    add(
+      'balanco',
+      'Balanço do período',
+      <div>
+        <h4>Balanço do período</h4>
+        <div className="prestacaoKpis">
+          <div className={`miniStat ${saldoAnterior < 0 ? 'expense' : ''}`}>
+            <span>Saldo anterior</span>
+            <b>{fmtMoney(saldoAnterior)}</b>
+          </div>
+          <div className="miniStat income">
+            <span>Entrada total</span>
+            <b>{fmtMoney(totalReceitas)}</b>
+          </div>
+          <div className="miniStat expense">
+            <span>Despesa total</span>
+            <b>{fmtMoney(totalDespesas)}</b>
+          </div>
+          <div className="miniStat">
+            <span>Entre caixas selecionados</span>
+            <b>{fmtMoney(totalTransferenciasInternas)}</b>
+          </div>
+          {transferenciasRecebidas > 0 && (
+            <div className="miniStat income">
+              <span>Recebidas de caixas fora</span>
+              <b>{fmtMoney(transferenciasRecebidas)}</b>
+            </div>
+          )}
+          {transferenciasEnviadas > 0 && (
+            <div className="miniStat expense">
+              <span>Enviadas para caixas fora</span>
+              <b>{fmtMoney(transferenciasEnviadas)}</b>
+            </div>
+          )}
+          <div className={`miniStat ${saldoTotal < 0 ? 'expense' : 'total'}`}>
+            <span>Saldo total</span>
+            <b>{fmtMoney(saldoTotal)}</b>
+          </div>
+        </div>
+      </div>,
+      `<div class="kicker">Balanço do período</div><h2>${safeHtml(period.label)}</h2><div class="cards"><div class="card ${saldoAnterior < 0 ? 'expense' : ''}"><span>Saldo anterior</span><b>${fmtMoney(saldoAnterior)}</b></div><div class="card income"><span>Entrada total</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesa total</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card"><span>Entre caixas selecionados</span><b>${fmtMoney(totalTransferenciasInternas)}</b></div><div class="card income"><span>Recebidas de caixas fora</span><b>${fmtMoney(transferenciasRecebidas)}</b></div><div class="card expense"><span>Enviadas para caixas fora</span><b>${fmtMoney(transferenciasEnviadas)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo total</span><b>${fmtMoney(saldoTotal)}</b></div></div>`,
+    );
+    add(
+      'cofres',
+      'Cofres missionários',
+      <div>
+        <h4>Cofres missionários</h4>
+        <div className="prestacaoKpis">
+          <div className={totalCofresMissionarios < 0 ? 'miniStat expense' : 'miniStat income'}>
+            <span>Total</span>
+            <b>{fmtMoney(totalCofresMissionarios)}</b>
+          </div>
+          <div className="miniStat">
+            <span>Lançamentos</span>
+            <b>{cofresSlideRows.length}</b>
+          </div>
+          <div className="miniStat">
+            <span>Origens automáticas</span>
+            <b>{fontesCofres.length}</b>
+          </div>
+        </div>
+      </div>,
+      `<div class="kicker">Cofres Missionários</div><h2>${safeHtml(period.label)}</h2><table class="table"><thead><tr><th>Data</th><th>Origem</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>${cofresSlideRows.map((c) => `<tr><td>${fmtDate(c.data)}</td><td>${safeHtml(c.origem || 'Cofre')}</td><td>${safeHtml(c.descricao || 'Cofre Missionário')}</td><td class="${Number(c.valor) < 0 ? 'expense' : 'income'}">${fmtMoney(c.valor)}</td></tr>`).join('') || '<tr><td colspan="4">Nenhum valor configurado no período.</td></tr>'}</tbody></table><p class="bigTotal">Total: ${fmtMoney(totalCofresMissionarios)}</p>`,
+    );
+    const dizimoRowsHtml = Object.entries(dizimoPorGrupo)
+      .map(([nome, valor]) => `<tr><td>${safeHtml(nome)}</td><td class="expense">${fmtMoney(valor)}</td></tr>`)
+      .join('');
+    add(
+      'dizimo',
+      'Dízimo dos dízimos',
+      <div>
+        <h4>Dízimo dos dízimos</h4>
+        <div className="prestacaoKpis">
+          <div className="miniStat income">
+            <span>Média entrada mensal</span>
+            <b>{fmtMoney(mediaEntradaMensal)}</b>
+          </div>
+          <div className="miniStat total">
+            <span>10% referência</span>
+            <b>{fmtMoney(dizimoIdeal)}</b>
+          </div>
+          <div className="miniStat expense">
+            <span>Total distribuído</span>
+            <b>{fmtMoney(totalDizimoDistribuido)}</b>
+          </div>
+        </div>
+      </div>,
+      `<div class="kicker">Dízimo dos Dízimos</div><h2>${safeHtml(period.label)}</h2><div class="cards"><div class="card income"><span>Média de entrada mensal</span><b>${fmtMoney(mediaEntradaMensal)}</b></div><div class="card total"><span>10% referência</span><b>${fmtMoney(dizimoIdeal)}</b></div><div class="card expense"><span>Total distribuído</span><b>${fmtMoney(totalDizimoDistribuido)}</b></div></div><div style="height:18px"></div><table class="table"><thead><tr><th>Grupo selecionado</th><th>Valor</th></tr></thead><tbody>${dizimoRowsHtml || '<tr><td colspan="2">Nenhuma despesa selecionada.</td></tr>'}</tbody></table>`,
+    );
+    const investimentoRowsHtml = Object.entries(investimentosPorGrupo)
+      .map(([nome, valor]) => `<tr><td>${safeHtml(nome)}</td><td class="total">${fmtMoney(valor)}</td></tr>`)
+      .join('');
+    add(
+      'investimentos',
+      'Investimentos específicos',
+      <div>
+        <h4>Investimentos específicos</h4>
+        <div className="prestacaoKpis">
+          <div className="miniStat total">
+            <span>Total investido</span>
+            <b>{fmtMoney(totalInvestimentos)}</b>
+          </div>
+          <div className="miniStat">
+            <span>Itens selecionados</span>
+            <b>{selectedInvestimentos.length}</b>
+          </div>
+        </div>
+      </div>,
+      `<div class="kicker">Investimentos específicos</div><h2>${safeHtml(period.label)}</h2><table class="table"><thead><tr><th>Investimento</th><th>Valor</th></tr></thead><tbody>${investimentoRowsHtml || '<tr><td colspan="2">Nenhum investimento selecionado.</td></tr>'}</tbody></table><p class="bigTotal">${fmtMoney(totalInvestimentos)}</p>`,
+    );
+    customReportGroups.forEach(({ report, groups, cashBoxes, total, count }) => {
+      const slideId = `relatorio_${report.id}`;
+      const rowsHtml = Object.entries(groups)
+        .map(([nome, valor]) => `<tr><td>${safeHtml(nome)}</td><td class="total">${fmtMoney(valor)}</td></tr>`)
+        .join('');
+      const cashBoxesHtml = (cashBoxes || [])
+        .map((item) => `<tr><td>${safeHtml(item.nome)}</td><td class="${item.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(item.saldoAnterior)}</td><td class="income">${fmtMoney(item.entradas)}</td><td class="expense">${fmtMoney(item.saidas)}</td><td class="${item.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(item.saldoAtual)}</td></tr>`)
+        .join('');
+      const detailHtml = cashBoxesHtml
+        ? `<table class="table"><thead><tr><th>Caixa</th><th>Saldo anterior</th><th>Entradas atuais</th><th>Saídas atuais</th><th>Saldo atual</th></tr></thead><tbody>${cashBoxesHtml}</tbody></table><p style="font-size:14px">Entradas e saídas incluem as transferências recebidas e enviadas por cada caixa.</p>${rowsHtml ? `<div style="height:14px"></div><table class="table"><thead><tr><th>Outras origens</th><th>Valor</th></tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}`
+        : `<table class="table"><thead><tr><th>Grupo</th><th>Valor</th></tr></thead><tbody>${rowsHtml || '<tr><td colspan="2">Nenhum lançamento encontrado nas origens configuradas para o período.</td></tr>'}</tbody></table>`;
+      add(
+        slideId,
+        report.nome,
+        <div>
+          <h4>{report.nome}</h4>
+          <div className="prestacaoKpis">
+            <div className={`miniStat ${total < 0 ? 'expense' : 'total'}`}>
+              <span>{cashBoxes?.length ? 'Saldo atual consolidado' : 'Total'}</span>
+              <b>{fmtMoney(total)}</b>
+            </div>
+            <div className="miniStat">
+              <span>{cashBoxes?.length ? 'Caixas vinculados' : 'Lançamentos'}</span>
+              <b>{count}</b>
+            </div>
+          </div>
+        </div>,
+        `<div class="kicker">${safeHtml(report.nome)}</div><h2>${safeHtml(period.label)}</h2>${detailHtml}<p class="bigTotal ${total < 0 ? 'expense' : ''}">${cashBoxes?.length ? 'Saldo atual consolidado: ' : ''}${fmtMoney(total)}</p>`,
+        report.incluir_slide_default !== false,
+      );
+    });
+    add(
+      'encerramento',
+      'Encerramento',
+      <div className={`prestacaoSlideCover ${saldoTotal < 0 ? 'negativeBalance' : ''}`}>
+        <span>Resumo final</span>
+        <h2>{fmtMoney(saldoTotal)}</h2>
+        <p>Saldo total ao final do período</p>
+      </div>,
+      `<div class="kicker">Resumo final</div><h1>${safeHtml(period.label)}</h1><div class="cards"><div class="card income"><span>Entradas</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesas</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo total</span><b>${fmtMoney(saldoTotal)}</b></div></div><div class="footerMsg">Transparência com Responsabilidade</div>`,
+    );
+    return list;
+  }, [slideEnabled, period, caixaFiltroIds.length, months, saldoAnterior, totalReceitas, totalDespesas, totalTransferenciasInternas, transferenciasRecebidas, transferenciasEnviadas, transferenciasLiquidas, saldoPeriodo, saldoTotal, cofresSlideRows, totalCofresMissionarios, fontesCofres.length, dizimoPorGrupo, mediaEntradaMensal, dizimoIdeal, totalDizimoDistribuido, investimentosPorGrupo, totalInvestimentos, selectedInvestimentos.length, customReportGroups, igrejaNome, igrejaLogo, capaFrase]);
+  const imprimirSlides = () =>
+    abrirImpressaoElemento('prestacao-slides-print-area', `Prestação de contas — ${period.label}`, {
+      pageSize: 'landscape',
+      hideSelector: '.noPrint,.printHidden,.financeReportsTopbar button,.prestacaoSectionHeader button',
+    });
+  return (
+    <div className="prestacaoPage">
+      <ToastStack toasts={toasts} close={close} />
+      {showNovoRelatorio && (
+        <Modal title="Novo relatório/slide" onClose={() => !salvandoRelatorio && setShowNovoRelatorio(false)}>
+          <div className="formGrid">
+            <div className="field full">
+              <label>Nome do slide *</label>
+              <input
+                autoFocus
+                value={novoRelatorioForm.nome}
+                onChange={(e) => setNovoRelatorioForm((old) => ({ ...old, nome: e.target.value }))}
+                placeholder="Ex: Cofres Missionários, Construção do Templo, Campanha de Missões"
+              />
+            </div>
+            <div className="field full">
+              <label>Descrição</label>
+              <textarea
+                value={novoRelatorioForm.descricao}
+                onChange={(e) => setNovoRelatorioForm((old) => ({ ...old, descricao: e.target.value }))}
+                placeholder="Explique o que será apresentado neste slide."
+              />
+            </div>
+          </div>
+          <div className="infoBox">
+            Depois de criar o slide, selecione uma ou mais origens: caixa, tipo de receita ou categoria de despesa.
+          </div>
+          <div className="modalActions">
+            <button className="secondary" onClick={() => setShowNovoRelatorio(false)} disabled={salvandoRelatorio}>Cancelar</button>
+            <button className="green" onClick={criarRelatorioSlide} disabled={salvandoRelatorio || !String(novoRelatorioForm.nome || '').trim()}>
+              {salvandoRelatorio ? 'Criando…' : 'Criar slide'}
+            </button>
+          </div>
+        </Modal>
+      )}
+      <div className="financeReportsTopbar prestacaoTopbar">
+        <div>
+          <h2>Prestação de Contas em Slides</h2>
+          <p>Monte a prestação trimestral, escolha quais blocos vão para o slide e imprima/salve em PDF.</p>
+        </div>
+        <button className="green" onClick={imprimirSlides}>
+          Gerar slides / imprimir
+        </button>
+      </div>
+      <nav className="prestacaoSteps" aria-label="Etapas da prestação de contas">
+        <a href="#prestacao-etapa-periodo"><span>1</span> Período</a>
+        <a href="#prestacao-etapa-itens"><span>2</span> Itens</a>
+        <a href="#prestacao-etapa-origens"><span>3</span> Origens</a>
+        <a href="#prestacao-etapa-previa"><span>4</span> Prévia</a>
+      </nav>
+      <div className="prestacaoGrid">
+        <div id="prestacao-etapa-periodo" className="card prestacaoSetupCard prestacaoStepTarget">
+          <h3>1. Período e capa</h3>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Tipo</label>
+              <select value={modo} onChange={(e) => setModo(e.target.value)}>
+                <option value="mes">Mês / referência</option>
+                <option value="trimestre">Trimestre</option>
+                <option value="personalizado">Período personalizado por data</option>
+              </select>
+            </div>
+            {modo !== 'mes' && (
+              <div className="field">
+                <label>Ano</label>
+                <input type="number" min="2000" max="2100" value={ano} onChange={(e) => setAno(String(e.target.value || '').slice(0, 4))} />
+              </div>
+            )}
+            {modo === 'mes' && (
+              <div className="field">
+                <label>Referência</label>
+                <div className="inlineSelectAction">
+                  <input
+                    type="month"
+                    value={referenciaPrestacao}
+                    onChange={(e) => {
+                      const value = ensureReferencia(e.target.value || ref);
+                      setReferenciaPrestacao(value);
+                      setAno(value.slice(0, 4));
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="smallBtn secondary nowrapBtn"
+                    onClick={() => {
+                      setReferenciaPrestacao(ref);
+                      setAno(ref.slice(0, 4));
+                    }}
+                  >
+                    Usar global
+                  </button>
+                </div>
+              </div>
+            )}
+            {modo === 'trimestre' ? (
+              <div className="field full">
+                <label>Trimestre</label>
+                <select value={trimestre} onChange={(e) => setTrimestre(e.target.value)}>
+                  {PRESTACAO_TRIMESTRES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {modo === 'personalizado' ? (
+              <>
+                <div className="field">
+                  <label>Data inicial</label>
+                  <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Data final</label>
+                  <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
+                </div>
+              </>
+            ) : null}
+          </div>
+          <div className="prestacaoPeriodBox">
+            <b>{period.label}</b>
+            <span>
+              {fmtDate(period.start)} a {fmtDate(period.end)}
+            </span>
+            <small>{(period.refs || []).length ? `Competência considerada: ${period.refs.map(fmtReferencia).join(' • ')}` : 'Período por data do lançamento'}</small>
+          </div>
+          <div className="prestacaoCoverSettings">
+            <div className="field full">
+              <label>Frase da capa / rodapé do slide</label>
+              <input value={capaFrase} onChange={(e) => setCapaFrase(e.target.value)} placeholder="Ex: Transparência com Responsabilidade" />
+            </div>
+            <div className="infoBox compactPrestacaoNote">
+              <b>Capa:</b> o slide usa automaticamente o nome e a logomarca de <b>Dados gerais da igreja</b>. Para trocar a logo, vá em Configurações › Dados gerais da igreja.
+            </div>
+          </div>
+        </div>
+        <div id="prestacao-etapa-itens" className="card prestacaoSetupCard prestacaoStepTarget">
+          <h3>2. Itens que irão para os slides</h3>
+          <div className="prestacaoChecklist">
+            {allSlideOptions.map((item) => (
+              <label key={item.id} className="prestacaoCheck">
+                <input
+                  type="checkbox"
+                  checked={slideItems[item.id] ?? item.defaultSelected ?? true}
+                  onChange={(e) =>
+                    setSlideItems((old) => ({
+                      ...old,
+                      [item.id]: e.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  <b>{item.label}</b>
+                  <small>{item.desc}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="prestacaoKpis">
+        <div className="miniStat income">
+          <span>Entradas do período</span>
+          <b>{fmtMoney(totalReceitas)}</b>
+        </div>
+        <div className="miniStat expense">
+          <span>Despesas do período</span>
+          <b>{fmtMoney(totalDespesas)}</b>
+        </div>
+        <div className="miniStat">
+          <span>Entre caixas selecionados</span>
+          <b>{fmtMoney(totalTransferenciasInternas)}</b>
+        </div>
+        {transferenciasRecebidas > 0 && (
+          <div className="miniStat income">
+            <span>Recebidas de caixas fora</span>
+            <b>{fmtMoney(transferenciasRecebidas)}</b>
+          </div>
+        )}
+        {transferenciasEnviadas > 0 && (
+          <div className="miniStat expense">
+            <span>Enviadas para caixas fora</span>
+            <b>{fmtMoney(transferenciasEnviadas)}</b>
+          </div>
+        )}
+        <div className={`miniStat ${saldoPeriodo < 0 ? 'expense' : 'income'}`}>
+          <span>Saldo do período</span>
+          <b>{fmtMoney(saldoPeriodo)}</b>
+        </div>
+        <div className={`miniStat ${saldoTotal < 0 ? 'expense' : 'total'}`}>
+          <span>Saldo total</span>
+          <b>{fmtMoney(saldoTotal)}</b>
+        </div>
+      </div>
+      <div id="prestacao-etapa-origens" className="card prestacaoSectionCard prestacaoStepTarget prestacaoOrigensCard">
+        <div className="prestacaoSectionHeader">
+          <div>
+            <h3>3. Slides personalizados e origens</h3>
+            <p>Crie os slides que desejar e escolha quais caixas, receitas ou despesas alimentarão cada um. Nada fica fixo: a igreja pode incluir ou remover qualquer slide da apresentação.</p>
+          </div>
+          <div className="prestacaoHeaderActions">
+            <button className="smallBtn secondary" onClick={() => setShowNovoRelatorio(true)}>
+              + Novo relatório/slide
+            </button>
+            <button className="smallBtn red" onClick={removerRelatorioSlide} disabled={!fonteForm.prestacao_relatorio_id}>
+              Remover slide selecionado
+            </button>
+          </div>
+        </div>
+        <div className="grid cols4 prestacaoInlineForm prestacaoOrigensForm">
+          <div className="field prestacaoFieldRelatorio">
+            <label>1. Relatório/slide de destino</label>
+            <select
+              value={fonteForm.prestacao_relatorio_id}
+              onChange={(e) =>
+                setFonteForm({
+                  ...fonteForm,
+                  prestacao_relatorio_id: e.target.value,
+                })
+              }
+            >
+              {!fonteRelatorioOptions.length && <option value="">Nenhum slide cadastrado — clique em “Novo relatório/slide”</option>}
+              {fonteRelatorioOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field prestacaoFieldTipo">
+            <label>2. Tipo de origem</label>
+            <select
+              value={fonteForm.tipo_origem}
+              onChange={(e) =>
+                setFonteForm({
+                  ...fonteForm,
+                  tipo_origem: e.target.value,
+                  origem_id: '',
+                  tipo_movimento: e.target.value === 'categoria_despesa' ? 'despesas' : 'receitas',
+                })
+              }
+            >
+              <option value="caixa">Caixa</option>
+              <option value="tipo_receita">Tipo de receita</option>
+              <option value="categoria_despesa">Categoria de despesa</option>
+            </select>
+          </div>
+          <div className="field prestacaoFieldOrigem">
+            <label>3. {fonteForm.tipo_origem === 'caixa' ? 'Caixa' : fonteForm.tipo_origem === 'tipo_receita' ? 'Tipo de receita' : 'Categoria de despesa'}</label>
+            <select value={fonteForm.origem_id} onChange={(e) => setFonteForm({ ...fonteForm, origem_id: e.target.value })}>
+              <option value="">Selecione...</option>
+              {fonteOrigemOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field prestacaoFieldMovimento">
+            <label>4. Movimento considerado</label>
+            <select value={fonteForm.tipo_movimento} disabled={fonteForm.tipo_origem === 'categoria_despesa'} onChange={(e) => setFonteForm({ ...fonteForm, tipo_movimento: e.target.value })}>
+              <option value="receitas">Somente receitas</option>
+              <option value="despesas">Somente despesas</option>
+              <option value="ambos">Receitas e despesas</option>
+            </select>
+          </div>
+          <div className="field prestacaoGrupoField">
+            <label>5. Nome/grupo exibido no slide</label>
+            <input value={fonteForm.grupo} onChange={(e) => setFonteForm({ ...fonteForm, grupo: e.target.value })} placeholder="Ex: Cofres Missionários, Missões, Campanha X" />
+          </div>
+          <div className="field actionField prestacaoAddAction">
+            <label>&nbsp;</label>
+            <button className="green" onClick={criarFonteSlide} disabled={!fonteRelatorioOptions.length} title={!fonteRelatorioOptions.length ? 'Cadastre ou restaure um relatório/slide antes de adicionar a origem.' : ''}>
+              + Adicionar origem
+            </button>
+          </div>
+        </div>
+        <div className="tablewrap compactTable">
+          <table>
+            <thead>
+              <tr>
+                <th>Slide</th>
+                <th>Origem</th>
+                <th>Movimento</th>
+                <th>Grupo</th>
+                <th>Resultado no período</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fontesAtivas.map((f) => (
+                <tr key={f.id}>
+                  <td>{relatorioPrestacaoMap[f.prestacao_relatorio_id]?.nome || '—'}</td>
+                  <td>
+                    <b>{f.tipo_origem === 'caixa' ? caixaMapPrestacao[f.origem_id] || f.nome_exibicao : f.nome_exibicao}</b>
+                    <small className={`muted blockText ${f.tipo_origem === 'caixa' && caixas.rows.find((c) => String(c.id) === String(f.origem_id))?.ativo === false ? 'inactiveSourceWarning' : ''}`}>
+                      {f.tipo_origem === 'caixa' && caixas.rows.find((c) => String(c.id) === String(f.origem_id))?.ativo === false
+                        ? 'Caixa inativo — histórico preservado; substitua esta origem para novos movimentos.'
+                        : f.tipo_origem === 'caixa' ? 'Caixa' : f.tipo_origem === 'tipo_receita' ? 'Tipo de receita' : 'Categoria de despesa'}
+                    </small>
+                  </td>
+                  <td>{f.tipo_movimento === 'ambos' ? 'Receitas e despesas' : f.tipo_movimento === 'despesas' ? 'Despesas' : 'Receitas'}</td>
+                  <td>{f.grupo || f.nome_exibicao || '—'}</td>
+                  <td>
+                    <b>{resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.count || 0} lançamento(s)</b>
+                    <small className="muted blockText">{fmtMoney(resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.total || 0)}</small>
+                  </td>
+                  <td>
+                    <button className="smallBtn red" onClick={() => excluirFonteSlide(f)}>
+                      Remover
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!fontesAtivas.length && (
+                <tr>
+                  <td colSpan={6} className="center muted">
+                    Nenhuma origem automática configurada.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="infoBox compactPrestacaoNote">
+          <b>Fluxo único:</b> cadastre o relatório, adicione uma ou mais origens e confira o resultado acima. O slide será atualizado automaticamente conforme o período e os caixas selecionados no topo.
+        </div>
+      </div>
+      <div className="card prestacaoSectionCard legacyPrestacaoSection" aria-hidden="true">
+        <div className="prestacaoSectionHeader">
+          <div>
+            <h3>Cofres missionários</h3>
+            <p>Valores manuais somados às origens automáticas configuradas para o slide. Ex.: caixa 04_Missões ou tipo de receita missionária.</p>
+          </div>
+          <b className={totalCofresMissionarios < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(totalCofresMissionarios)}</b>
+        </div>
+        <div className="grid cols4 prestacaoInlineForm">
+          <div className="field">
+            <label>Data</label>
+            <input type="date" value={cofreForm.data} onChange={(e) => setCofreForm({ ...cofreForm, data: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Descrição manual</label>
+            <input value={cofreForm.descricao} onChange={(e) => setCofreForm({ ...cofreForm, descricao: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Valor</label>
+            <MoneyInput value={cofreForm.valor} onChange={(valor) => setCofreForm({ ...cofreForm, valor })} className="incomeMoney" />
+          </div>
+          <div className="field actionField">
+            <label>&nbsp;</label>
+            <button className="green" onClick={criarCofre}>
+              + Adicionar manual
+            </button>
+          </div>
+        </div>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Origem</th>
+                <th>Descrição</th>
+                <th>Valor</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cofresSlideRows.map((c) => (
+                <tr key={c.id}>
+                  <td>{fmtDate(c.data)}</td>
+                  <td>{c.origem}</td>
+                  <td>{c.descricao}</td>
+                  <td className={Number(c.valor) < 0 ? 'moneyExpense' : 'moneyIncome'}>{fmtMoney(c.valor)}</td>
+                  <td>
+                    {String(c.id).startsWith('manual_') ? (
+                      <button
+                        className="smallBtn red"
+                        onClick={() =>
+                          excluirCofre({
+                            id: String(c.id).replace('manual_', ''),
+                          })
+                        }
+                      >
+                        Excluir
+                      </button>
+                    ) : (
+                      <span className="badge success">Auto</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!cofresSlideRows.length && (
+                <tr>
+                  <td colSpan={5} className="center muted">
+                    Nenhum valor configurado no período.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="card prestacaoSectionCard legacyPrestacaoSection" aria-hidden="true">
+        <div className="prestacaoSectionHeader">
+          <div>
+            <h3>Dízimo dos dízimos</h3>
+            <p>As despesas entram automaticamente conforme o relatório/slide definido na categoria/evento da despesa. Use a marcação manual apenas para exceções do período.</p>
+          </div>
+          <div className="actionsInline">
+            <button className="smallBtn secondary" onClick={selecionarSugestoesDizimo}>
+              Adicionar sugestões manuais
+            </button>
+            <button className="smallBtn secondary" onClick={() => setDizimoIds([])}>
+              Limpar manuais
+            </button>
+          </div>
+        </div>
+        <div className="prestacaoKpis">
+          <div className="miniStat income">
+            <span>Média entrada mensal</span>
+            <b>{fmtMoney(mediaEntradaMensal)}</b>
+          </div>
+          <div className="miniStat total">
+            <span>10% referência</span>
+            <b>{fmtMoney(dizimoIdeal)}</b>
+          </div>
+          <div className="miniStat expense">
+            <span>Total no relatório</span>
+            <b>{fmtMoney(totalDizimoDistribuido)}</b>
+          </div>
+        </div>
+        <div className="infoBox compactPrestacaoNote">
+          <b>Como configurar:</b> vá em <b>Cadastros › Categorias de despesas</b>, escolha o <b>Relatório da prestação de contas</b> e o <b>Grupo exibido no slide</b>. Ex.: Oferta, Cestas básicas, Ajudas de custo.
+        </div>
+        <div className="tablewrap compactTable">
+          <table>
+            <thead>
+              <tr>
+                <th>Origem</th>
+                <th>Data</th>
+                <th>Descrição</th>
+                <th>Categoria / grupo</th>
+                <th>Valor</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {despesasPeriodo.map((d) => {
+                const auto = isDizimoAutomatico(d);
+                const categoria = categoriaRelatorioMap[d?.categoria_id];
+                const grupo = categoriaGrupo(d, groupDizimoExpense(d, categoriaMap));
+                return (
+                  <tr key={d.id} className={auto ? 'prestacaoAutoRow' : ''}>
+                    <td>{auto ? <span className="badge success">Auto</span> : <input type="checkbox" checked={dizimoIds.includes(d.id)} onChange={() => toggleId(dizimoIds, setDizimoIds, d.id)} />}</td>
+                    <td>{fmtDate(d.data)}</td>
+                    <td>{d.descricao}</td>
+                    <td>
+                      <b>{expenseCategoryLabel(d, categoriaMap)}</b>
+                      <small className="muted blockText">{auto ? `Grupo: ${grupo}` : 'Marcação manual opcional'}</small>
+                    </td>
+                    <td className="moneyExpense">{fmtMoney(d.valor)}</td>
+                  </tr>
+                );
+              })}
+              {!despesasPeriodo.length && (
+                <tr>
+                  <td colSpan={5} className="center muted">
+                    Nenhuma despesa no período.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="card prestacaoSectionCard legacyPrestacaoSection" aria-hidden="true">
+        <div className="prestacaoSectionHeader">
+          <div>
+            <h3>Investimentos específicos</h3>
+            <p>
+              As despesas entram automaticamente quando a categoria estiver marcada como <b>Investimento específico</b>. O grupo do relatório também pode ser configurado direto na categoria.
+            </p>
+          </div>
+          <div className="actionsInline">
+            <button className="smallBtn secondary" onClick={selecionarSugestoesInvest}>
+              Adicionar sugestões manuais
+            </button>
+            <button className="smallBtn secondary" onClick={() => setInvestimentoIds([])}>
+              Limpar manuais
+            </button>
+          </div>
+        </div>
+        <div className="prestacaoKpis">
+          <div className="miniStat total">
+            <span>Total investido</span>
+            <b>{fmtMoney(totalInvestimentos)}</b>
+          </div>
+          <div className="miniStat">
+            <span>Itens no relatório</span>
+            <b>{selectedInvestimentos.length}</b>
+          </div>
+        </div>
+        <div className="infoBox compactPrestacaoNote">
+          <b>Exemplo:</b> marque as categorias Reforma, Conferências, Bíblias, Materiais ou Mão de obra como <b>Investimento específico</b>. Depois os lançamentos entram automaticamente nos slides.
+        </div>
+        <div className="tablewrap compactTable">
+          <table>
+            <thead>
+              <tr>
+                <th>Origem</th>
+                <th>Data</th>
+                <th>Descrição</th>
+                <th>Grupo no slide</th>
+                <th>Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {despesasPeriodo.map((d) => {
+                const auto = isInvestimentoAutomatico(d);
+                const categoria = categoriaRelatorioMap[d?.categoria_id];
+                const grupoPadrao = d?.prestacao_grupo || categoriaGrupo(d, expenseCategoryLabel(d, categoriaMap));
+                return (
+                  <tr key={d.id} className={auto ? 'prestacaoAutoRow' : ''}>
+                    <td>{auto ? <span className="badge total">Auto</span> : <input type="checkbox" checked={investimentoIds.includes(d.id)} onChange={() => toggleId(investimentoIds, setInvestimentoIds, d.id)} />}</td>
+                    <td>{fmtDate(d.data)}</td>
+                    <td>{d.descricao}</td>
+                    <td>
+                      {auto ? (
+                        <b>{grupoPadrao}</b>
+                      ) : (
+                        <input
+                          value={investimentoGrupos[d.id] || grupoPadrao}
+                          onChange={(e) =>
+                            setInvestimentoGrupos((old) => ({
+                              ...old,
+                              [d.id]: e.target.value,
+                            }))
+                          }
+                        />
+                      )}
+                    </td>
+                    <td className="moneyExpense">{fmtMoney(d.valor)}</td>
+                  </tr>
+                );
+              })}
+              {!despesasPeriodo.length && (
+                <tr>
+                  <td colSpan={5} className="center muted">
+                    Nenhuma despesa no período.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {customReportGroups.length > 0 && (
+        <div className="card prestacaoSectionCard">
+          <div className="prestacaoSectionHeader">
+            <div>
+              <h3>Relatórios que irão para a apresentação</h3>
+              <p>Pré-conferência dos slides criados em Cadastros › Relatórios da prestação e alimentados por suas origens.</p>
+            </div>
+          </div>
+          <div className="tablewrap compactTable">
+            <table>
+              <thead>
+                <tr>
+                  <th>Slide</th>
+                  <th>Grupos</th>
+                  <th>Lançamentos</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customReportGroups.map(({ report, groups, cashBoxes, total, count }) => (
+                  <tr key={report.id}>
+                    <td>
+                      <b>{report.nome}</b>
+                      <small className="muted blockText">{report.descricao || 'Relatório configurável'}</small>
+                    </td>
+                    <td>{[...(cashBoxes || []).map((item) => item.nome), ...Object.keys(groups)].join(', ') || '—'}</td>
+                    <td>{count}</td>
+                    <td className={Number(total) < 0 ? 'moneyExpense' : 'moneyTotal'}>
+                      <b>{fmtMoney(total)}</b>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      <div id="prestacao-etapa-previa" className="card prestacaoSectionCard prestacaoStepTarget">
+        <div className="prestacaoSectionHeader">
+          <div>
+            <h3>4. Prévia e impressão</h3>
+            <p>{slideModels.length} slide(s) selecionado(s). Desmarque acima o que não deverá entrar na apresentação.</p>
+          </div>
+          <button className="green" onClick={imprimirSlides}>
+            Gerar slides / imprimir
+          </button>
+        </div>
+        <div id="prestacao-slides-print-area" className="prestacaoSlidesDeck">
+          {slideModels.map((s, idx) => (
+            <section key={s.id} className={`slide ${s.id === 'capa' ? 'coverSlide' : ''}`}>
+              <div className="slideNumber">
+                {idx + 1}/{slideModels.length}
+              </div>
+              <div dangerouslySetInnerHTML={{ __html: s.html }} />
+            </section>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FinanceiroModule() {
+  const [page, setPage] = usePersistentPage('financeiro');
+  if (page === 'home') {
+    return (
+      <div>
+        <ModuleHubHome moduleKey="financeiro" setPage={setPage} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar
+      </button>
+      {page === 'livro' && <FinanceiroLivroCaixaPage />}
+      {page === 'receita' && <LancamentosPage onImportar={() => setPage('importar_entradas')} />}
+      {page === 'despesa' && <DespesasPage onImportar={() => setPage('importar_despesas')} />}
+      {page === 'importar_entradas' && <PlanilhaFinanceiraImportPage kind="entrada" onBack={() => setPage('receita')} />}
+      {page === 'importar_despesas' && <PlanilhaFinanceiraImportPage kind="despesa" onBack={() => setPage('despesa')} />}
+      {page === 'transferencia' && <TransferenciaPage />}
+      {page === 'importacao' && <ImportacaoBancariaPage onHistorico={() => setPage('historico_importacoes')} />}
+      {page === 'historico_importacoes' && <HistoricoImportacoesBancariasPage />}
+      {page === 'fechamento' && <FechamentoPage />}
+      {page === 'relatorios' && <RelatoriosFinanceirosPage />}
+      {page === 'prestacao' && <PrestacaoContasPage />}
+    </div>
+  );
+}
+
+/* =========================================================
+   MÓDULO SECRETARIA
+========================================================= */
+const SITUACOES = [
+  { value: 'ativo', label: 'Ativo' },
+  { value: 'inativo', label: 'Inativo' },
+  { value: 'transferido', label: 'Transferido' },
+  { value: 'desligado', label: 'Desligado' },
+];
+const ESTADO_CIVIL_OPTIONS = [
+  { value: '', label: 'Selecione...' },
+  { value: 'solteiro', label: 'Solteiro(a)' },
+  { value: 'casado', label: 'Casado(a)' },
+  { value: 'viuvo', label: 'Viúvo(a)' },
+  { value: 'divorciado', label: 'Divorciado(a)' },
+  { value: 'uniao_estavel', label: 'União estável' },
+];
+const ESTADO_CIVIL_LABELS = Object.fromEntries(ESTADO_CIVIL_OPTIONS.map((o) => [o.value, o.label]));
+const estadoCivilLabel = (value) => ESTADO_CIVIL_LABELS[estadoCivilFromSheet(value) || ''] || value || '—';
+
+function MembrosPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const canCreate = access.can('secretaria', 'create');
+  const canUpdate = access.can('secretaria', 'update');
+  const canDelete = access.can('secretaria', 'delete');
+  const { rows, loading, reload } = useTable('membros', {
+    order: 'numero_membro',
+    ascending: true,
+  });
+  const { toasts, push, close } = useToasts();
+  const fileRef = useRef(null);
+  const [modal, setModal] = useState(null);
+  const [dependenteModal, setDependenteModal] = useState(null);
+  const [secureAction, setSecureAction] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [savingDependente, setSavingDependente] = useState(false);
+  const [q, setQ] = useState('');
+  const [fCongregacao, setFCongregacao] = useState('');
+  const [fSetor, setFSetor] = useState('');
+  const [fCargo, setFCargo] = useState('');
+  const [fSituacao, setFSituacao] = useState('');
+  const congregacoes = useLookupLabels('congregacoes');
+  const setores = useLookupLabels('setores');
+  const cargos = useLookupLabels('cargos');
+  const ministerios = useLookupLabels('ministerios');
+  const profissoes = useLookupLabels('profissoes');
+  const familias = useLookupLabels('familias');
+  const escolaridades = useLookupLabels('escolaridades');
+  const membroOptions = useMemo(() => rows.map((m) => ({ value: m.id, label: m.nome })).sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')), [rows]);
+  const familiaIdOptions = useMemo(
+    () =>
+      (familias.rows || [])
+        .filter((f) => f.ativo !== false)
+        .map((f) => ({ value: f.id, label: f.nome }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
+    [familias.rows],
+  );
+  const parentescoOptions = [
+    { value: '', label: 'Selecione...' },
+    { value: 'responsavel', label: 'Responsável' },
+    { value: 'conjuge', label: 'Cônjuge' },
+    { value: 'filho', label: 'Filho(a)' },
+    { value: 'pai', label: 'Pai' },
+    { value: 'mae', label: 'Mãe' },
+    { value: 'avo', label: 'Avô/Avó' },
+    { value: 'neto', label: 'Neto(a)' },
+    { value: 'irmao', label: 'Irmão/Irmã' },
+    { value: 'outro', label: 'Outro' },
+  ];
+
+  const fields = [
+    {
+      name: 'numero_membro',
+      label: 'Código',
+      type: 'number',
+      readOnly: true,
+      help: 'Automático.',
+    },
+    {
+      name: 'situacao',
+      label: 'Situação',
+      type: 'select',
+      options: [
+        { value: 'ativo', label: 'Ativo' },
+        { value: 'inativo', label: 'Inativo' },
+        { value: 'afastado', label: 'Afastado' },
+        { value: 'transferido', label: 'Transferido' },
+        { value: 'falecido', label: 'Falecido' },
+      ],
+    },
+    { name: 'foto_url', label: 'Foto URL', help: 'Opcional.' },
+    { name: 'nome', label: 'Nome completo', required: true, full: true },
+    { name: 'cpf', label: 'CPF' },
+    { name: 'rg', label: 'RG' },
+    { name: 'data_nascimento', label: 'Dt. Nasc.', type: 'date' },
+    {
+      name: 'estado_civil',
+      label: 'Est. Civil',
+      type: 'select',
+      options: ESTADO_CIVIL_OPTIONS,
+    },
+    {
+      name: 'sexo',
+      label: 'Sexo',
+      type: 'select',
+      options: [
+        { value: '', label: 'Selecione...' },
+        { value: 'M', label: 'Masculino' },
+        { value: 'F', label: 'Feminino' },
+      ],
+    },
+    { name: 'email', label: 'E-mail' },
+    { name: 'telefone_celular', label: 'Tel. Cel./WhatsApp' },
+    { name: 'telefone_residencial', label: 'Tel. Res.' },
+    { name: 'cep', label: 'CEP', type: 'cep' },
+    { name: 'endereco', label: 'Endereço' },
+    { name: 'numero_endereco', label: 'Número' },
+    { name: 'bairro', label: 'Bairro' },
+    { name: 'cidade', label: 'Cidade' },
+    { name: 'uf', label: 'UF', maxLength: 2 },
+    {
+      name: 'familia_id',
+      label: 'Família',
+      type: 'quickselect',
+      options: familiaIdOptions,
+      quickCreate: quickCreate('familias', familias.reload, 'id'),
+      help: 'Vincula o membro a um agrupamento familiar.',
+    },
+    {
+      name: 'parentesco',
+      label: 'Parentesco',
+      type: 'select',
+      options: parentescoOptions,
+    },
+    {
+      name: 'responsavel_familiar',
+      label: 'Responsável familiar',
+      type: 'checkbox',
+    },
+    {
+      name: 'dependentes_atalho',
+      label: 'Dependentes',
+      type: 'custom',
+      render: ({ form }) => {
+        const membroId = modal?.id;
+        const disabled = !membroId || !canCreate;
+        const abrirCadastro = () => {
+          if (!membroId) return;
+          setDependenteModal({
+            ativo: true,
+            membro_id: '',
+            nome: '',
+            parentesco: 'Filho(a)',
+            familia_id: form?.familia_id || modal?.familia_id || '',
+            responsavel_legal_id: membroId,
+            responsavel_legal_2_id: '',
+            telefone: '',
+            futuro_membro: false,
+            observacoes: `Dependente vinculado ao responsável familiar ${form?.nome || modal?.nome || ''}.`.trim(),
+          });
+        };
+        return (
+          <div className="dependentShortcut">
+            <button type="button" className="smallBtn secondary" disabled={disabled} onClick={abrirCadastro}>
+              + Cadastrar dependente
+            </button>
+            {!membroId && <div className="muted smallText">Salve o membro antes de vincular dependentes.</div>}
+            {membroId && !canCreate && <div className="muted smallText">Seu perfil não pode cadastrar dependentes.</div>}
+          </div>
+        );
+      },
+    },
+    {
+      name: 'responsavel_legal_id',
+      label: 'Responsável legal 1',
+      type: 'select',
+      options: [{ value: '', label: 'Selecione...' }, ...membroOptions],
+    },
+    {
+      name: 'responsavel_legal_2_id',
+      label: 'Responsável legal 2',
+      type: 'select',
+      options: [{ value: '', label: 'Selecione...' }, ...membroOptions],
+    },
+    {
+      name: 'congregacao',
+      label: 'Congregação',
+      type: 'quickselect',
+      options: congregacoes.options,
+      quickCreate: quickCreate('congregacoes', congregacoes.reload),
+    },
+    {
+      name: 'setor',
+      label: 'Setor',
+      type: 'quickselect',
+      options: setores.options,
+      quickCreate: quickCreate('setores', setores.reload),
+    },
+    {
+      name: 'cargo',
+      label: 'Cargo',
+      type: 'quickselect',
+      options: cargos.options,
+      quickCreate: quickCreate('cargos', cargos.reload),
+    },
+    {
+      name: 'ministerio',
+      label: 'Ministério',
+      type: 'quickselect',
+      options: ministerios.options,
+      quickCreate: quickCreate('ministerios', ministerios.reload),
+    },
+    {
+      name: 'profissao',
+      label: 'Profissão',
+      type: 'quickselect',
+      options: profissoes.options,
+      quickCreate: quickCreate('profissoes', profissoes.reload),
+    },
+    {
+      name: 'escolaridade',
+      label: 'Escolaridade',
+      type: 'quickselect',
+      options: escolaridades.options,
+      quickCreate: quickCreate('escolaridades', escolaridades.reload),
+    },
+    { name: 'data_batismo', label: 'Data de batismo', type: 'date' },
+    { name: 'data_conversao', label: 'Data de conversão', type: 'date' },
+    { name: 'complemento', label: 'Observações', type: 'textarea', full: true },
+  ];
+
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return rows.filter((m) => {
+      const qOk =
+        !term ||
+        [m.numero_membro, m.nome, m.endereco, m.bairro, m.cidade, m.cep, m.uf, m.telefone_residencial, m.telefone_celular, m.estado_civil, m.sexo, m.cpf, m.rg, m.email, m.profissao, m.escolaridade, m.familia, m.parentesco, m.setor, m.congregacao, m.ministerio, m.cargo, m.situacao, m.complemento].some((v) =>
+          String(v || '')
+            .toLowerCase()
+            .includes(term),
+        );
+      return qOk && (!fCongregacao || m.congregacao === fCongregacao) && (!fSetor || m.setor === fSetor) && (!fCargo || m.cargo === fCargo) && (!fSituacao || m.situacao === fSituacao);
+    });
+  }, [rows, q, fCongregacao, fSetor, fCargo, fSituacao]);
+
+  const cleanPayload = (form) => {
+    const payload = { ...form };
+    delete payload.numero_membro;
+    // Campo apenas visual do formulário. Não existe e não deve existir na tabela membros.
+    delete payload.dependentes_atalho;
+    payload.nome = String(payload.nome || '')
+      .trim()
+      .toUpperCase();
+    payload.cpf = onlyDigits(payload.cpf);
+    if (payload.cpf && !isValidCpf(payload.cpf)) throw new Error('CPF inválido. Corrija ou deixe em branco.');
+    payload.cep = onlyDigits(payload.cep);
+    payload.uf =
+      String(payload.uf || '')
+        .trim()
+        .toUpperCase()
+        .slice(0, 2) || null;
+    payload.data_nascimento = dateFromSheet(payload.data_nascimento);
+    payload.data_batismo = dateFromSheet(payload.data_batismo);
+    payload.data_conversao = dateFromSheet(payload.data_conversao);
+    payload.estado_civil = estadoCivilFromSheet(payload.estado_civil);
+    payload.familia_id = payload.familia_id || null;
+    payload.responsavel_legal_id = payload.responsavel_legal_id || null;
+    payload.responsavel_legal_2_id = payload.responsavel_legal_2_id || null;
+    if (payload.familia_id) payload.familia = familiaIdOptions.find((o) => String(o.value) === String(payload.familia_id))?.label || payload.familia || null;
+    if (!payload.nome) throw new Error('Informe o nome do membro.');
+    return payload;
+  };
+
+  const save = async (form) => {
+    const editing = modal && modal.id;
+    if (editing && !canUpdate) {
+      push('Seu perfil não tem permissão para editar neste módulo.', 'error');
+      return;
+    }
+    if (!editing && !canCreate) {
+      push('Seu perfil não tem permissão para criar neste módulo.', 'error');
+      return;
+    }
+    setSaving(true);
+    let payload;
+    try {
+      payload = cleanPayload(form);
+    } catch (error) {
+      setSaving(false);
+      push(error.message, 'error');
+      return;
+    }
+    if (modal?.id) {
+      const { error } = await supabase.from('membros').update(payload).eq('id', modal.id);
+      setSaving(false);
+      if (error) {
+        push(error.message, 'error');
+        return;
+      }
+    } else {
+      const { data: userData } = await supabase.auth.getUser();
+      payload.created_by = userData?.user?.id ?? null;
+      payload.empresa_id = tenant?.empresaId;
+      const { error } = await supabase.from('membros').insert(payload);
+      setSaving(false);
+      if (error) {
+        push(error.message, 'error');
+        return;
+      }
+    }
+    push('Membro salvo com sucesso.');
+    setModal(null);
+    reload();
+  };
+
+  const saveDependenteFromMembro = async (form) => {
+    if (!canCreate) {
+      push('Seu perfil não tem permissão para cadastrar dependentes.', 'error');
+      return;
+    }
+    const nome = String(form.nome || '').trim();
+    if (!nome) {
+      push('Informe o nome do filho/dependente.', 'error');
+      return;
+    }
+    setSavingDependente(true);
+    const payload = {
+      membro_id: form.membro_id || null,
+      nome,
+      data_nascimento: dateFromSheet(form.data_nascimento) || null,
+      parentesco: form.parentesco || 'Filho(a)',
+      familia_id: form.familia_id || null,
+      responsavel_legal_id: form.responsavel_legal_id || modal?.id || null,
+      responsavel_legal_2_id: form.responsavel_legal_2_id || null,
+      telefone: form.telefone || null,
+      futuro_membro: !!form.futuro_membro,
+      data_prevista_membro: form.futuro_membro ? dateFromSheet(form.data_prevista_membro) || null : null,
+      observacoes_membro: form.futuro_membro ? form.observacoes_membro || null : null,
+      observacoes: form.observacoes || null,
+      ativo: form.ativo !== false,
+    };
+    if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+    const { data: userData } = await supabase.auth.getUser();
+    payload.created_by = userData?.user?.id ?? null;
+    const { error } = await supabase.from('filhos_dependentes').insert(payload);
+    setSavingDependente(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Dependente cadastrado e vinculado ao responsável familiar.');
+    setDependenteModal(null);
+  };
+
+  const toggleMembroAtivo = (row) => {
+    if (!canUpdate) {
+      push('Seu perfil não tem permissão para alterar membros.', 'error');
+      return;
+    }
+    const reativar = row.situacao === 'inativo';
+    setSecureAction({
+      title: reativar ? `Autorizar reativação — ${row.nome}` : `Autorizar inativação — ${row.nome}`,
+      label: reativar ? 'Reativar membro' : 'Inativar membro',
+      run: async () => {
+        const { error } = await supabase
+          .from('membros')
+          .update({ situacao: reativar ? 'ativo' : 'inativo' })
+          .eq('id', row.id);
+        if (error) throw error;
+        push(reativar ? 'Membro reativado.' : 'Membro inativado. Nenhum histórico foi excluído.');
+        setSecureAction(null);
+        reload();
+      },
+    });
+  };
+
+  const membroHeaders = [
+    { key: 'numero_membro', label: 'Código' },
+    { key: 'nome', label: 'Nome' },
+    { key: 'cpf', label: 'CPF' },
+    { key: 'rg', label: 'RG' },
+    { key: 'email', label: 'E-mail' },
+    { key: 'endereco', label: 'Endereço' },
+    { key: 'numero_endereco', label: 'Número' },
+    { key: 'bairro', label: 'Bairro' },
+    { key: 'cidade', label: 'Cidade' },
+    { key: 'cep', label: 'Cep' },
+    { key: 'uf', label: 'UF' },
+    { key: 'telefone_residencial', label: 'Tel. Res.' },
+    { key: 'telefone_celular', label: 'Tel. Cel.' },
+    { key: 'data_nascimento', label: 'Dt. Nasc.' },
+    { key: 'estado_civil', label: 'Est. Civil' },
+    { key: 'sexo', label: 'Sexo' },
+    { key: 'profissao', label: 'Profissão' },
+    { key: 'escolaridade', label: 'Escolaridade' },
+    { key: 'familia', label: 'Família' },
+    { key: 'parentesco', label: 'Parentesco' },
+    { key: 'setor', label: 'Setor' },
+    { key: 'congregacao', label: 'Congregação' },
+    { key: 'ministerio', label: 'Ministério' },
+    { key: 'cargo', label: 'Cargo' },
+    { key: 'data_batismo', label: 'Data Batismo' },
+    { key: 'data_conversao', label: 'Data Conversão' },
+    { key: 'situacao', label: 'Situação' },
+    { key: 'complemento', label: 'Complemento' },
+  ];
+
+  const exportar = () => {
+    const exportRows = filtered.map((m) => ({
+      ...m,
+      estado_civil: estadoCivilLabel(m.estado_civil),
+    }));
+    downloadTextFile(`membros_${new Date().toISOString().slice(0, 10)}.csv`, rowsToCsv(exportRows, membroHeaders));
+  };
+
+  const baixarModelo = () => {
+    const modelo = rowsToCsv(
+      [
+        {
+          numero_membro: '',
+          nome: 'JOÃO DA SILVA',
+          cpf: '',
+          rg: '',
+          email: 'joao@email.com',
+          endereco: 'Rua Exemplo',
+          numero_endereco: '123',
+          bairro: 'Centro',
+          cidade: 'Lábrea',
+          cep: '69830-000',
+          uf: 'AM',
+          telefone_residencial: '(97) 0000-0000',
+          telefone_celular: '(97) 90000-0000',
+          data_nascimento: '1980-01-31',
+          estado_civil: 'Casado(a)',
+          sexo: 'M',
+          profissao: 'Autônomo',
+          escolaridade: 'Ensino Médio',
+          familia: 'Família Silva',
+          parentesco: 'responsavel',
+          setor: 'Setor 01',
+          congregacao: 'Sede',
+          ministerio: 'Louvor',
+          cargo: 'Diácono',
+          data_batismo: '',
+          data_conversao: '',
+          situacao: 'ativo',
+          complemento: '',
+        },
+      ],
+      membroHeaders,
+    );
+    downloadTextFile('modelo_importacao_membros.csv', modelo);
+  };
+
+  const importar = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (looksLikeExcelBinary(text) || /\.xlsx?$/i.test(file.name || '')) {
+        push('Use o arquivo CSV baixado em "Baixar modelo". Arquivo Excel .xlsx ainda não é importado diretamente nesta tela.', 'warning');
+        return;
+      }
+      const parsed = parseCsvText(text);
+      if (parsed.length < 2) {
+        push('A planilha não possui linhas para importar.', 'warning');
+        return;
+      }
+
+      const headerIndex = parsed.findIndex((line) => line.map(normalizeHeader).includes('nome'));
+      if (headerIndex < 0) {
+        push('Não encontrei a coluna Nome. Baixe o modelo atualizado e mantenha o cabeçalho original.', 'warning');
+        return;
+      }
+
+      const headers = parsed[headerIndex].map(normalizeHeader);
+      const allowed = ['nome', 'cpf', 'rg', 'email', 'endereco', 'numero_endereco', 'bairro', 'cidade', 'cep', 'uf', 'telefone_residencial', 'telefone_celular', 'data_nascimento', 'estado_civil', 'sexo', 'profissao', 'escolaridade', 'familia', 'parentesco', 'setor', 'congregacao', 'ministerio', 'cargo', 'data_batismo', 'data_conversao', 'situacao', 'complemento'];
+      const linhasDados = parsed.slice(headerIndex + 1);
+      const registros = linhasDados
+        .map((cols) => Object.fromEntries(headers.map((h, i) => [h, cols[i] ?? ''])))
+        .filter((r) => String(r.nome || '').trim())
+        .map((r) => {
+          const item = {};
+          allowed.forEach((key) => {
+            if (r[key] !== undefined && String(r[key]).trim() !== '') item[key] = String(r[key]).trim();
+          });
+          item.nome = String(item.nome || '')
+            .trim()
+            .toUpperCase();
+          item.cpf = onlyDigits(item.cpf);
+          item.cep = onlyDigits(item.cep);
+          item.uf =
+            String(item.uf || '')
+              .trim()
+              .toUpperCase()
+              .slice(0, 2) || null;
+          item.data_nascimento = dateFromSheet(item.data_nascimento);
+          item.data_batismo = dateFromSheet(item.data_batismo);
+          item.data_conversao = dateFromSheet(item.data_conversao);
+          item.estado_civil = estadoCivilFromSheet(item.estado_civil);
+          item.situacao = normalizeKey(item.situacao || 'ativo') || 'ativo';
+          item.sexo = ['M', 'F'].includes(String(item.sexo || '').toUpperCase()) ? String(item.sexo).toUpperCase() : null;
+          item.empresa_id = tenant?.empresaId;
+          return item;
+        });
+      if (!registros.length) {
+        push('Nenhum membro válido encontrado. A coluna Nome é obrigatória e precisa ter pelo menos uma linha preenchida.', 'warning');
+        return;
+      }
+      const { data: userData } = await supabase.auth.getUser();
+      registros.forEach((r) => {
+        r.created_by = userData?.user?.id ?? null;
+      });
+      const { error } = await supabase.from('membros').insert(registros);
+      if (error) {
+        push(error.message, 'error');
+        return;
+      }
+      push(`${registros.length} membro(s) importado(s) com sucesso.`);
+      reload();
+    } catch (error) {
+      push(error.message || 'Erro ao importar planilha.', 'error');
+    }
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2 style={{ margin: 0 }}>Cadastro de Membros</h2>
+          <p className="muted" style={{ margin: '6px 0 0' }}>
+            Cadastre membros com código automático e importe/exporte a planilha no padrão da igreja.
+          </p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar por código, nome, telefone, cargo…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280 }} />
+          <button className="secondary" onClick={baixarModelo}>
+            Baixar modelo
+          </button>
+          {canCreate && (
+            <button className="secondary" onClick={() => fileRef.current?.click()}>
+              Importar planilha
+            </button>
+          )}
+          <button className="secondary" onClick={exportar}>
+            Exportar
+          </button>
+          {canCreate && <button onClick={() => setModal({})}>+ Novo membro</button>}
+          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={importar} hidden />
+        </div>
+      </div>
+      <div className="alert ok">
+        <b>Planilha:</b> use CSV separado por ponto e vírgula. O campo Código é apenas informativo; no cadastro/importação o código é gerado automaticamente por igreja.
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Nome</th>
+              <th>Tel. Cel.</th>
+              <th>Cidade/UF</th>
+              <th>Congregação</th>
+              <th>Cargo</th>
+              <th>Dt. Nasc.</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan="8" className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan="8" className="center muted">
+                  Nenhum membro cadastrado.
+                </td>
+              </tr>
+            )}
+            {filtered.map((m) => (
+              <tr key={m.id}>
+                <td>
+                  <b>#{String(m.numero_membro || '').padStart(4, '0')}</b>
+                </td>
+                <td>
+                  <b>{m.nome}</b>
+                  <div className="muted smallText">{m.endereco || ''}</div>
+                </td>
+                <td>{m.telefone_celular || '—'}</td>
+                <td>{[m.cidade, m.uf].filter(Boolean).join('/') || '—'}</td>
+                <td>{m.congregacao || '—'}</td>
+                <td>{m.cargo || '—'}</td>
+                <td>{fmtDate(m.data_nascimento)}</td>
+                <td className="center actionsCell">
+                  <div className="actionsInline">
+                    {canUpdate && (
+                      <button className="smallBtn secondary" onClick={() => setModal(m)}>
+                        Editar
+                      </button>
+                    )}
+                    {canUpdate && (
+                      <button className={`smallBtn ${m.situacao === 'inativo' ? 'green' : 'red'}`} onClick={() => toggleMembroAtivo(m)}>
+                        {m.situacao === 'inativo' ? 'Reativar' : 'Inativar'}
+                      </button>
+                    )}
+                    {!canUpdate && <span className="muted smallText">Somente leitura</span>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <Modal title={modal.id ? 'Editar membro' : 'Novo membro'} onClose={() => setModal(null)} wide className="memberModal">
+          <EntityForm
+            fields={fields}
+            initial={{
+              ...modal,
+              estado_civil: estadoCivilFromSheet(modal.estado_civil) || '',
+              familia_id: modal.familia_id || familiaIdOptions.find((o) => normalizeText(o.label) === normalizeText(modal.familia))?.value || '',
+            }}
+            onCancel={() => setModal(null)}
+            onSave={save}
+            saving={saving}
+            gridClass="cols3"
+            formClass="memberCompactForm"
+          />
+        </Modal>
+      )}
+      {dependenteModal && (
+        <Modal title={`Novo dependente — ${modal?.nome || 'Responsável familiar'}`} onClose={() => setDependenteModal(null)} wide className="memberModal">
+          <FilhoDependenteForm initial={dependenteModal} membros={rows || []} familias={familias.rows || []} onCancel={() => setDependenteModal(null)} onSave={saveDependenteFromMembro} saving={savingDependente} />
+        </Modal>
+      )}
+      {secureAction && <SecurePasswordModal title={secureAction.title} actionLabel={secureAction.label} onCancel={() => setSecureAction(null)} onConfirmed={secureAction.run} />}
+    </div>
+  );
+}
+
+function idadeDe(data) {
+  if (!data) return null;
+  const d = new Date(`${data}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const hoje = new Date();
+  let idade = hoje.getFullYear() - d.getFullYear();
+  const m = hoje.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && hoje.getDate() < d.getDate())) idade -= 1;
+  return idade;
+}
+function familiaNomeDoMembro(m, familiaMap = {}) {
+  return familiaMap[m?.familia_id] || m?.familia || 'Sem família vinculada';
+}
+function isFilhoOuMenor(m) {
+  const parent = normalizeKey(m?.parentesco || '');
+  const idade = idadeDe(m?.data_nascimento);
+  return parent.includes('filho') || (idade !== null && idade < 18);
+}
+
+function dependenteNome(d, membroMap = {}) {
+  return d?.nome || membroMap[d?.membro_id]?.nome || 'Sem nome';
+}
+function familiaNomeDoDependente(d, familiaMap = {}) {
+  return familiaMap[d?.familia_id] || 'Sem família vinculada';
+}
+function telefoneDependente(d, membroMap = {}) {
+  const membro = membroMap[d?.membro_id];
+  return d?.telefone || membro?.telefone_celular || membro?.telefone_residencial || '';
+}
+function dependenteNascimento(d, membroMap = {}) {
+  return d?.data_nascimento || membroMap[d?.membro_id]?.data_nascimento || null;
+}
+
+function SecretariaFamiliasPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const canCreate = access.can('secretaria', 'create') || access.can('cadastros', 'create');
+  const canUpdate = access.can('secretaria', 'update') || access.can('cadastros', 'update');
+  const canDelete = access.can('secretaria', 'delete') || access.can('cadastros', 'delete');
+  const familias = useTable('familias', { order: 'nome', ascending: true });
+  const membros = useTable('membros', { order: 'nome', ascending: true });
+  const dependentes = useTable('filhos_dependentes', {
+    order: 'nome',
+    ascending: true,
+  });
+  const { toasts, push, close } = useToasts();
+  const [q, setQ] = useState('');
+  const [modal, setModal] = useState(null);
+  const [detalhe, setDetalhe] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const membroMap = useMemo(() => Object.fromEntries((membros.rows || []).map((m) => [m.id, m])), [membros.rows]);
+
+  const membrosDaFamilia = (fam) => (membros.rows || []).filter((m) => String(m.familia_id || '') === String(fam.id) || (!m.familia_id && normalizeText(m.familia) === normalizeText(fam.nome)));
+  const dependentesDaFamilia = (fam) => (dependentes.rows || []).filter((d) => d.ativo !== false && String(d.familia_id || '') === String(fam.id));
+  const familiasView = useMemo(() => {
+    const term = normalizeText(q);
+    return (familias.rows || [])
+      .map((fam) => {
+        const pessoas = membrosDaFamilia(fam);
+        const dependentesFam = dependentesDaFamilia(fam);
+        const responsaveis = pessoas.filter((m) => m.responsavel_familiar || normalizeKey(m.parentesco || '').includes('responsavel'));
+        const filhosMembros = pessoas.filter(isFilhoOuMenor);
+        const dependentesNomes = dependentesFam.map((d) => dependenteNome(d, membroMap)).join(' ');
+        return {
+          ...fam,
+          pessoas,
+          dependentesFam,
+          responsaveis,
+          filhos: [...filhosMembros, ...dependentesFam],
+          dependentesNomes,
+        };
+      })
+      .filter((fam) => !term || normalizeText(`${fam.nome} ${fam.descricao || ''} ${fam.pessoas.map((m) => m.nome).join(' ')} ${fam.dependentesNomes}`).includes(term));
+  }, [familias.rows, membros.rows, dependentes.rows, q, membroMap]);
+
+  const fields = [
+    {
+      name: 'nome',
+      label: 'Nome da família',
+      required: true,
+      full: true,
+      help: 'Ex.: Família Almeida, Família do Pr. João.',
+    },
+    { name: 'descricao', label: 'Observações', type: 'textarea', full: true },
+    { name: 'ativo', label: 'Ativa', type: 'checkbox' },
+  ];
+  const save = async (form) => {
+    setSaving(true);
+    const payload = {
+      nome: String(form.nome || '').trim(),
+      descricao: form.descricao || null,
+      ativo: form.ativo !== false,
+    };
+    if (!payload.nome) {
+      setSaving(false);
+      push('Informe o nome da família.', 'error');
+      return;
+    }
+    if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+    const req = modal?.id ? supabase.from('familias').update(payload).eq('id', modal.id) : supabase.from('familias').insert(payload);
+    const { error } = await req;
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Família salva com sucesso.');
+    setModal(null);
+    familias.reload();
+  };
+  const remove = async (fam) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir família.', 'error');
+      return;
+    }
+    if (membrosDaFamilia(fam).length || dependentesDaFamilia(fam).length) {
+      push('Esta família possui membros ou dependentes vinculados. Remova os vínculos antes de excluir.', 'warning');
+      return;
+    }
+    if (!confirm(`Excluir ${fam.nome}?`)) return;
+    const { error } = await supabase.from('familias').delete().eq('id', fam.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Família excluída.');
+    familias.reload();
+  };
+  const imprimir = (fam) => {
+    const pessoas = membrosDaFamilia(fam);
+    const deps = dependentesDaFamilia(fam);
+    const membrosHtml = pessoas.map((m) => `<tr><td>${m.nome || ''}</td><td>Membro</td><td>${m.parentesco || ''}</td><td>${m.responsavel_familiar ? 'Sim' : 'Não'}</td><td>${m.telefone_celular || m.telefone_residencial || ''}</td><td>${fmtDate(m.data_nascimento)}</td></tr>`).join('');
+    const depsHtml = deps
+      .map((d) => {
+        const r1 = membroMap[d.responsavel_legal_id];
+        const r2 = membroMap[d.responsavel_legal_2_id];
+        return `<tr><td>${dependenteNome(d, membroMap)}</td><td>Dependente</td><td>${d.parentesco || 'Dependente'}</td><td>${[r1?.nome, r2?.nome].filter(Boolean).join(' / ') || ''}</td><td>${telefoneDependente(d, membroMap)}</td><td>${fmtDate(dependenteNascimento(d, membroMap))}</td></tr>`;
+      })
+      .join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${fam.nome}</title><style>body{font-family:Arial,sans-serif;margin:28px;color:#111}h1{margin:0 0 6px}.muted{color:#555}table{width:100%;border-collapse:collapse;margin-top:14px}th{background:#143b5c;color:#fff;text-align:left}th,td{border:1px solid #ddd;padding:8px;font-size:13px}@media print{button{display:none}}</style></head><body><button onclick="print()">Imprimir</button><h1>${fam.nome}</h1><p class="muted">Composição familiar, responsáveis e dependentes.</p><table><thead><tr><th>Nome</th><th>Tipo</th><th>Parentesco</th><th>Responsável</th><th>Telefone</th><th>Nascimento</th></tr></thead><tbody>${membrosHtml}${depsHtml}</tbody></table></body></html>`;
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+    }
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>Famílias</h2>
+          <p className="muted">Agrupe membros da mesma casa, responsáveis legais e filhos/dependentes.</p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar família, membro ou dependente…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {canCreate && <button onClick={() => setModal({ ativo: true })}>+ Nova família</button>}
+        </div>
+      </div>
+      <div className="selectionInfoNote">
+        <b>Modelo recomendado</b>
+        <span>Crie a família, vincule os membros e cadastre aqui também os filhos/dependentes que ainda não são membros formais.</span>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Família</th>
+              <th>Responsáveis</th>
+              <th>Membros</th>
+              <th>Filhos/dependentes</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(familias.loading || dependentes.loading) && (
+              <tr>
+                <td colSpan={6} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!familias.loading && !dependentes.loading && familiasView.length === 0 && (
+              <tr>
+                <td colSpan={6} className="center muted">
+                  Nenhuma família cadastrada.
+                </td>
+              </tr>
+            )}
+            {familiasView.map((fam) => (
+              <tr key={fam.id}>
+                <td>
+                  <b>{fam.nome}</b>
+                  <div className="muted smallText">{fam.descricao || '—'}</div>
+                </td>
+                <td>{fam.responsaveis.map((m) => m.nome).join(', ') || '—'}</td>
+                <td>{fam.pessoas.length}</td>
+                <td>{fam.filhos.length}</td>
+                <td>
+                  <span className={`badge ${fam.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{fam.ativo !== false ? 'Ativa' : 'Inativa'}</span>
+                </td>
+                <td className="actionsCell">
+                  <div className="actionsInline">
+                    <button className="smallBtn secondary" onClick={() => setDetalhe(fam)}>
+                      Ver
+                    </button>
+                    {canUpdate && (
+                      <button className="smallBtn secondary" onClick={() => setModal(fam)}>
+                        Editar
+                      </button>
+                    )}
+                    <button className="smallBtn secondary" onClick={() => imprimir(fam)}>
+                      Imprimir
+                    </button>
+                    {canDelete && (
+                      <button className="smallBtn red" onClick={() => remove(fam)}>
+                        Excluir
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <Modal title={modal.id ? 'Editar família' : 'Nova família'} onClose={() => setModal(null)}>
+          <EntityForm fields={fields} initial={modal} onCancel={() => setModal(null)} onSave={save} saving={saving} />
+        </Modal>
+      )}
+      {detalhe && (
+        <Modal title={`Família — ${detalhe.nome}`} onClose={() => setDetalhe(null)} wide>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Tipo</th>
+                  <th>Parentesco</th>
+                  <th>Responsável / vínculo</th>
+                  <th>Telefone</th>
+                </tr>
+              </thead>
+              <tbody>
+                {membrosDaFamilia(detalhe).map((m) => (
+                  <tr key={`m-${m.id}`}>
+                    <td>
+                      <b>{m.nome}</b>
+                    </td>
+                    <td>Membro</td>
+                    <td>{m.parentesco || '—'}</td>
+                    <td>
+                      {m.responsavel_familiar
+                        ? 'Responsável familiar'
+                        : [m.responsavel_legal_id, m.responsavel_legal_2_id]
+                            .map((id) => (membros.rows || []).find((x) => x.id === id)?.nome)
+                            .filter(Boolean)
+                            .join(', ') || '—'}
+                    </td>
+                    <td>{m.telefone_celular || m.telefone_residencial || '—'}</td>
+                  </tr>
+                ))}
+                {dependentesDaFamilia(detalhe).map((d) => {
+                  const r1 = membroMap[d.responsavel_legal_id];
+                  const r2 = membroMap[d.responsavel_legal_2_id];
+                  return (
+                    <tr key={`d-${d.id}`}>
+                      <td>
+                        <b>{dependenteNome(d, membroMap)}</b>
+                        <div className="muted smallText">{d.membro_id ? 'Vinculado a membro' : 'Cadastro próprio'}</div>
+                      </td>
+                      <td>Dependente</td>
+                      <td>{d.parentesco || 'Dependente'}</td>
+                      <td>{[r1?.nome, r2?.nome].filter(Boolean).join(', ') || '—'}</td>
+                      <td>{telefoneDependente(d, membroMap) || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, saving }) {
+  const membroOptions = useMemo(() => [{ value: '', label: 'Não vincular a membro' }, ...(membros || []).map((m) => ({ value: m.id, label: m.nome }))], [membros]);
+  const familiaOptions = useMemo(() => [{ value: '', label: 'Selecione a família…' }, ...(familias || []).map((f) => ({ value: f.id, label: f.nome }))], [familias]);
+  const responsavelOptions = useMemo(() => [{ value: '', label: 'Selecione…' }, ...(membros || []).map((m) => ({ value: m.id, label: m.nome }))], [membros]);
+  const [form, setForm] = useState(() => ({
+    membro_id: initial?.membro_id || '',
+    nome: initial?.nome || '',
+    data_nascimento: initial?.data_nascimento || '',
+    parentesco: initial?.parentesco || 'Filho(a)',
+    familia_id: initial?.familia_id || '',
+    responsavel_legal_id: initial?.responsavel_legal_id || '',
+    responsavel_legal_2_id: initial?.responsavel_legal_2_id || '',
+    telefone: initial?.telefone || '',
+    futuro_membro: !!initial?.futuro_membro,
+    data_prevista_membro: initial?.data_prevista_membro || '',
+    observacoes_membro: initial?.observacoes_membro || '',
+    observacoes: initial?.observacoes || '',
+    ativo: initial?.ativo !== false,
+  }));
+  const set = (name, value) => setForm((f) => ({ ...f, [name]: value }));
+  const setMembro = (id) => {
+    const m = (membros || []).find((x) => String(x.id) === String(id));
+    setForm((f) => ({
+      ...f,
+      membro_id: id || '',
+      nome: m?.nome || f.nome || '',
+      data_nascimento: m?.data_nascimento || f.data_nascimento || '',
+      familia_id: m?.familia_id || f.familia_id || '',
+      parentesco: f.parentesco || m?.parentesco || 'Filho(a)',
+      telefone: m?.telefone_celular || m?.telefone_residencial || f.telefone || '',
+    }));
+  };
+  const requiredMissing = !String(form.nome || '').trim();
+  return (
+    <div className="memberCompactForm">
+      <div className="selectionInfoNote">
+        <b>Cadastro próprio</b>
+        <span>Use “Vincular a membro” apenas quando o filho/dependente já existir no cadastro de membros. Caso contrário, preencha os dados básicos aqui.</span>
+      </div>
+      <div className="grid cols3">
+        <div className="field">
+          <label>Vincular a membro cadastrado</label>
+          <SearchableSelect value={form.membro_id} onChange={setMembro} options={membroOptions} placeholder="Pesquisar membro…" />
+          <div className="muted smallText">Opcional.</div>
+        </div>
+        <div className="field">
+          <label>Nome do filho/dependente *</label>
+          <input value={form.nome} onChange={(e) => set('nome', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Data de nascimento</label>
+          <input type="date" value={form.data_nascimento || ''} onChange={(e) => set('data_nascimento', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Família</label>
+          <SearchableSelect value={form.familia_id} onChange={(v) => set('familia_id', v)} options={familiaOptions} />
+        </div>
+        <div className="field">
+          <label>Parentesco</label>
+          <input value={form.parentesco} onChange={(e) => set('parentesco', e.target.value)} placeholder="Filho(a), Neto(a), Dependente…" />
+        </div>
+        <div className="field">
+          <label>Telefone/contato</label>
+          <input value={form.telefone} onChange={(e) => set('telefone', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Responsável legal 1</label>
+          <SearchableSelect value={form.responsavel_legal_id} onChange={(v) => set('responsavel_legal_id', v)} options={responsavelOptions} />
+        </div>
+        <div className="field">
+          <label>Responsável legal 2</label>
+          <SearchableSelect value={form.responsavel_legal_2_id} onChange={(v) => set('responsavel_legal_2_id', v)} options={responsavelOptions} />
+        </div>
+        <div className="field">
+          <label>Status</label>
+          <label className="checkRow">
+            <input type="checkbox" checked={!!form.ativo} onChange={(e) => set('ativo', e.target.checked)} /> Dependente ativo
+          </label>
+        </div>
+        <div className="field">
+          <label>Futuro membro</label>
+          <label className="checkRow">
+            <input type="checkbox" checked={!!form.futuro_membro} onChange={(e) => set('futuro_membro', e.target.checked)} /> Marcar para virar membro
+          </label>
+          <div className="muted smallText">Use para acompanhar crianças/dependentes que futuramente serão cadastrados como membros.</div>
+        </div>
+        <div className="field">
+          <label>Previsão / data sugerida</label>
+          <input type="date" value={form.data_prevista_membro || ''} onChange={(e) => set('data_prevista_membro', e.target.value)} disabled={!form.futuro_membro} />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Observação para futuro cadastro como membro</label>
+          <input value={form.observacoes_membro || ''} onChange={(e) => set('observacoes_membro', e.target.value)} placeholder="Ex.: acompanhar batismo, idade mínima, decisão dos responsáveis…" disabled={!form.futuro_membro} />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Observações</label>
+          <textarea rows={3} value={form.observacoes} onChange={(e) => set('observacoes', e.target.value)} />
+        </div>
+      </div>
+      <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+        <button className="secondary" onClick={onCancel}>
+          Cancelar
+        </button>
+        <button disabled={requiredMissing || saving} onClick={() => onSave(form)}>
+          {saving ? 'Salvando…' : 'Salvar'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FilhosDependentesPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const canCreate = access.can('secretaria', 'create');
+  const canUpdate = access.can('secretaria', 'update');
+  const canDelete = access.can('secretaria', 'delete');
+  const membros = useTable('membros', { order: 'nome', ascending: true });
+  const familias = useTable('familias', { order: 'nome', ascending: true });
+  const dependentes = useTable('filhos_dependentes', {
+    order: 'nome',
+    ascending: true,
+  });
+  const { toasts, push, close } = useToasts();
+  const [q, setQ] = useState('');
+  const [familiaId, setFamiliaId] = useState('');
+  const [modal, setModal] = useState(null);
+  const [showFutureOnly, setShowFutureOnly] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const familiaMap = useMemo(() => Object.fromEntries((familias.rows || []).map((f) => [f.id, f.nome])), [familias.rows]);
+  const membroMap = useMemo(() => Object.fromEntries((membros.rows || []).map((m) => [m.id, m])), [membros.rows]);
+  const familiaOptions = [{ value: '', label: 'Todas as famílias' }, ...(familias.rows || []).map((f) => ({ value: f.id, label: f.nome }))];
+  const filhos = useMemo(() => {
+    const term = normalizeText(q);
+    return (dependentes.rows || [])
+      .filter((d) => !familiaId || String(d.familia_id || '') === String(familiaId))
+      .filter((d) => !showFutureOnly || !!d.futuro_membro)
+      .filter((d) => {
+        const resp1 = membroMap[d.responsavel_legal_id]?.nome || '';
+        const resp2 = membroMap[d.responsavel_legal_2_id]?.nome || '';
+        return !term || normalizeText(`${dependenteNome(d, membroMap)} ${familiaNomeDoDependente(d, familiaMap)} ${telefoneDependente(d, membroMap)} ${resp1} ${resp2}`).includes(term);
+      });
+  }, [dependentes.rows, q, familiaId, familiaMap, membroMap, showFutureOnly]);
+
+  const save = async (form) => {
+    const editing = modal?.id;
+    if (editing && !canUpdate) {
+      push('Seu perfil não tem permissão para editar dependentes.', 'error');
+      return;
+    }
+    if (!editing && !canCreate) {
+      push('Seu perfil não tem permissão para cadastrar dependentes.', 'error');
+      return;
+    }
+    const nome = String(form.nome || '').trim();
+    if (!nome) {
+      push('Informe o nome do filho/dependente.', 'error');
+      return;
+    }
+    const duplicate = form.membro_id ? (dependentes.rows || []).find((d) => d.membro_id && String(d.membro_id) === String(form.membro_id) && String(d.id) !== String(modal?.id || '')) : null;
+    if (duplicate) {
+      push('Este membro já está cadastrado como filho/dependente.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      membro_id: form.membro_id || null,
+      nome,
+      data_nascimento: form.data_nascimento || null,
+      parentesco: form.parentesco || 'Dependente',
+      familia_id: form.familia_id || null,
+      responsavel_legal_id: form.responsavel_legal_id || null,
+      responsavel_legal_2_id: form.responsavel_legal_2_id || null,
+      telefone: form.telefone || null,
+      futuro_membro: !!form.futuro_membro,
+      data_prevista_membro: form.futuro_membro ? form.data_prevista_membro || null : null,
+      observacoes_membro: form.futuro_membro ? form.observacoes_membro || null : null,
+      observacoes: form.observacoes || null,
+      ativo: form.ativo !== false,
+    };
+    if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+    let error;
+    if (editing) {
+      ({ error } = await supabase.from('filhos_dependentes').update(payload).eq('id', modal.id));
+    } else {
+      const { data: userData } = await supabase.auth.getUser();
+      payload.created_by = userData?.user?.id ?? null;
+      ({ error } = await supabase.from('filhos_dependentes').insert(payload));
+    }
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Filho/dependente salvo com sucesso.');
+    setModal(null);
+    dependentes.reload();
+  };
+  const remove = async (dep) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir dependentes.', 'error');
+      return;
+    }
+    if (!confirm(`Excluir ${dependenteNome(dep, membroMap)}?`)) return;
+    const { error } = await supabase.from('filhos_dependentes').delete().eq('id', dep.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Dependente excluído.');
+    dependentes.reload();
+  };
+  const promoverParaMembro = async (dep) => {
+    if (!canCreate) {
+      push('Seu perfil não tem permissão para cadastrar membros.', 'error');
+      return;
+    }
+    if (dep.membro_id) {
+      push('Este dependente já está vinculado a um membro.', 'warning');
+      return;
+    }
+    if (!confirm(`Cadastrar ${dependenteNome(dep, membroMap)} como membro da igreja?`)) return;
+    const { data: userData } = await supabase.auth.getUser();
+    const nome = String(dep.nome || '')
+      .trim()
+      .toUpperCase();
+    const familiaNome = familiaMap[dep.familia_id] || null;
+    const payload = {
+      empresa_id: tenant?.empresaId,
+      nome,
+      data_nascimento: dep.data_nascimento || null,
+      telefone_celular: dep.telefone || null,
+      familia_id: dep.familia_id || null,
+      familia: familiaNome,
+      parentesco: dep.parentesco || 'Filho(a)',
+      responsavel_legal_id: dep.responsavel_legal_id || null,
+      responsavel_legal_2_id: dep.responsavel_legal_2_id || null,
+      situacao: 'ativo',
+      complemento: [dep.observacoes, dep.observacoes_membro ? `Futuro membro: ${dep.observacoes_membro}` : ''].filter(Boolean).join('\n') || null,
+      created_by: userData?.user?.id ?? null,
+    };
+    const { data, error } = await supabase.from('membros').insert(payload).select('id').single();
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    const { error: updError } = await supabase
+      .from('filhos_dependentes')
+      .update({
+        membro_id: data.id,
+        futuro_membro: false,
+        data_prevista_membro: null,
+        observacoes_membro: 'Convertido para membro.',
+      })
+      .eq('id', dep.id);
+    if (updError) {
+      push(`Membro criado, mas não consegui atualizar o dependente: ${updError.message}`, 'warning');
+    } else {
+      push('Dependente cadastrado como membro e vínculo atualizado.');
+    }
+    dependentes.reload();
+    membros.reload();
+  };
+
+  const imprimir = (dep) => {
+    const r1 = membroMap[dep.responsavel_legal_id];
+    const r2 = membroMap[dep.responsavel_legal_2_id];
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${dependenteNome(dep, membroMap)}</title><style>body{font-family:Arial,sans-serif;margin:28px;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:12px;margin:10px 0}@media print{button{display:none}}</style></head><body><button onclick="print()">Imprimir</button><h1>${dependenteNome(dep, membroMap)}</h1><div class="box"><p><b>Família:</b> ${familiaNomeDoDependente(dep, familiaMap)}</p><p><b>Parentesco:</b> ${dep.parentesco || 'Dependente'}</p><p><b>Nascimento:</b> ${fmtDate(dependenteNascimento(dep, membroMap))}</p><p><b>Responsáveis:</b> ${[r1?.nome, r2?.nome].filter(Boolean).join(' / ') || '—'}</p><p><b>Telefone:</b> ${telefoneDependente(dep, membroMap) || '—'}</p><p><b>Observações:</b> ${dep.observacoes || '—'}</p></div></body></html>`;
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+    }
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>Filhos e dependentes</h2>
+          <p className="muted">Cadastre filhos/dependentes mesmo quando ainda não forem membros formais da igreja.</p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar filho, responsável ou família…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div style={{ minWidth: 240 }}>
+            <SearchableSelect value={familiaId} onChange={setFamiliaId} options={familiaOptions} />
+          </div>
+          <button className={showFutureOnly ? 'smallBtn' : 'smallBtn secondary'} onClick={() => setShowFutureOnly((v) => !v)}>
+            {showFutureOnly ? 'Mostrando futuros membros' : 'Futuros membros'}
+          </button>
+          {canCreate && (
+            <button
+              onClick={() =>
+                setModal({
+                  ativo: true,
+                  parentesco: 'Filho(a)',
+                  futuro_membro: false,
+                })
+              }
+            >
+              + Novo dependente
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="selectionInfoNote">
+        <b>Regra de vínculo</b>
+        <span>O dependente pode ser cadastrado diretamente aqui. Marque “Futuro membro” para acompanhar quem deverá ser convertido para membro quando chegar o momento.</span>
+      </div>
+      <div className="grid cols4" style={{ marginBottom: 16 }}>
+        <div className="stat">
+          <b>{filhos.length}</b>
+          <span>filhos/dependentes</span>
+        </div>
+        <div className="stat">
+          <b>{new Set(filhos.map((d) => d.familia_id).filter(Boolean)).size}</b>
+          <span>famílias envolvidas</span>
+        </div>
+        <div className="stat">
+          <b>{filhos.filter((d) => d.responsavel_legal_id || d.responsavel_legal_2_id).length}</b>
+          <span>com responsável definido</span>
+        </div>
+        <div className="stat">
+          <b>{filhos.filter((d) => d.futuro_membro).length}</b>
+          <span>marcados para virar membro</span>
+        </div>
+        <div className="stat">
+          <b>{filhos.filter((d) => d.membro_id).length}</b>
+          <span>vinculados a membros</span>
+        </div>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Filho/dependente</th>
+              <th>Idade</th>
+              <th>Família</th>
+              <th>Responsável legal</th>
+              <th>Telefone</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(dependentes.loading || membros.loading) && (
+              <tr>
+                <td colSpan={7} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!dependentes.loading && !membros.loading && filhos.length === 0 && (
+              <tr>
+                <td colSpan={7} className="center muted">
+                  Nenhum filho/dependente localizado.
+                </td>
+              </tr>
+            )}
+            {filhos.map((d) => {
+              const r1 = membroMap[d.responsavel_legal_id];
+              const r2 = membroMap[d.responsavel_legal_2_id];
+              const nasc = dependenteNascimento(d, membroMap);
+              return (
+                <tr key={d.id}>
+                  <td>
+                    <b>{dependenteNome(d, membroMap)}</b>
+                    <div className="muted smallText">
+                      {d.parentesco || 'Dependente'} · {d.membro_id ? 'vinculado a membro' : 'cadastro próprio'}
+                      {d.futuro_membro ? ' · futuro membro' : ''}
+                    </div>
+                    {d.futuro_membro && (
+                      <div className="muted smallText">
+                        Previsão: {fmtDate(d.data_prevista_membro) || 'sem data'}
+                        {d.observacoes_membro ? ` · ${d.observacoes_membro}` : ''}
+                      </div>
+                    )}
+                  </td>
+                  <td>{idadeDe(nasc) ?? '—'}</td>
+                  <td>{familiaNomeDoDependente(d, familiaMap)}</td>
+                  <td>{[r1?.nome, r2?.nome].filter(Boolean).join(', ') || '—'}</td>
+                  <td>{[telefoneDependente(d, membroMap), r1?.telefone_celular || r1?.telefone_residencial, r2?.telefone_celular || r2?.telefone_residencial].filter(Boolean).join(' / ') || '—'}</td>
+                  <td>
+                    <span className={`badge ${d.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{d.ativo !== false ? 'Ativo' : 'Inativo'}</span>
+                  </td>
+                  <td className="actionsCell">
+                    <div className="actionsInline">
+                      {canCreate && !d.membro_id && (
+                        <button className="smallBtn secondary" onClick={() => promoverParaMembro(d)}>
+                          Virar membro
+                        </button>
+                      )}
+                      {canUpdate && (
+                        <button className="smallBtn secondary" onClick={() => setModal(d)}>
+                          Editar
+                        </button>
+                      )}
+                      <button className="smallBtn secondary" onClick={() => imprimir(d)}>
+                        Imprimir
+                      </button>
+                      {canDelete && (
+                        <button className="smallBtn red" onClick={() => remove(d)}>
+                          Excluir
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <Modal title={modal.id ? 'Editar filho/dependente' : 'Novo filho/dependente'} onClose={() => setModal(null)} wide className="memberModal">
+          <FilhoDependenteForm initial={modal} membros={membros.rows || []} familias={familias.rows || []} onCancel={() => setModal(null)} onSave={save} saving={saving} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function SimplePlaceholder({ title, text }) {
+  return (
+    <div>
+      <h2>{title}</h2>
+      <div className="alert">{text || 'Módulo estrutural preparado para a próxima etapa de implementação.'}</div>
+    </div>
+  );
+}
+function SecretariaModule() {
+  const [page, setPage] = usePersistentPage('secretaria');
+  if (page === 'home') {
+    return (
+      <div>
+        <ModuleHubHome moduleKey="secretaria" setPage={setPage} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar
+      </button>
+      {page === 'membros' && <MembrosPage />}
+      {page === 'familias' && <SecretariaFamiliasPage />}
+      {page === 'filhos' && <FilhosDependentesPage />}
+      {page === 'ministerios' && <MinisteriosSecretariaPage />}
+      {page === 'cargos' && <CargosSecretariaPage />}
+      {page === 'relatorios' && <AniversariantesWidget />}
+    </div>
+  );
+}
+
+/* =========================================================
+   MÓDULO EBD
+========================================================= */
+function TurmasEbdPage() {
+  return (
+    <CrudPage
+      table="turmas_ebd"
+      title="Turmas de EBD"
+      order="nome"
+      ascending
+      searchKeys={['nome', 'faixa_etaria', 'sala']}
+      columns={[
+        { key: 'nome', label: 'Turma' },
+        { key: 'faixa_etaria', label: 'Faixa Etária' },
+        { key: 'dia_semana', label: 'Dia' },
+        { key: 'horario', label: 'Horário' },
+        {
+          key: 'ativo',
+          label: 'Ativa',
+          render: (r) => (r.ativo ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        { name: 'nome', label: 'Nome da turma', required: true, full: true },
+        {
+          name: 'faixa_etaria',
+          label: 'Faixa etária (ex: Crianças, Jovens, Adultos)',
+        },
+        { name: 'sala', label: 'Sala' },
+        {
+          name: 'dia_semana',
+          label: 'Dia da semana',
+          type: 'select',
+          options: DIA_SEMANA_OPTIONS,
+        },
+        { name: 'horario', label: 'Horário', type: 'time' },
+        { name: 'ativo', label: 'Ativa', type: 'checkbox' },
+      ]}
+    />
+  );
+}
+
+function MatriculasEbdPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const canCreate = access.can('ebd', 'create');
+  const canUpdate = access.can('ebd', 'update');
+  const canDelete = access.can('ebd', 'delete');
+  const turmas = useLookup('turmas_ebd');
+  const membros = useLookup('membros');
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const vinculosProfessores = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { rows, loading, reload } = useTable('matriculas_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFiltro, setStatusFiltro] = useState('ativas');
+  const [form, setForm] = useState({
+    turma_id: '',
+    data_matricula: todayISO(),
+    somente_nao_matriculados: true,
+  });
+  const [memberQuery, setMemberQuery] = useState('');
+  const [detailQuery, setDetailQuery] = useState('');
+  const [selectedMembers, setSelectedMembers] = useState({});
+
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [t.id, t.nome])), [turmas.rows]);
+  const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m.nome])), [membros.rows]);
+  const membroById = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m])), [membros.rows]);
+
+  const matriculasPorTurma = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      if (!map[r.turma_id]) map[r.turma_id] = [];
+      map[r.turma_id].push(r);
+    });
+    return map;
+  }, [rows]);
+
+  const getTurmaResumo = useCallback(
+    (turma) => {
+      const matriculas = matriculasPorTurma[turma.id] || [];
+      const ativas = matriculas.filter((m) => m.ativo !== false);
+      const inativas = matriculas.filter((m) => m.ativo === false);
+      const profs = linkedProfessoresDaTurma(turma.id, professores.rows, vinculosProfessores.rows);
+      const principal = profs.find((p) => p.principal) || profs[0] || null;
+      return {
+        matriculas,
+        ativas,
+        inativas,
+        total: matriculas.length,
+        professorPrincipal: principal,
+      };
+    },
+    [matriculasPorTurma, professores.rows, vinculosProfessores.rows],
+  );
+
+  const turmasFiltradas = useMemo(() => {
+    const termo = normalizeText(q);
+    return turmas.rows
+      .filter((t) => statusFiltro === 'todas' || (statusFiltro === 'ativas' ? t.ativo !== false : t.ativo === false))
+      .filter((t) => {
+        const resumo = getTurmaResumo(t);
+        const texto = normalizeText(`${t.nome || ''} ${t.faixa_etaria || ''} ${t.sala || ''} ${resumo.professorPrincipal?.nome || ''}`);
+        return !termo || texto.includes(termo);
+      })
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+  }, [turmas.rows, q, statusFiltro, getTurmaResumo]);
+
+  const selectedTurma = useMemo(() => turmas.rows.find((t) => t.id === (modal?.turmaId || form.turma_id)) || null, [turmas.rows, modal, form.turma_id]);
+  const matriculasTurmaAtual = useMemo(() => (selectedTurma ? matriculasPorTurma[selectedTurma.id] || [] : []), [selectedTurma, matriculasPorTurma]);
+  const activeMatriculasForTurma = useMemo(() => new Set(matriculasTurmaAtual.filter((r) => r.ativo !== false).map((r) => r.membro_id)), [matriculasTurmaAtual]);
+
+  const selectableMembers = useMemo(() => {
+    const search = normalizeText(memberQuery);
+    return membros.rows
+      .filter((m) => m.ativo !== false)
+      .filter((m) => !form.somente_nao_matriculados || !activeMatriculasForTurma.has(m.id))
+      .filter((m) => !search || normalizeText(`${m.nome || ''} ${m.email || ''} ${m.telefone_celular || ''} ${m.cargo || ''}`).includes(search))
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+  }, [membros.rows, memberQuery, form.somente_nao_matriculados, activeMatriculasForTurma]);
+
+  const detailRows = useMemo(() => {
+    const termo = normalizeText(detailQuery);
+    return matriculasTurmaAtual.filter((r) => !termo || normalizeText(`${membroMap[r.membro_id] || ''} ${membroById[r.membro_id]?.telefone_celular || ''} ${membroById[r.membro_id]?.email || ''}`).includes(termo)).sort((a, b) => String(membroMap[a.membro_id] || '').localeCompare(String(membroMap[b.membro_id] || ''), 'pt-BR'));
+  }, [matriculasTurmaAtual, detailQuery, membroMap, membroById]);
+
+  const selectedCount = Object.values(selectedMembers).filter(Boolean).length;
+  const openMatricular = (turmaId = '') => {
+    setForm({
+      turma_id: turmaId || '',
+      data_matricula: todayISO(),
+      somente_nao_matriculados: true,
+    });
+    setMemberQuery('');
+    setSelectedMembers({});
+    setModal({ type: 'matricular', turmaId: turmaId || '' });
+  };
+  const openDetalhe = (turmaId, mode = 'ver') => {
+    setDetailQuery('');
+    setModal({ type: 'detalhe', turmaId, mode });
+  };
+  const toggleMember = (id, checked) => setSelectedMembers((prev) => ({ ...prev, [id]: checked }));
+  const selectVisible = () =>
+    setSelectedMembers((prev) => {
+      const next = { ...prev };
+      selectableMembers.forEach((m) => {
+        next[m.id] = true;
+      });
+      return next;
+    });
+  const selectAllActive = () =>
+    setSelectedMembers((prev) => {
+      const next = { ...prev };
+      membros.rows
+        .filter((m) => m.ativo !== false)
+        .forEach((m) => {
+          if (!form.somente_nao_matriculados || !activeMatriculasForTurma.has(m.id)) next[m.id] = true;
+        });
+      return next;
+    });
+  const clearSelected = () => setSelectedMembers({});
+
+  const saveBatch = async () => {
+    if (!canCreate) {
+      push('Seu perfil não tem permissão para matricular alunos na EBD.', 'error');
+      return;
+    }
+    if (!form.turma_id) {
+      push('Selecione a turma.', 'warning');
+      return;
+    }
+    const ids = Object.entries(selectedMembers)
+      .filter(([, checked]) => checked)
+      .map(([id]) => id);
+    if (!ids.length) {
+      push('Selecione pelo menos um membro.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const existing = rows.filter((r) => r.turma_id === form.turma_id && ids.includes(r.membro_id));
+    const activeExisting = new Set(existing.filter((r) => r.ativo !== false).map((r) => r.membro_id));
+    const inactiveExisting = existing.filter((r) => r.ativo === false);
+    const insertIds = ids.filter((id) => !existing.some((r) => r.membro_id === id));
+
+    let error = null;
+    for (const row of inactiveExisting) {
+      const res = await supabase
+        .from('matriculas_ebd')
+        .update({
+          ativo: true,
+          data_matricula: form.data_matricula || todayISO(),
+        })
+        .eq('id', row.id);
+      if (res.error) {
+        error = res.error;
+        break;
+      }
+    }
+    if (!error && insertIds.length) {
+      const payload = insertIds.map((membro_id) => ({
+        turma_id: form.turma_id,
+        membro_id,
+        data_matricula: form.data_matricula || todayISO(),
+        ativo: true,
+        created_by: userData?.user?.id ?? null,
+        ...(tenant?.empresaId ? { empresa_id: tenant.empresaId } : {}),
+      }));
+      const res = await supabase.from('matriculas_ebd').insert(payload);
+      error = res.error;
+    }
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    const reativados = inactiveExisting.length;
+    const ignorados = activeExisting.size;
+    push(`${insertIds.length} matrícula(s) criada(s). ${reativados ? `${reativados} reativada(s). ` : ''}${ignorados ? `${ignorados} já existia(m) ativa(s).` : ''}`.trim());
+    setModal(null);
+    reload();
+  };
+
+  const setAtivo = async (row, ativo) => {
+    if (!canUpdate) {
+      push('Seu perfil não tem permissão para alterar matrículas.', 'error');
+      return;
+    }
+    const { error } = await supabase.from('matriculas_ebd').update({ ativo }).eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push(ativo ? 'Matrícula reativada.' : 'Matrícula desativada.');
+    reload();
+  };
+  const remove = async (row) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir matrículas.', 'error');
+      return;
+    }
+    if (!confirm('Excluir esta matrícula?')) return;
+    const { error } = await supabase.from('matriculas_ebd').delete().eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Matrícula excluída.');
+    reload();
+  };
+
+  const htmlSafe = (value) =>
+    String(value ?? '').replace(
+      /[&<>"']/g,
+      (m) =>
+        ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;',
+        })[m],
+    );
+  const imprimirTurma = (turma) => {
+    const resumo = getTurmaResumo(turma);
+    const linhas = resumo.ativas.length
+      ? resumo.ativas
+          .slice()
+          .sort((a, b) => String(membroMap[a.membro_id] || '').localeCompare(String(membroMap[b.membro_id] || ''), 'pt-BR'))
+          .map((r, index) => {
+            const membro = membroById[r.membro_id] || {};
+            return `<tr><td>${index + 1}</td><td>${htmlSafe(membro.nome || membroMap[r.membro_id] || '—')}</td><td>${htmlSafe(membro.telefone_celular || '')}</td><td>${fmtDate(r.data_matricula)}</td><td></td></tr>`;
+          })
+          .join('')
+      : '<tr><td colspan="5">Nenhum membro ativo matriculado nesta turma.</td></tr>';
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Lista da turma</title><style>
+      body{font-family:Arial,sans-serif;margin:28px;color:#111} h1{font-size:22px;margin:0 0 6px}.muted{color:#555;font-size:13px}.info{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:18px 0}.box{border:1px solid #ddd;border-radius:10px;padding:10px}table{width:100%;border-collapse:collapse;margin-top:12px}th{background:#143b5c;color:#fff;text-align:left}th,td{padding:9px;border:1px solid #ddd;font-size:13px}.assinatura{height:28px}@media print{button{display:none}}
+    </style></head><body><button onclick="print()">Imprimir</button>
+      <h1>Lista de alunos — EBD</h1><div class="muted">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+      <div class="info"><div class="box"><b>Turma</b><br>${htmlSafe(turma.nome)}</div><div class="box"><b>Professor principal</b><br>${htmlSafe(resumo.professorPrincipal?.nome || '—')}</div><div class="box"><b>Alunos ativos</b><br>${resumo.ativas.length}</div><div class="box"><b>Data</b><br>${new Date().toLocaleDateString('pt-BR')}</div></div>
+      <table><thead><tr><th style="width:48px">Nº</th><th>Aluno</th><th>Telefone</th><th>Matrícula</th><th>Assinatura / Observação</th></tr></thead><tbody>${linhas}</tbody></table>
+    </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+  };
+
+  const closeModal = () => setModal(null);
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2 style={{ margin: 0 }}>Matrícula de Membros nas Turmas</h2>
+          <p className="muted" style={{ margin: '6px 0 0' }}>
+            Selecione uma turma para ver, matricular, gerenciar ou imprimir a lista de alunos.
+          </p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar turma, professor ou sala…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
+          <SearchableSelect
+            value={statusFiltro}
+            onChange={setStatusFiltro}
+            options={[
+              { value: 'ativas', label: 'Turmas ativas' },
+              { value: 'inativas', label: 'Turmas inativas' },
+              { value: 'todas', label: 'Todas as turmas' },
+            ]}
+          />
+          <button
+            className="secondary smallBtn"
+            type="button"
+            onClick={() => {
+              setQ('');
+              setStatusFiltro('ativas');
+            }}
+          >
+            Limpar
+          </button>
+          {canCreate && <button onClick={() => openMatricular('')}>+ Matricular membros</button>}
+        </div>
+      </div>
+
+      <div className="grid auto frete-kpis">
+        <div className="card kpi">
+          <div className="label">Turmas</div>
+          <div className="value">{turmasFiltradas.length}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Alunos ativos</div>
+          <div className="value">{rows.filter((r) => r.ativo !== false).length}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Matrículas inativas</div>
+          <div className="value">{rows.filter((r) => r.ativo === false).length}</div>
+        </div>
+      </div>
+
+      <div className="selectionInfoNote">
+        <b>Organização por turma</b>
+        <span>A lista principal ficou por turma. Use as ações para abrir a turma, adicionar alunos em lote ou imprimir.</span>
+      </div>
+
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Turma</th>
+              <th>Professor principal</th>
+              <th>Alunos ativos</th>
+              <th>Inativos</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(loading || turmas.loading) && (
+              <tr>
+                <td colSpan="6" className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && !turmas.loading && turmasFiltradas.length === 0 && (
+              <tr>
+                <td colSpan="6" className="center muted">
+                  Nenhuma turma encontrada.
+                </td>
+              </tr>
+            )}
+            {!loading &&
+              !turmas.loading &&
+              turmasFiltradas.map((turma) => {
+                const resumo = getTurmaResumo(turma);
+                return (
+                  <tr key={turma.id}>
+                    <td>
+                      <b>{turma.nome}</b>
+                      <div className="muted smallText">{[turma.faixa_etaria, turma.sala, turma.dia_semana, turma.horario].filter(Boolean).join(' • ') || 'Turma EBD'}</div>
+                    </td>
+                    <td>{resumo.professorPrincipal?.nome || '—'}</td>
+                    <td>
+                      <b>{resumo.ativas.length}</b>
+                    </td>
+                    <td>{resumo.inativas.length}</td>
+                    <td>
+                      <span className={`badge ${turma.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{turma.ativo !== false ? 'Ativa' : 'Inativa'}</span>
+                    </td>
+                    <td className="center actionsCell">
+                      <div className="actionsInline">
+                        <button className="smallBtn secondary" onClick={() => openDetalhe(turma.id, 'ver')}>
+                          Ver
+                        </button>
+                        {canCreate && (
+                          <button className="smallBtn" onClick={() => openMatricular(turma.id)}>
+                            Matricular
+                          </button>
+                        )}
+                        {(canUpdate || canDelete) && (
+                          <button className="smallBtn secondary" onClick={() => openDetalhe(turma.id, 'gerenciar')}>
+                            Gerenciar
+                          </button>
+                        )}
+                        <button className="smallBtn green" onClick={() => imprimirTurma(turma)}>
+                          Imprimir
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div>
+
+      {modal?.type === 'matricular' && (
+        <Modal title={selectedTurma ? `Matricular membros — ${selectedTurma.nome}` : 'Matricular membros na turma'} onClose={closeModal} wide>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Turma *</label>
+              <SearchableSelect
+                value={form.turma_id}
+                onChange={(v) => {
+                  setForm((f) => ({ ...f, turma_id: v }));
+                  setSelectedMembers({});
+                }}
+                options={turmas.options}
+              />
+            </div>
+            <div className="field">
+              <label>Data da matrícula</label>
+              <input type="date" value={form.data_matricula} onChange={(e) => setForm((f) => ({ ...f, data_matricula: e.target.value }))} />
+            </div>
+          </div>
+          <div className="memberPickerBox">
+            <div className="memberPickerHeader">
+              <div>
+                <h3>Selecionar membros</h3>
+                <p className="muted">Filtre por nome, cargo, e-mail ou telefone. Use “Selecionar todos” para matricular em lote.</p>
+              </div>
+              <div className="badge Ativa">{selectedCount} selecionado(s)</div>
+            </div>
+            <div className="memberPickerTools">
+              <input placeholder="Filtrar membros…" value={memberQuery} onChange={(e) => setMemberQuery(e.target.value)} />
+              <label className="checkLine">
+                <input
+                  type="checkbox"
+                  checked={!!form.somente_nao_matriculados}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      somente_nao_matriculados: e.target.checked,
+                    }))
+                  }
+                />{' '}
+                Mostrar somente não matriculados nesta turma
+              </label>
+              <button type="button" className="smallBtn secondary" onClick={selectVisible}>
+                Selecionar filtrados
+              </button>
+              <button type="button" className="smallBtn secondary" onClick={selectAllActive}>
+                Selecionar todos
+              </button>
+              <button type="button" className="smallBtn secondary" onClick={clearSelected}>
+                Limpar seleção
+              </button>
+            </div>
+            <div className="memberPickerList">
+              {!form.turma_id && (
+                <div className="center muted" style={{ padding: 18 }}>
+                  Selecione uma turma para carregar as matrículas existentes.
+                </div>
+              )}
+              {form.turma_id && selectableMembers.length === 0 && (
+                <div className="center muted" style={{ padding: 18 }}>
+                  Nenhum membro encontrado com o filtro atual.
+                </div>
+              )}
+              {form.turma_id &&
+                selectableMembers.map((m) => {
+                  const already = activeMatriculasForTurma.has(m.id);
+                  return (
+                    <label key={m.id} className={`memberPickerItem ${selectedMembers[m.id] ? 'selected' : ''}`}>
+                      <input type="checkbox" checked={!!selectedMembers[m.id]} onChange={(e) => toggleMember(m.id, e.target.checked)} />
+                      <span>
+                        <b>{m.nome}</b>
+                        <small>{[m.cargo, m.telefone_celular, m.email].filter(Boolean).join(' • ') || 'Membro cadastrado'}</small>
+                      </span>
+                      {already && <em>Já matriculado</em>}
+                    </label>
+                  );
+                })}
+            </div>
+          </div>
+          <div className="row stickyActions" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={closeModal}>
+              Cancelar
+            </button>
+            <button disabled={saving || !form.turma_id || selectedCount === 0} onClick={saveBatch}>
+              {saving ? 'Salvando…' : 'Salvar matrículas'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {modal?.type === 'detalhe' && selectedTurma && (
+        <Modal title={`${modal.mode === 'gerenciar' ? 'Gerenciar matrículas' : 'Alunos matriculados'} — ${selectedTurma.nome}`} onClose={closeModal} wide>
+          <div className="grid auto frete-kpis">
+            <div className="card kpi">
+              <div className="label">Alunos ativos</div>
+              <div className="value">{getTurmaResumo(selectedTurma).ativas.length}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Inativos</div>
+              <div className="value">{getTurmaResumo(selectedTurma).inativas.length}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Professor</div>
+              <div className="value" style={{ fontSize: 18 }}>
+                {getTurmaResumo(selectedTurma).professorPrincipal?.nome || '—'}
+              </div>
+            </div>
+          </div>
+          <div className="toolbar compactToolbar">
+            <div>
+              <h3>Lista da turma</h3>
+              <p className="muted">Use Gerenciar para desativar, reativar ou excluir matrículas.</p>
+            </div>
+            <div className="row">
+              <input placeholder="Buscar aluno…" value={detailQuery} onChange={(e) => setDetailQuery(e.target.value)} />
+              {canCreate && <button onClick={() => openMatricular(selectedTurma.id)}>+ Adicionar alunos</button>}
+              <button className="secondary" onClick={() => imprimirTurma(selectedTurma)}>
+                Imprimir
+              </button>
+            </div>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Aluno</th>
+                  <th>Telefone</th>
+                  <th>Matriculado em</th>
+                  <th>Status</th>
+                  <th className="center">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detailRows.length === 0 && (
+                  <tr>
+                    <td colSpan="5" className="center muted">
+                      Nenhum aluno encontrado nesta turma.
+                    </td>
+                  </tr>
+                )}
+                {detailRows.map((r) => {
+                  const membro = membroById[r.membro_id] || {};
+                  return (
+                    <tr key={r.id}>
+                      <td>
+                        <b>{membro.nome || membroMap[r.membro_id] || '—'}</b>
+                        <div className="muted smallText">{membro.email || ''}</div>
+                      </td>
+                      <td>{membro.telefone_celular || '—'}</td>
+                      <td>{fmtDate(r.data_matricula)}</td>
+                      <td>
+                        <span className={`badge ${r.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{r.ativo !== false ? 'Ativa' : 'Inativa'}</span>
+                      </td>
+                      <td className="center actionsCell">
+                        <div className="actionsInline">
+                          {modal.mode !== 'gerenciar' && <span className="muted smallText">Abra Gerenciar para alterar</span>}
+                          {modal.mode === 'gerenciar' && canUpdate && (
+                            <button className="smallBtn secondary" onClick={() => setAtivo(r, r.ativo === false)}>
+                              {r.ativo === false ? 'Reativar' : 'Desativar'}
+                            </button>
+                          )}
+                          {modal.mode === 'gerenciar' && canDelete && (
+                            <button className="smallBtn red" onClick={() => remove(r)}>
+                              Excluir
+                            </button>
+                          )}
+                          {modal.mode === 'gerenciar' && !canUpdate && !canDelete && <span className="muted smallText">Somente leitura</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={closeModal}>
+              Fechar
+            </button>
+            {modal.mode !== 'gerenciar' && (canUpdate || canDelete) && (
+              <button
+                onClick={() =>
+                  setModal({
+                    type: 'detalhe',
+                    turmaId: selectedTurma.id,
+                    mode: 'gerenciar',
+                  })
+                }
+              >
+                Gerenciar matrículas
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function GerarAulasEbdPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const turmas = useLookup('turmas_ebd');
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const vinculosProfessores = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    turma_id: '',
+    data_inicial: todayISO(),
+    data_final: addDaysISO(todayISO(), 90),
+    dia_semana: '0',
+    frequencia: 'semanal',
+    horario: '',
+    professor_id: '',
+    professor: '',
+    tema_base: 'Lição',
+  });
+
+  const turmaSelecionada = turmas.rows.find((t) => t.id === form.turma_id);
+  const professoresDaTurma = useMemo(() => linkedProfessoresDaTurma(form.turma_id, professores.rows, vinculosProfessores.rows), [form.turma_id, professores.rows, vinculosProfessores.rows]);
+  const professorOptions = useMemo(
+    () =>
+      professoresDaTurma.map((p) => ({
+        value: p.id,
+        label: `${p.principal ? 'Principal — ' : ''}${professorEbdLabel(p)}`,
+      })),
+    [professoresDaTurma],
+  );
+  const professorSelecionado = professorById(professores.rows, form.professor_id);
+
+  useEffect(() => {
+    if (!turmaSelecionada) return;
+    const principal = professoresDaTurma.find((p) => p.principal) || professoresDaTurma[0] || null;
+    setForm((prev) => ({
+      ...prev,
+      dia_semana: String(parseDiaSemana(turmaSelecionada.dia_semana || prev.dia_semana)),
+      horario: turmaSelecionada.horario || prev.horario || '',
+      professor_id: principal?.id || '',
+      professor: principal?.nome || turmaSelecionada.professor || prev.professor || '',
+    }));
+  }, [turmaSelecionada?.id, professoresDaTurma.length]);
+
+  const preview = useMemo(
+    () =>
+      buildAulasPreview({
+        inicio: form.data_inicial,
+        fim: form.data_final,
+        diaSemana: form.dia_semana,
+        frequencia: form.frequencia,
+        temaBase: form.tema_base,
+        horario: form.horario,
+        professor: form.professor,
+      }),
+    [form],
+  );
+
+  const set = (name, value) => setForm((prev) => ({ ...prev, [name]: value }));
+
+  const gerar = async () => {
+    if (!access.can('ebd', 'create')) {
+      push('Seu perfil não tem permissão para gerar aulas da EBD.', 'error');
+      return;
+    }
+    if (!form.turma_id) {
+      push('Selecione a turma.', 'warning');
+      return;
+    }
+    if (!preview.length) {
+      push('Nenhuma aula encontrada no período informado.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const rows = preview.map((aula) => ({
+      empresa_id: tenant?.empresaId,
+      turma_id: form.turma_id,
+      data: aula.data,
+      tema: aula.tema,
+      horario: aula.horario || null,
+      professor_id: form.professor_id || null,
+      professor: aula.professor || professorSelecionado?.nome || null,
+      status: 'pendente',
+      numero_aula: aula.numero_aula,
+      gerada_automaticamente: true,
+      created_by: userData?.user?.id ?? null,
+    }));
+    const { error } = await supabase.from('aulas_ebd').upsert(rows, { onConflict: 'turma_id,data', ignoreDuplicates: true });
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'aulas_ebd' },
+      }),
+    );
+    push(`${rows.length} aulas processadas. Aulas já existentes foram mantidas.`);
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>Gerar aulas da turma</h2>
+          <p className="muted">Crie automaticamente o calendário de aulas da EBD. O professor só abre a aula do dia e faz a chamada.</p>
+        </div>
+        <button onClick={gerar} disabled={saving || !preview.length}>
+          {saving ? 'Gerando…' : 'Gerar aulas'}
+        </button>
+      </div>
+      <div className="card ebdGeneratorCard">
+        <div className="grid cols2">
+          <div className="field">
+            <label>Turma *</label>
+            <SearchableSelect value={form.turma_id} onChange={(v) => set('turma_id', v)} options={turmas.options} />
+          </div>
+          <div className="field">
+            <label>Frequência</label>
+            <select value={form.frequencia} onChange={(e) => set('frequencia', e.target.value)}>
+              {FREQUENCIA_AULA_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Data inicial</label>
+            <input type="date" value={form.data_inicial} onChange={(e) => set('data_inicial', e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Data final</label>
+            <input type="date" value={form.data_final} onChange={(e) => set('data_final', e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Dia da semana</label>
+            <select value={form.dia_semana} onChange={(e) => set('dia_semana', e.target.value)}>
+              {DIA_SEMANA_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Horário</label>
+            <input type="time" value={form.horario} onChange={(e) => set('horario', e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Professor padrão</label>
+            <SearchableSelect
+              value={form.professor_id}
+              onChange={(v) => {
+                const prof = professorById(professores.rows, v);
+                setForm((prev) => ({
+                  ...prev,
+                  professor_id: v,
+                  professor: prof?.nome || '',
+                }));
+              }}
+              options={professorOptions}
+              placeholder={form.turma_id ? 'Selecione o professor da turma…' : 'Selecione a turma primeiro…'}
+              disabled={!form.turma_id}
+            />
+            {form.turma_id && professorOptions.length === 0 && <div className="muted smallText">Nenhum professor vinculado a esta turma. Cadastre em EBD &gt; Professores por turma.</div>}
+          </div>
+          <div className="field">
+            <label>Tema base</label>
+            <input value={form.tema_base} onChange={(e) => set('tema_base', e.target.value)} placeholder="Ex: Revista Adultos — Lição" />
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="toolbar">
+          <div>
+            <h3>Prévia das aulas</h3>
+            <p className="muted">Confira antes de gerar. Limite de segurança: 80 aulas por geração.</p>
+          </div>
+          <span className="badge Ativo">{preview.length} aulas</span>
+        </div>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Nº</th>
+                <th>Data</th>
+                <th>Dia</th>
+                <th>Horário</th>
+                <th>Tema</th>
+                <th>Professor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="center muted">
+                    Informe um período válido para visualizar as aulas.
+                  </td>
+                </tr>
+              )}
+              {preview.map((aula) => (
+                <tr key={`${aula.numero_aula}-${aula.data}`}>
+                  <td>{aula.numero_aula}</td>
+                  <td>{fmtDate(aula.data)}</td>
+                  <td>{DIA_SEMANA_LABELS[String(new Date(`${aula.data}T00:00:00`).getDay())]}</td>
+                  <td>{aula.horario || '—'}</td>
+                  <td>{aula.tema}</td>
+                  <td>{aula.professor || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AulaEbdFormModal({ title, aula, turmas, onClose, onSaved }) {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const vinculosProfessores = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState(() => ({
+    turma_id: aula?.turma_id || '',
+    data: aula?.data || todayISO(),
+    horario: aula?.horario || aula?.turmas_ebd?.horario || '',
+    professor_id: aula?.professor_id || '',
+    professor: aula?.professor || aula?.turmas_ebd?.professor || '',
+    tema: aula?.tema || '',
+    status: aula?.status || 'pendente',
+    observacoes: aula?.observacoes || '',
+  }));
+  const set = (name, value) => setForm((prev) => ({ ...prev, [name]: value }));
+  const professorOptions = useMemo(() => professorOptionsForTurma(form.turma_id, professores.rows, vinculosProfessores.rows), [form.turma_id, professores.rows, vinculosProfessores.rows]);
+  const professorSelecionado = professorById(professores.rows, form.professor_id);
+  useEffect(() => {
+    if (!form.turma_id || aula?.id || form.professor_id) return;
+    const principal = linkedProfessoresDaTurma(form.turma_id, professores.rows, vinculosProfessores.rows).find((p) => p.principal) || linkedProfessoresDaTurma(form.turma_id, professores.rows, vinculosProfessores.rows)[0] || null;
+    if (principal)
+      setForm((prev) => ({
+        ...prev,
+        professor_id: principal.id,
+        professor: principal.nome || '',
+      }));
+  }, [form.turma_id, professores.rows, vinculosProfessores.rows]);
+
+  const save = async () => {
+    const editing = !!aula?.id;
+    if (editing && !access.can('ebd', 'update')) {
+      push('Seu perfil não tem permissão para editar aulas.', 'error');
+      return;
+    }
+    if (!editing && !access.can('ebd', 'create')) {
+      push('Seu perfil não tem permissão para criar aulas.', 'error');
+      return;
+    }
+    if (!form.turma_id || !form.data) {
+      push('Turma e data são obrigatórias.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = {
+      empresa_id: tenant?.empresaId,
+      turma_id: form.turma_id,
+      data: form.data,
+      horario: form.horario || null,
+      professor_id: form.professor_id || null,
+      professor: professorSelecionado?.nome || form.professor || null,
+      tema: form.tema || null,
+      status: form.status || 'pendente',
+      observacoes: form.observacoes || null,
+    };
+    let error;
+    if (editing) ({ error } = await supabase.from('aulas_ebd').update(payload).eq('id', aula.id));
+    else ({ error } = await supabase.from('aulas_ebd').insert({ ...payload, created_by: userData?.user?.id ?? null }));
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Aula salva com sucesso.');
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'aulas_ebd' },
+      }),
+    );
+    onSaved?.();
+  };
+  return (
+    <Modal title={title} onClose={onClose} wide>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="grid cols2">
+        <div className="field">
+          <label>Turma *</label>
+          <SearchableSelect
+            value={form.turma_id}
+            onChange={(v) =>
+              setForm((prev) => ({
+                ...prev,
+                turma_id: v,
+                professor_id: '',
+                professor: '',
+              }))
+            }
+            options={turmas.options}
+          />
+        </div>
+        <div className="field">
+          <label>Status</label>
+          <select value={form.status} onChange={(e) => set('status', e.target.value)}>
+            {STATUS_AULA_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Data da aula *</label>
+          <input type="date" value={form.data} onChange={(e) => set('data', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Horário</label>
+          <input type="time" value={form.horario || ''} onChange={(e) => set('horario', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Professor</label>
+          <SearchableSelect
+            value={form.professor_id}
+            onChange={(v) => {
+              const prof = professorById(professores.rows, v);
+              setForm((prev) => ({
+                ...prev,
+                professor_id: v,
+                professor: prof?.nome || '',
+              }));
+            }}
+            options={professorOptions}
+            placeholder={form.turma_id ? 'Selecione o professor da turma…' : 'Selecione a turma primeiro…'}
+            disabled={!form.turma_id}
+          />
+          {form.turma_id && professorOptions.length === 0 && <div className="muted smallText">Nenhum professor vinculado a esta turma.</div>}
+        </div>
+        <div className="field">
+          <label>Tema / lição</label>
+          <input value={form.tema || ''} onChange={(e) => set('tema', e.target.value)} />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Observações</label>
+          <textarea rows="3" value={form.observacoes || ''} onChange={(e) => set('observacoes', e.target.value)} />
+        </div>
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+        <button className="secondary" onClick={onClose}>
+          Cancelar
+        </button>
+        <button onClick={save} disabled={saving}>
+          {saving ? 'Salvando…' : 'Salvar aula'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function AulasEbdPage() {
+  const access = usePermissions();
+  const turmas = useLookup('turmas_ebd');
+  const { rows, loading, reload } = useTable('aulas_ebd', {
+    order: 'data',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [turmaId, setTurmaId] = useState('');
+  const [status, setStatus] = useState('todos');
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [t.id, t])), [turmas.rows]);
+  const filtered = rows.filter((a) => (!turmaId || a.turma_id === turmaId) && (status === 'todos' || (a.status || 'pendente') === status));
+  const atualizarStatus = async (aula, nextStatus) => {
+    if (!access.can('ebd', 'update')) {
+      push('Seu perfil não tem permissão para alterar aulas.', 'error');
+      return;
+    }
+    const { error } = await supabase
+      .from('aulas_ebd')
+      .update({
+        status: nextStatus,
+        realizada_em: nextStatus === 'realizada' ? new Date().toISOString() : null,
+      })
+      .eq('id', aula.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Status da aula atualizado.');
+    reload();
+  };
+  const remove = async (aula) => {
+    if (!access.can('ebd', 'delete')) {
+      push('Seu perfil não tem permissão para excluir aulas.', 'error');
+      return;
+    }
+    if (!confirm('Excluir esta aula e a chamada vinculada?')) return;
+    const { error } = await supabase.from('aulas_ebd').delete().eq('id', aula.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Aula excluída.');
+    reload();
+  };
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>Aulas geradas</h2>
+          <p className="muted">Calendário de aulas da EBD para chamadas e relatórios.</p>
+        </div>
+        {access.can('ebd', 'create') && <button onClick={() => setModal({})}>+ Criar aula avulsa</button>}
+      </div>
+      <div className="card compactFilters">
+        <div className="grid cols2">
+          <div className="field">
+            <label>Turma</label>
+            <select value={turmaId} onChange={(e) => setTurmaId(e.target.value)}>
+              <option value="">Todas</option>
+              {turmas.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Status</label>
+            <select value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="todos">Todos</option>
+              {STATUS_AULA_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Turma</th>
+              <th>Tema</th>
+              <th>Professor</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={6} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={6} className="center muted">
+                  Nenhuma aula encontrada.
+                </td>
+              </tr>
+            )}
+            {filtered.map((aula) => {
+              const turma = turmaMap[aula.turma_id] || aula.turmas_ebd || {};
+              return (
+                <tr key={aula.id}>
+                  <td>{fmtDate(aula.data)}</td>
+                  <td>{turma.nome || '—'}</td>
+                  <td>{aula.tema || '—'}</td>
+                  <td>{aula.professor || turma.professor || '—'}</td>
+                  <td>
+                    <span className={`badge ${aulaStatusClass(aula.status)}`}>{aulaStatusLabel(aula.status)}</span>
+                  </td>
+                  <td className="actionsCell">
+                    <div className="actionsInline">
+                      {access.can('ebd', 'update') && (
+                        <>
+                          <button className="smallBtn secondary" onClick={() => setModal(aula)}>
+                            Editar
+                          </button>
+                          <button className="smallBtn green" onClick={() => atualizarStatus(aula, 'realizada')}>
+                            Realizada
+                          </button>
+                          <button className="smallBtn amber" onClick={() => atualizarStatus(aula, 'cancelada')}>
+                            Cancelar
+                          </button>
+                        </>
+                      )}
+                      {access.can('ebd', 'delete') && (
+                        <button className="smallBtn red" onClick={() => remove(aula)}>
+                          Excluir
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <AulaEbdFormModal
+          title={modal.id ? 'Editar aula' : 'Criar aula avulsa'}
+          aula={modal.id ? modal : null}
+          turmas={turmas}
+          onClose={() => setModal(null)}
+          onSaved={() => {
+            setModal(null);
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChamadaEbdPage({ initialAulaId = '', minhas = false }) {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const turmas = useLookup('turmas_ebd');
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const vinculosProfessores = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const [turmaId, setTurmaId] = useState('');
+  const [data, setData] = useState(todayISO());
+  const [tema, setTema] = useState('');
+  const [professorId, setProfessorId] = useState('');
+  const [observacoes, setObservacoes] = useState('');
+  const [status, setStatus] = useState('pendente');
+  const [alunos, setAlunos] = useState([]);
+  const [presencas, setPresencas] = useState({});
+  const [justificativas, setJustificativas] = useState({});
+  const [aulaId, setAulaId] = useState(initialAulaId || null);
+  const { toasts, push, close } = useToasts();
+  const [loading, setLoading] = useState(false);
+
+  const carregarPorAulaId = useCallback(
+    async (id) => {
+      if (!id) return;
+      setLoading(true);
+      const { data: aula, error } = await supabase.from('aulas_ebd').select('*').eq('id', id).maybeSingle();
+      if (error || !aula) {
+        setLoading(false);
+        push(error?.message || 'Aula não encontrada.', 'error');
+        return;
+      }
+      setAulaId(aula.id);
+      setTurmaId(aula.turma_id);
+      setData(aula.data || todayISO());
+      setTema(aula.tema || '');
+      setProfessorId(aula.professor_id || '');
+      setObservacoes(aula.observacoes || '');
+      setStatus(aula.status || 'pendente');
+      setLoading(false);
+    },
+    [push],
+  );
+
+  useEffect(() => {
+    if (initialAulaId) carregarPorAulaId(initialAulaId);
+  }, [initialAulaId, carregarPorAulaId]);
+
+  const carregar = useCallback(async () => {
+    if (!turmaId || !supabase) {
+      setAlunos([]);
+      return;
+    }
+    setLoading(true);
+    const { data: matriculas, error: matError } = await supabase.from('matriculas_ebd').select('membro_id, membros(nome)').eq('turma_id', turmaId).eq('ativo', true);
+    if (matError) {
+      push(matError.message, 'error');
+      setLoading(false);
+      return;
+    }
+    setAlunos(
+      (matriculas || []).map((m) => ({
+        id: m.membro_id,
+        nome: m.membros?.nome || '—',
+      })),
+    );
+
+    let query = supabase.from('aulas_ebd').select('*').eq('turma_id', turmaId).eq('data', data);
+    if (aulaId) query = supabase.from('aulas_ebd').select('*').eq('id', aulaId);
+    const { data: aulaExistente, error: aulaError } = await query.maybeSingle();
+    if (aulaError) {
+      push(aulaError.message, 'error');
+      setLoading(false);
+      return;
+    }
+    if (aulaExistente) {
+      setAulaId(aulaExistente.id);
+      setTema(aulaExistente.tema || '');
+      setProfessorId(aulaExistente.professor_id || '');
+      setObservacoes(aulaExistente.observacoes || '');
+      setStatus(aulaExistente.status || 'pendente');
+      const { data: freq } = await supabase.from('frequencia_ebd').select('*').eq('aula_id', aulaExistente.id);
+      const mapPresencas = {};
+      const mapJustificativas = {};
+      (freq || []).forEach((f) => {
+        mapPresencas[f.membro_id] = f.presente !== false;
+        mapJustificativas[f.membro_id] = f.justificativa || '';
+      });
+      setPresencas(mapPresencas);
+      setJustificativas(mapJustificativas);
+    } else {
+      setAulaId(null);
+      setTema('');
+      setProfessorId('');
+      setObservacoes('');
+      setStatus('pendente');
+      setPresencas({});
+      setJustificativas({});
+    }
+    setLoading(false);
+  }, [turmaId, data, aulaId, push]);
+
+  useEffect(() => {
+    carregar();
+  }, [carregar]);
+
+  const professorOptions = useMemo(() => professorOptionsForTurma(turmaId, professores.rows, vinculosProfessores.rows), [turmaId, professores.rows, vinculosProfessores.rows]);
+  const professorSelecionado = professorById(professores.rows, professorId);
+  useEffect(() => {
+    if (!turmaId || aulaId || professorId) return;
+    const principal = linkedProfessoresDaTurma(turmaId, professores.rows, vinculosProfessores.rows).find((p) => p.principal) || linkedProfessoresDaTurma(turmaId, professores.rows, vinculosProfessores.rows)[0] || null;
+    if (principal) setProfessorId(principal.id);
+  }, [turmaId, aulaId, professorId, professores.rows, vinculosProfessores.rows]);
+
+  const salvarChamada = async () => {
+    if (!turmaId) return;
+    if (!access.can('ebd', aulaId ? 'update' : 'create')) {
+      push('Seu perfil não tem permissão para salvar chamada da EBD.', 'error');
+      return;
+    }
+    setLoading(true);
+    const { data: userData } = await supabase.auth.getUser();
+    let currentAulaId = aulaId;
+    if (!currentAulaId) {
+      const { data: novaAula, error } = await supabase
+        .from('aulas_ebd')
+        .insert({
+          empresa_id: tenant?.empresaId,
+          turma_id: turmaId,
+          data,
+          tema,
+          professor_id: professorId || null,
+          professor: professorSelecionado?.nome || null,
+          observacoes,
+          status: 'pendente',
+          created_by: userData?.user?.id ?? null,
+        })
+        .select()
+        .single();
+      if (error) {
+        push(error.message, 'error');
+        setLoading(false);
+        return;
+      }
+      currentAulaId = novaAula.id;
+      setAulaId(novaAula.id);
+    }
+    const payloadAula = {
+      tema,
+      professor_id: professorId || null,
+      professor: professorSelecionado?.nome || null,
+      observacoes,
+      status: 'realizada',
+      realizada_em: new Date().toISOString(),
+    };
+    const { error: aulaUpdateError } = await supabase.from('aulas_ebd').update(payloadAula).eq('id', currentAulaId);
+    if (aulaUpdateError) {
+      push(aulaUpdateError.message, 'error');
+      setLoading(false);
+      return;
+    }
+    const rows = alunos.map((a) => ({
+      empresa_id: tenant?.empresaId,
+      aula_id: currentAulaId,
+      membro_id: a.id,
+      presente: !!presencas[a.id],
+      justificativa: justificativas[a.id] || null,
+    }));
+    const { error } = await supabase.from('frequencia_ebd').upsert(rows, { onConflict: 'aula_id,membro_id' });
+    setLoading(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    setStatus('realizada');
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'aulas_ebd' },
+      }),
+    );
+    push('Chamada salva com sucesso. Aula marcada como realizada.');
+  };
+
+  const turmaAtual = turmas.rows.find((t) => t.id === turmaId);
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>{minhas ? 'Fazer chamada' : 'Controle de Frequência (Chamada)'}</h2>
+          <p className="muted">Abra a aula gerada, marque presença/ausência e salve. A aula fica como realizada.</p>
+        </div>
+        {status && <span className={`badge ${aulaStatusClass(status)}`}>{aulaStatusLabel(status)}</span>}
+      </div>
+      <div className="grid cols2" style={{ marginBottom: 16 }}>
+        <div className="field">
+          <label>Turma</label>
+          <SearchableSelect
+            value={turmaId}
+            onChange={(v) => {
+              setTurmaId(v);
+              setAulaId(null);
+              setProfessorId('');
+            }}
+            options={turmas.options}
+            placeholder="Selecione a turma…"
+          />
+        </div>
+        <div className="field">
+          <label>Data da aula</label>
+          <input
+            type="date"
+            value={data}
+            onChange={(e) => {
+              setData(e.target.value);
+              setAulaId(null);
+            }}
+          />
+        </div>
+        <div className="field">
+          <label>Professor da aula</label>
+          <SearchableSelect value={professorId} onChange={setProfessorId} options={professorOptions} placeholder={turmaId ? 'Selecione o professor…' : 'Selecione a turma primeiro…'} disabled={!turmaId} />
+          {turmaId && professorOptions.length === 0 && <div className="muted smallText">Nenhum professor vinculado a esta turma. Cadastre em EBD &gt; Professores por turma.</div>}
+        </div>
+        <div className="field">
+          <label>Tema da aula</label>
+          <input value={tema} onChange={(e) => setTema(e.target.value)} />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Observações da aula</label>
+          <textarea rows="3" value={observacoes} onChange={(e) => setObservacoes(e.target.value)} />
+        </div>
+      </div>
+      {turmaId && (
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Aluno</th>
+                <th className="center">Presente</th>
+                <th>Justificativa / observação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={3} className="center">
+                    Carregando…
+                  </td>
+                </tr>
+              )}
+              {!loading && alunos.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="center muted">
+                    Nenhum aluno matriculado nesta turma.
+                  </td>
+                </tr>
+              )}
+              {alunos.map((a) => (
+                <tr key={a.id}>
+                  <td>{a.nome}</td>
+                  <td className="center">
+                    <input
+                      type="checkbox"
+                      checked={!!presencas[a.id]}
+                      onChange={(e) =>
+                        setPresencas((p) => ({
+                          ...p,
+                          [a.id]: e.target.checked,
+                        }))
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={justificativas[a.id] || ''}
+                      onChange={(e) =>
+                        setJustificativas((p) => ({
+                          ...p,
+                          [a.id]: e.target.value,
+                        }))
+                      }
+                      placeholder={presencas[a.id] ? 'Observação opcional' : 'Motivo da ausência, se houver'}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {turmaId && alunos.length > 0 && (
+        <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+          <button onClick={() => setPresencas(Object.fromEntries(alunos.map((a) => [a.id, true])))} className="secondary">
+            Marcar todos presentes
+          </button>
+          <button onClick={salvarChamada} disabled={loading}>
+            Salvar Chamada
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChamadaEbdPageWrapper() {
+  const tenant = React.useContext(TenantContext);
+  return <ChamadaEbdPage key={tenant?.empresaId || 'ebd-chamada'} />;
+}
+
+function MinhasAulasEbdPage() {
+  const tenant = React.useContext(TenantContext);
+  const { rows, loading, reload } = useTable('aulas_ebd', {
+    order: 'data',
+    ascending: true,
+  });
+  const turmas = useLookup('turmas_ebd');
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const vinculosProfessores = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [t.id, t])), [turmas.rows]);
+  const [profile, setProfile] = useState(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [selectedAula, setSelectedAula] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    supabase.auth.getUser().then(async ({ data }) => {
+      const user = data?.user;
+      if (!user?.id) return;
+      const { data: p } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
+      if (alive) {
+        setAuthEmail(user.email || '');
+        setProfile(p || { email: user.email, nome: user.email });
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [tenant?.empresaId]);
+  const minhas = useMemo(() => {
+    const email = String(profile?.email || authEmail || '')
+      .toLowerCase()
+      .trim();
+    const nome = normalizeText(profile?.nome || '');
+    if (!email && !nome) return [];
+    const professoresDoUsuario = (professores.rows || []).filter((p) => {
+      const profEmail = String(p.email || '')
+        .toLowerCase()
+        .trim();
+      const profNome = normalizeText(p.nome || '');
+      return (!!email && profEmail === email) || (!!nome && profNome === nome);
+    });
+    const professorIdsDoUsuario = new Set(professoresDoUsuario.map((p) => p.id));
+    const turmasDoProfessor = new Set((vinculosProfessores.rows || []).filter((v) => professorIdsDoUsuario.has(v.professor_id)).map((v) => v.turma_id));
+    const hoje = todayISO();
+    return rows
+      .filter((a) => {
+        const turma = turmaMap[a.turma_id] || {};
+        const turmaProfEmail = String(turma.professor_email || '')
+          .toLowerCase()
+          .trim();
+        const turmaProfNome = normalizeText(turma.professor || '');
+        const aulaProfNome = normalizeText(a.professor || '');
+        const atribuidaNaAula = a.professor_id && professorIdsDoUsuario.has(a.professor_id);
+        const vinculadaNaTurma = turmasDoProfessor.has(a.turma_id);
+        const legadoPorEmail = !!email && turmaProfEmail === email;
+        const legadoPorNome = !!nome && (aulaProfNome === nome || turmaProfNome === nome);
+        return (atribuidaNaAula || vinculadaNaTurma || legadoPorEmail || legadoPorNome) && a.data >= addDaysISO(hoje, -30);
+      })
+      .slice(0, 80);
+  }, [rows, profile, authEmail, turmaMap, professores.rows, vinculosProfessores.rows]);
+  if (selectedAula)
+    return (
+      <div>
+        <button
+          className="secondary"
+          style={{ marginBottom: 14 }}
+          onClick={() => {
+            setSelectedAula(null);
+            reload();
+          }}
+        >
+          ← Voltar às minhas aulas
+        </button>
+        <ChamadaEbdPage initialAulaId={selectedAula.id} minhas />
+      </div>
+    );
+  return (
+    <div>
+      <div className="toolbar">
+        <div>
+          <h2>Minhas aulas</h2>
+          <p className="muted">Lista automática das aulas do professor logado. O vínculo usa o e-mail cadastrado em Professores da EBD e os vínculos de Professor por turma.</p>
+        </div>
+        <span className="badge Ativo">{minhas.length} aulas</span>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Turma</th>
+              <th>Tema</th>
+              <th>Status</th>
+              <th className="center">Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={5} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && minhas.length === 0 && (
+              <tr>
+                <td colSpan={5} className="center muted">
+                  Nenhuma aula encontrada para este professor. Confira se o e-mail do professor foi informado na turma.
+                </td>
+              </tr>
+            )}
+            {minhas.map((a) => {
+              const turma = turmaMap[a.turma_id] || {};
+              return (
+                <tr key={a.id}>
+                  <td>{fmtDate(a.data)}</td>
+                  <td>{turma.nome || '—'}</td>
+                  <td>{a.tema || '—'}</td>
+                  <td>
+                    <span className={`badge ${aulaStatusClass(a.status)}`}>{aulaStatusLabel(a.status)}</span>
+                  </td>
+                  <td className="center">
+                    <button className="smallBtn" onClick={() => setSelectedAula(a)}>
+                      Fazer chamada
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RelatoriosEbdPage() {
+  const access = usePermissions();
+  const turmas = useLookup('turmas_ebd');
+  const membros = useLookup('membros');
+  const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m.nome])), [membros.rows]);
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [t.id, t.nome])), [turmas.rows]);
+  const aulas = useTable('aulas_ebd', { order: 'data', ascending: false });
+  const frequencias = useTable('frequencia_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const [turmaId, setTurmaId] = useState('');
+  const [status, setStatus] = useState('todos');
+  const [q, setQ] = useState('');
+  const [detalhe, setDetalhe] = useState(null);
+  const [editAula, setEditAula] = useState(null);
+  const [showResumoAlunos, setShowResumoAlunos] = useState(false);
+
+  const frequenciasPorAula = useMemo(() => {
+    const map = {};
+    (frequencias.rows || []).forEach((freq) => {
+      if (!map[freq.aula_id]) map[freq.aula_id] = [];
+      map[freq.aula_id].push(freq);
+    });
+    return map;
+  }, [frequencias.rows]);
+
+  const resumoDaAula = useCallback(
+    (aula) => {
+      const registros = frequenciasPorAula[aula.id] || [];
+      const presentesAula = registros.filter((f) => f.presente !== false).length;
+      const ausentesAula = registros.filter((f) => f.presente === false).length;
+      const total = presentesAula + ausentesAula;
+      const taxaAula = total > 0 ? Math.round((presentesAula / total) * 100) : 0;
+      return { registros, presentesAula, ausentesAula, total, taxaAula };
+    },
+    [frequenciasPorAula],
+  );
+
+  const aulasFiltradas = useMemo(() => {
+    const termo = normalizeText(q);
+    return (aulas.rows || []).filter((aula) => {
+      const turmaNome = turmaMap[aula.turma_id] || '';
+      const texto = normalizeText(`${turmaNome} ${aula.tema || ''} ${aula.professor || ''} ${fmtDate(aula.data)}`);
+      return (!turmaId || aula.turma_id === turmaId) && (status === 'todos' || (aula.status || 'pendente') === status) && (!termo || texto.includes(termo));
+    });
+  }, [aulas.rows, turmaId, status, q, turmaMap]);
+
+  const aulaIds = useMemo(() => new Set(aulasFiltradas.map((a) => a.id)), [aulasFiltradas]);
+  const freqFiltrada = useMemo(() => frequencias.rows.filter((f) => aulaIds.has(f.aula_id)), [frequencias.rows, aulaIds]);
+  const totalChamadas = aulasFiltradas.filter((a) => a.status === 'realizada').length;
+  const presentes = freqFiltrada.filter((f) => f.presente !== false).length;
+  const ausentes = freqFiltrada.filter((f) => f.presente === false).length;
+  const taxa = presentes + ausentes > 0 ? Math.round((presentes / (presentes + ausentes)) * 100) : 0;
+
+  const porAluno = useMemo(() => {
+    const map = {};
+    freqFiltrada.forEach((f) => {
+      const nome = membroMap[f.membro_id] || f.membro_nome || f.membro_id;
+      if (!map[f.membro_id]) map[f.membro_id] = { nome, presente: 0, ausente: 0 };
+      if (f.presente !== false) map[f.membro_id].presente += 1;
+      else map[f.membro_id].ausente += 1;
+    });
+    return Object.values(map)
+      .sort((a, b) => b.ausente - a.ausente || a.nome.localeCompare(b.nome, 'pt-BR'))
+      .slice(0, 80);
+  }, [freqFiltrada, membroMap]);
+
+  const htmlSafe = (value) =>
+    String(value ?? '').replace(
+      /[&<>"']/g,
+      (m) =>
+        ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;',
+        })[m],
+    );
+  const imprimirAula = (aula) => {
+    const { registros, presentesAula, ausentesAula, taxaAula } = resumoDaAula(aula);
+    const turmaNome = turmaMap[aula.turma_id] || '—';
+    const linhas = registros.length
+      ? registros
+          .slice()
+          .sort((a, b) => String(membroMap[a.membro_id] || '').localeCompare(String(membroMap[b.membro_id] || ''), 'pt-BR'))
+          .map(
+            (f) => `
+        <tr>
+          <td>${htmlSafe(membroMap[f.membro_id] || f.membro_nome || '—')}</td>
+          <td>${f.presente !== false ? 'Presente' : 'Ausente'}</td>
+          <td>${htmlSafe(f.justificativa || '')}</td>
+        </tr>`,
+          )
+          .join('')
+      : '<tr><td colspan="3">Nenhuma chamada registrada para esta aula.</td></tr>';
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Chamada EBD</title><style>
+      body{font-family:Arial,sans-serif;margin:28px;color:#111} h1{font-size:22px;margin:0 0 6px} h2{font-size:16px;margin:18px 0 8px}.muted{color:#555;font-size:13px}.info{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:18px 0}.box{border:1px solid #ddd;border-radius:10px;padding:10px}table{width:100%;border-collapse:collapse;margin-top:12px}th{background:#143b5c;color:#fff;text-align:left}th,td{padding:9px;border:1px solid #ddd;font-size:13px}.kpis{display:flex;gap:10px;margin:12px 0}.kpi{border:1px solid #ddd;border-radius:10px;padding:10px 14px}.kpi b{display:block;font-size:20px}@media print{button{display:none}}
+    </style></head><body><button onclick="print()">Imprimir</button>
+      <h1>Relatório de chamada — EBD</h1><div class="muted">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+      <div class="info"><div class="box"><b>Turma</b><br>${htmlSafe(turmaNome)}</div><div class="box"><b>Data da aula</b><br>${fmtDate(aula.data)}</div><div class="box"><b>Professor</b><br>${htmlSafe(aula.professor || '—')}</div><div class="box"><b>Status</b><br>${htmlSafe(aulaStatusLabel(aula.status))}</div></div>
+      <div class="box"><b>Tema</b><br>${htmlSafe(aula.tema || '—')}</div>${aula.observacoes ? `<p><b>Observações:</b> ${htmlSafe(aula.observacoes)}</p>` : ''}
+      <div class="kpis"><div class="kpi"><span>Presentes</span><b>${presentesAula}</b></div><div class="kpi"><span>Ausentes</span><b>${ausentesAula}</b></div><div class="kpi"><span>Frequência</span><b>${taxaAula}%</b></div></div>
+      <h2>Lista da chamada</h2><table><thead><tr><th>Aluno</th><th>Situação</th><th>Justificativa / observação</th></tr></thead><tbody>${linhas}</tbody></table>
+    </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+  };
+
+  if (editAula) {
+    return (
+      <div>
+        <button
+          className="secondary"
+          style={{ marginBottom: 14 }}
+          onClick={() => {
+            setEditAula(null);
+            aulas.reload();
+            frequencias.reload();
+          }}
+        >
+          ← Voltar ao relatório
+        </button>
+        <ChamadaEbdPage initialAulaId={editAula.id} />
+      </div>
+    );
+  }
+
+  const detalheResumo = detalhe ? resumoDaAula(detalhe) : null;
+  const detalheAlunos = detalheResumo ? detalheResumo.registros.slice().sort((a, b) => String(membroMap[a.membro_id] || '').localeCompare(String(membroMap[b.membro_id] || ''), 'pt-BR')) : [];
+
+  return (
+    <div>
+      <div className="toolbar">
+        <div>
+          <h2>Relatórios de frequência</h2>
+          <p className="muted">Resumo por aula, com ações para ver, editar chamada e imprimir.</p>
+        </div>
+      </div>
+
+      <div className="card compactFilters">
+        <div className="grid cols3">
+          <div className="field">
+            <label>Buscar</label>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Turma, tema, professor ou data..." />
+          </div>
+          <div className="field">
+            <label>Turma</label>
+            <SearchableSelect value={turmaId} onChange={setTurmaId} options={[{ value: '', label: 'Todas as turmas' }, ...turmas.options]} placeholder="Todas as turmas" />
+          </div>
+          <div className="field">
+            <label>Status</label>
+            <SearchableSelect value={status} onChange={setStatus} options={[{ value: 'todos', label: 'Todos os status' }, ...STATUS_AULA_OPTIONS]} placeholder="Todos os status" />
+          </div>
+        </div>
+        <div className="row" style={{ marginTop: 12, justifyContent: 'space-between' }}>
+          <span className="muted smallText">A lista principal agora é por aula, evitando misturar todos os alunos em uma tabela grande.</span>
+          <button
+            className="secondary"
+            onClick={() => {
+              setTurmaId('');
+              setStatus('todos');
+              setQ('');
+              setShowResumoAlunos(false);
+            }}
+          >
+            Limpar filtros
+          </button>
+        </div>
+      </div>
+
+      <div className="grid auto frete-kpis">
+        <div className="card kpi">
+          <div className="label">Aulas geradas</div>
+          <div className="value">{aulasFiltradas.length}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Chamadas realizadas</div>
+          <div className="value">{totalChamadas}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Presenças</div>
+          <div className="value">{presentes}</div>
+        </div>
+        <div className="card kpi">
+          <div className="label">Frequência média</div>
+          <div className="value">{taxa}%</div>
+        </div>
+      </div>
+
+      <div className="toolbar compactToolbar">
+        <div>
+          <h3>Aulas e chamadas</h3>
+          <p className="muted">Abra uma aula específica para consultar a chamada, editar ou imprimir.</p>
+        </div>
+        {porAluno.length > 0 && (
+          <button className="secondary" onClick={() => setShowResumoAlunos((v) => !v)}>
+            {showResumoAlunos ? 'Ocultar resumo por aluno' : 'Ver resumo por aluno'}
+          </button>
+        )}
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Turma</th>
+              <th>Tema</th>
+              <th>Professor</th>
+              <th>Status</th>
+              <th>Presentes</th>
+              <th>Ausentes</th>
+              <th>Freq.</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {aulas.loading && (
+              <tr>
+                <td colSpan={9} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!aulas.loading && aulasFiltradas.length === 0 && (
+              <tr>
+                <td colSpan={9} className="center muted">
+                  Nenhuma aula encontrada para os filtros selecionados.
+                </td>
+              </tr>
+            )}
+            {!aulas.loading &&
+              aulasFiltradas.map((aula) => {
+                const r = resumoDaAula(aula);
+                return (
+                  <tr key={aula.id}>
+                    <td>{fmtDate(aula.data)}</td>
+                    <td>{turmaMap[aula.turma_id] || '—'}</td>
+                    <td>{aula.tema || '—'}</td>
+                    <td>{aula.professor || '—'}</td>
+                    <td>
+                      <span className={`badge ${aulaStatusClass(aula.status)}`}>{aulaStatusLabel(aula.status)}</span>
+                    </td>
+                    <td>{r.presentesAula}</td>
+                    <td>{r.ausentesAula}</td>
+                    <td>{r.total ? `${r.taxaAula}%` : '—'}</td>
+                    <td className="actionsCell">
+                      <div className="actionsInline">
+                        <button className="smallBtn secondary" onClick={() => setDetalhe(aula)}>
+                          Ver
+                        </button>
+                        {access.can('ebd', 'update') && (
+                          <button className="smallBtn" onClick={() => setEditAula(aula)}>
+                            Editar chamada
+                          </button>
+                        )}
+                        <button className="smallBtn green" onClick={() => imprimirAula(aula)}>
+                          Imprimir
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div>
+
+      {showResumoAlunos && (
+        <div style={{ marginTop: 18 }}>
+          <div className="toolbar compactToolbar">
+            <div>
+              <h3>Resumo por aluno</h3>
+              <p className="muted">Resumo consolidado conforme os filtros acima. Use quando precisar analisar faltas recorrentes.</p>
+            </div>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Aluno</th>
+                  <th>Presenças</th>
+                  <th>Ausências</th>
+                </tr>
+              </thead>
+              <tbody>
+                {porAluno.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="center muted">
+                      Nenhuma frequência registrada ainda.
+                    </td>
+                  </tr>
+                )}
+                {porAluno.map((a) => (
+                  <tr key={a.nome}>
+                    <td>{a.nome}</td>
+                    <td>{a.presente}</td>
+                    <td>{a.ausente}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {detalhe && (
+        <Modal title={`Aula — ${fmtDate(detalhe.data)}`} onClose={() => setDetalhe(null)} wide>
+          <div className="grid auto frete-kpis">
+            <div className="card kpi">
+              <div className="label">Presentes</div>
+              <div className="value">{detalheResumo.presentesAula}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Ausentes</div>
+              <div className="value">{detalheResumo.ausentesAula}</div>
+            </div>
+            <div className="card kpi">
+              <div className="label">Frequência</div>
+              <div className="value">{detalheResumo.total ? `${detalheResumo.taxaAula}%` : '—'}</div>
+            </div>
+          </div>
+          <div className="card compactFilters">
+            <div className="grid cols2">
+              <div>
+                <b>Turma</b>
+                <p>{turmaMap[detalhe.turma_id] || '—'}</p>
+              </div>
+              <div>
+                <b>Professor</b>
+                <p>{detalhe.professor || '—'}</p>
+              </div>
+              <div>
+                <b>Tema</b>
+                <p>{detalhe.tema || '—'}</p>
+              </div>
+              <div>
+                <b>Status</b>
+                <p>{aulaStatusLabel(detalhe.status)}</p>
+              </div>
+            </div>
+            {detalhe.observacoes && (
+              <div style={{ marginTop: 10 }}>
+                <b>Observações da aula</b>
+                <p>{detalhe.observacoes}</p>
+              </div>
+            )}
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Aluno</th>
+                  <th>Situação</th>
+                  <th>Justificativa / observação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detalheAlunos.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="center muted">
+                      Nenhuma chamada registrada para esta aula.
+                    </td>
+                  </tr>
+                )}
+                {detalheAlunos.map((f) => (
+                  <tr key={`${f.aula_id}-${f.membro_id}`}>
+                    <td>{membroMap[f.membro_id] || f.membro_nome || '—'}</td>
+                    <td>
+                      <span className={`badge ${f.presente !== false ? 'Ativa' : 'Cancelada'}`}>{f.presente !== false ? 'Presente' : 'Ausente'}</span>
+                    </td>
+                    <td>{f.justificativa || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={() => imprimirAula(detalhe)}>
+              Imprimir
+            </button>
+            {access.can('ebd', 'update') && (
+              <button
+                onClick={() => {
+                  const aula = detalhe;
+                  setDetalhe(null);
+                  setEditAula(aula);
+                }}
+              >
+                Editar chamada
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function EbdModule() {
+  const [page, setPage] = usePersistentPage('ebd');
+  if (page === 'home') return <ModuleHubHome moduleKey="ebd" setPage={setPage} />;
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar
+      </button>
+      {page === 'turmas' && <TurmasEbdPage />}
+      {page === 'professores' && <ProfessoresEbdPage />}
+      {page === 'professores_turma' && <ProfessoresTurmaEbdPage />}
+      {page === 'matriculas' && <MatriculasEbdPage />}
+      {page === 'gerar_aulas' && <GerarAulasEbdPage />}
+      {page === 'aulas' && <AulasEbdPage />}
+      {page === 'minhas_aulas' && <MinhasAulasEbdPage />}
+      {page === 'chamada' && <ChamadaEbdPageWrapper />}
+      {page === 'relatorios' && <RelatoriosEbdPage />}
+    </div>
+  );
+}
+
+/* =========================================================
+   MÓDULO PATRIMÔNIO E CONFIGURAÇÕES
+========================================================= */
+function PatrimonioCategoriasPage() {
+  return (
+    <CrudPage
+      table="patrimonio_categorias"
+      title="Categorias do Patrimônio"
+      order="nome"
+      ascending
+      searchKeys={['nome', 'descricao']}
+      columns={[
+        { key: 'nome', label: 'Categoria' },
+        { key: 'descricao', label: 'Descrição' },
+      ]}
+      fields={[
+        { name: 'nome', label: 'Nome da categoria', required: true },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+      ]}
+    />
+  );
+}
+
+function PatrimonioLocaisPage() {
+  return (
+    <CrudPage
+      table="patrimonio_locais"
+      title="Locais do Patrimônio"
+      order="nome"
+      ascending
+      searchKeys={['nome', 'descricao']}
+      columns={[
+        { key: 'nome', label: 'Local' },
+        { key: 'descricao', label: 'Descrição' },
+      ]}
+      fields={[
+        { name: 'nome', label: 'Nome do local', required: true },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+      ]}
+    />
+  );
+}
+
+function patrimonioPrefixo(nome = '') {
+  const ignorar = new Set(['DE', 'DA', 'DO', 'DAS', 'DOS', 'E']);
+  const palavras = String(nome || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((p) => !ignorar.has(p));
+  return palavras.map((p) => p[0]).join('').slice(0, 8) || 'PAT';
+}
+
+function PatrimonioCadastroPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const { toasts, push, close } = useToasts();
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const categorias = useTable('patrimonio_categorias', { order: 'nome', ascending: true });
+  const locais = useTable('patrimonio_locais', { order: 'nome', ascending: true });
+  const empresas = useTable('empresas', { order: 'nome', ascending: true, tenantScoped: false });
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState([]);
+  const [historyRow, setHistoryRow] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('todos');
+  const empresa = empresas.rows.find((e) => e.id === tenant?.empresaId) || {};
+  const igrejaNome = empresa.nome || empresa.nome_fantasia || 'Igreja';
+  const prefixoPrevisto = patrimonioPrefixo(igrejaNome);
+  const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c.nome])), [categorias.rows]);
+  const localMap = useMemo(() => Object.fromEntries(locais.rows.map((l) => [l.id, l.nome])), [locais.rows]);
+  const categoriaOptions = categorias.rows.map((c) => ({ value: c.id, label: c.nome }));
+  const localOptions = locais.rows.map((l) => ({ value: l.id, label: l.nome }));
+  const filtered = bens.rows.filter((r) => {
+    const query = q.trim().toLowerCase();
+    const qOk = !query || [r.numero_patrimonio, r.nome, r.marca, r.modelo, r.numero_serie, localMap[r.local_id], r.localizacao].some((v) => String(v || '').toLowerCase().includes(query));
+    const statusOk = statusFilter === 'todos' || r.status === statusFilter;
+    return qOk && statusOk;
+  });
+  const canCreate = access.can('patrimonio', 'create');
+  const canUpdate = access.can('patrimonio', 'update');
+
+  const fields = [
+    {
+      name: 'numero_patrimonio',
+      label: 'Número do patrimônio',
+      readOnly: true,
+      defaultValue: () => `${prefixoPrevisto}-PRÓXIMO`,
+      help: `Gerado automaticamente ao salvar, usando as iniciais do nome da igreja: ${igrejaNome} → ${prefixoPrevisto}-0001.`,
+    },
+    { name: 'nome', label: 'Nome do bem', required: true, autoComplete: 'off' },
+    { name: 'categoria_id', label: 'Categoria', type: 'select', options: categoriaOptions },
+    { name: 'local_id', label: 'Local', type: 'select', options: localOptions },
+    { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+    { name: 'localizacao', label: 'Localização complementar' },
+    {
+      name: 'status',
+      label: 'Status',
+      type: 'select',
+      defaultValue: 'ativo',
+      options: [
+        { value: 'ativo', label: 'Ativo' },
+        { value: 'manutencao', label: 'Em manutenção' },
+        { value: 'emprestado', label: 'Emprestado' },
+        { value: 'cedido', label: 'Cedido' },
+        { value: 'extraviado', label: 'Extraviado' },
+        { value: 'baixado', label: 'Baixado' },
+      ],
+    },
+    { name: 'valor_aquisicao', label: 'Valor de aquisição', type: 'money' },
+    { name: 'data_aquisicao', label: 'Data de aquisição', type: 'date' },
+    { name: 'marca', label: 'Marca' },
+    { name: 'modelo', label: 'Modelo' },
+    { name: 'numero_serie', label: 'Número de série' },
+    { name: 'fornecedor', label: 'Fornecedor' },
+    { name: 'nota_fiscal', label: 'Nota fiscal' },
+    { name: 'responsavel', label: 'Responsável pelo bem' },
+    { name: 'garantia_ate', label: 'Garantia até', type: 'date' },
+    { name: 'foto_url', label: 'URL da foto' },
+    { name: 'documento_url', label: 'URL do documento/anexo' },
+    { name: 'data_baixa', label: 'Data da baixa', type: 'date' },
+    { name: 'motivo_baixa', label: 'Motivo da baixa', type: 'textarea', full: true },
+  ];
+
+  const save = async (form) => {
+    setSaving(true);
+    const payload = { ...form };
+    delete payload.numero_patrimonio;
+    ['valor_aquisicao'].forEach((k) => { payload[k] = payload[k] === '' ? null : Number(payload[k] || 0); });
+    ['categoria_id', 'local_id'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    ['data_aquisicao', 'garantia_ate', 'data_baixa'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    if (payload.status !== 'baixado') {
+      payload.data_baixa = null;
+      payload.motivo_baixa = null;
+    }
+    let error;
+    if (modal?.id) ({ error } = await supabase.from('patrimonio').update(payload).eq('id', modal.id));
+    else {
+      const { data: userData } = await supabase.auth.getUser();
+      payload.empresa_id = tenant?.empresaId;
+      payload.created_by = userData?.user?.id || null;
+      ({ error } = await supabase.from('patrimonio').insert(payload));
+    }
+    setSaving(false);
+    if (error) return push(error.message, 'error');
+    push(modal?.id ? 'Patrimônio atualizado.' : 'Patrimônio cadastrado e numerado automaticamente.');
+    setModal(null);
+    bens.reload();
+  };
+
+  const qrUrlFor = (row) => `${window.location.origin}${window.location.pathname}?patrimonio=${encodeURIComponent(row.id)}`;
+  const safeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
+  const formatDateTime = (value) => value ? new Date(value).toLocaleString('pt-BR') : '—';
+  const buildLabelHtml = async (rows, size = 'padrao', copies = 1) => {
+    const configs = {
+      pequena: { w: 50, h: 25, cls: 'small' },
+      padrao: { w: 60, h: 40, cls: 'standard' },
+      a4: { w: 60, h: 40, cls: 'a4' },
+    };
+    const cfg = configs[size] || configs.padrao;
+    const labels = [];
+    for (const row of rows) {
+      const qr = `https://quickchart.io/qr?size=160&margin=0&text=${encodeURIComponent(qrUrlFor(row))}`;
+      for (let i = 0; i < copies; i += 1) labels.push(`
+        <article class="label ${cfg.cls}" style="width:${cfg.w}mm;height:${cfg.h}mm">
+          <div class="labelText"><strong>${safeHtml(igrejaNome)}</strong><span>PATRIMÔNIO</span><b>${safeHtml(row.numero_patrimonio || '')}</b><small>${safeHtml(row.nome || '')}</small><small>${safeHtml(localMap[row.local_id] || row.localizacao || '')}</small></div>
+          <img src="${qr}" alt="QR Code" />
+        </article>`);
+    }
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas patrimoniais</title><style>@page{margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif}.sheet{display:flex;flex-wrap:wrap;gap:4mm;align-content:flex-start}.label{border:1px solid #111;border-radius:2mm;padding:2.5mm;display:flex;gap:2mm;align-items:center;justify-content:space-between;break-inside:avoid}.labelText{min-width:0;display:flex;flex-direction:column;gap:.7mm}.labelText strong{font-size:8pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.labelText span{font-size:6pt;letter-spacing:.08em}.labelText b{font-size:13pt}.labelText small{font-size:7pt;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.label img{width:17mm;height:17mm}.label.small{padding:1.5mm}.label.small img{width:15mm;height:15mm}.label.small .labelText strong{font-size:6pt}.label.small .labelText b{font-size:10pt}.label.small .labelText small{font-size:6pt}@media print{button{display:none}}</style></head><body><div class="sheet">${labels.join('')}</div><script>window.onload=()=>window.print()<\/script></body></html>`;
+  };
+  const printLabels = async (rows) => {
+    if (!rows.length) return push('Selecione ao menos um patrimônio.', 'warning');
+    const size = window.prompt('Modelo da etiqueta: pequena, padrao ou a4', 'padrao') || 'padrao';
+    const copies = Math.max(1, Number(window.prompt('Quantidade de etiquetas por item', '1') || 1));
+    try {
+      const html = await buildLabelHtml(rows, size.toLowerCase(), copies);
+      const w = window.open('', '_blank', 'noopener,noreferrer');
+      if (!w) return push('O navegador bloqueou a janela de impressão.', 'warning');
+      w.document.open(); w.document.write(html); w.document.close();
+    } catch (error) { push(`Não foi possível gerar as etiquetas: ${error.message}`, 'error'); }
+  };
+  const openHistory = async (row) => {
+    setHistoryRow(row); setHistoryLoading(true);
+    const { data, error } = await supabase.from('patrimonio_historico').select('*').eq('patrimonio_id', row.id).order('created_at', { ascending: false });
+    setHistoryLoading(false);
+    if (error) return push(error.message, 'error');
+    setHistory(data || []);
+  };
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('patrimonio');
+    if (id && bens.rows.length) {
+      const found = bens.rows.find((r) => r.id === id);
+      if (found) setHistoryRow(found);
+    }
+  }, [bens.rows]);
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div><h2 style={{ margin: 0 }}>Cadastro de Patrimônio</h2><small className="muted">Numeração automática por igreja: <b>{prefixoPrevisto}-0001</b></small></div>
+        <div className="row">
+          <input placeholder="Buscar patrimônio…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220 }} />
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ minWidth: 160 }}>
+            <option value="todos">Todos os status</option><option value="ativo">Ativos</option><option value="manutencao">Em manutenção</option><option value="emprestado">Emprestados</option><option value="cedido">Cedidos</option><option value="extraviado">Extraviados</option><option value="baixado">Baixados</option>
+          </select>
+          <button className="secondary" onClick={() => printLabels(bens.rows.filter((r) => selected.includes(r.id)))}>Imprimir etiquetas selecionadas</button>
+          {canCreate && <button onClick={() => setModal('new')}>+ Novo patrimônio</button>}
+        </div>
+      </div>
+      <div className="tablewrap"><table><thead><tr><th className="center"><input type="checkbox" checked={filtered.length > 0 && filtered.every((r) => selected.includes(r.id))} onChange={(e) => setSelected(e.target.checked ? filtered.map((r) => r.id) : [])} /></th><th>Nº Patrimônio</th><th>Bem</th><th>Categoria</th><th>Local</th><th>Status</th><th>Valor</th><th className="center">Ações</th></tr></thead><tbody>
+        {bens.loading && <tr><td colSpan={8} className="center">Carregando…</td></tr>}
+        {!bens.loading && !filtered.length && <tr><td colSpan={8} className="center muted">Nenhum patrimônio encontrado.</td></tr>}
+        {filtered.map((r) => <tr key={r.id}><td className="center"><input type="checkbox" checked={selected.includes(r.id)} onChange={() => setSelected((old) => old.includes(r.id) ? old.filter((id) => id !== r.id) : [...old, r.id])} /></td><td><b>{r.numero_patrimonio}</b></td><td>{r.nome}<small className="muted blockText">{[r.marca, r.modelo].filter(Boolean).join(' ')}</small></td><td>{categoriaMap[r.categoria_id] || '—'}</td><td>{localMap[r.local_id] || r.localizacao || '—'}</td><td><span className={`badge ${r.status === 'ativo' ? 'Ativa' : r.status === 'baixado' ? 'Cancelada' : 'Parcial'}`}>{String(r.status || '').replace('_', ' ')}</span></td><td>{fmtMoney(r.valor_aquisicao)}</td><td className="center"><div className="actionsInline"><button className="smallBtn secondary" onClick={() => setHistoryRow(r)}>Ver</button>{canUpdate && <button className="smallBtn secondary" onClick={() => setModal(r)}>Editar</button>}<button className="smallBtn secondary" onClick={() => printLabels([r])}>Etiqueta</button><button className="smallBtn secondary" onClick={() => openHistory(r)}>Histórico</button></div></td></tr>)}
+      </tbody></table></div>
+      {modal && <Modal title={`${modal === 'new' ? 'Novo registro' : 'Editar registro'} — Cadastro de Patrimônio`} onClose={() => !saving && setModal(null)}><EntityForm fields={fields} initial={modal === 'new' ? { status: 'ativo', numero_patrimonio: `${prefixoPrevisto}-PRÓXIMO` } : modal} onCancel={() => setModal(null)} onSave={save} saving={saving} formClass="patrimonioForm" /></Modal>}
+      {historyRow && <Modal title={`${historyRow.numero_patrimonio || ''} — ${historyRow.nome}`} onClose={() => { setHistoryRow(null); setHistory([]); }}><div className="patrimonioDetailGrid"><div><span>Status</span><b>{historyRow.status}</b></div><div><span>Local</span><b>{localMap[historyRow.local_id] || historyRow.localizacao || '—'}</b></div><div><span>Responsável</span><b>{historyRow.responsavel || '—'}</b></div><div><span>Nº de série</span><b>{historyRow.numero_serie || '—'}</b></div><div className="full"><span>Descrição</span><b>{historyRow.descricao || '—'}</b></div></div><h3>Histórico</h3>{historyLoading ? <p>Carregando…</p> : <div className="tablewrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Detalhes</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{formatDateTime(h.created_at)}</td><td>{h.evento}</td><td>{h.detalhes || '—'}</td></tr>)}{!history.length && <tr><td colSpan={3} className="center muted">Nenhuma alteração registrada.</td></tr>}</tbody></table></div>}</Modal>}
+    </div>
+  );
+}
+
+function PatrimonioManutencoesPage() {
+  const bens = useTable('patrimonio', { order: 'nome', ascending: true });
+  const bemOptions = bens.rows.map((b) => ({
+    value: b.id,
+    label: `${b.numero_patrimonio ? b.numero_patrimonio + ' — ' : ''}${b.nome}`,
+  }));
+  const renderBem = (r) => bens.rows.find((b) => b.id === r.patrimonio_id)?.nome || '—';
+  return (
+    <CrudPage
+      table="patrimonio_manutencoes"
+      title="Manutenções do Patrimônio"
+      order="data_manutencao"
+      ascending={false}
+      searchKeys={['descricao', 'responsavel']}
+      columns={[
+        { key: 'patrimonio_id', label: 'Bem', render: renderBem },
+        {
+          key: 'data_manutencao',
+          label: 'Data',
+          render: (r) => fmtDate(r.data_manutencao),
+        },
+        { key: 'tipo', label: 'Tipo' },
+        { key: 'custo', label: 'Custo', render: (r) => fmtMoney(r.custo) },
+        { key: 'responsavel', label: 'Responsável' },
+      ]}
+      fields={[
+        {
+          name: 'patrimonio_id',
+          label: 'Bem patrimonial',
+          type: 'select',
+          options: bemOptions,
+          required: true,
+        },
+        {
+          name: 'data_manutencao',
+          label: 'Data da manutenção',
+          type: 'date',
+          required: true,
+        },
+        {
+          name: 'tipo',
+          label: 'Tipo',
+          type: 'select',
+          options: [
+            { value: 'preventiva', label: 'Preventiva' },
+            { value: 'corretiva', label: 'Corretiva' },
+            { value: 'vistoria', label: 'Vistoria' },
+            { value: 'outra', label: 'Outra' },
+          ],
+        },
+        {
+          name: 'descricao',
+          label: 'Descrição',
+          type: 'textarea',
+          full: true,
+          required: true,
+        },
+        { name: 'custo', label: 'Custo', type: 'money' },
+        { name: 'responsavel', label: 'Responsável' },
+      ]}
+    />
+  );
+}
+
+function PatrimonioModule() {
+  const [page, setPage] = usePersistentPage('patrimonio');
+  if (page === 'home') return <ModuleHubHome moduleKey="patrimonio" setPage={setPage} />;
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar
+      </button>
+      {page === 'cadastro' && <PatrimonioCadastroPage />}
+      {page === 'categorias' && <PatrimonioCategoriasPage />}
+      {page === 'locais' && <PatrimonioLocaisPage />}
+      {page === 'manutencoes' && <PatrimonioManutencoesPage />}
+    </div>
+  );
+}
+
+/* =========================================================
+   PORTAL DO MEMBRO — comunidade, agenda e jornada
+========================================================= */
+const PORTAL_FILE_BUCKET = 'portal-publicacoes';
+const PORTAL_FILE_MAX_BYTES = 5 * 1024 * 1024;
+const PORTAL_FILE_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+
+function PortalPostAttachments({ publicacaoId, arquivos }) {
+  const relacionados = useMemo(() => arquivos.filter((a) => a.publicacao_id === publicacaoId), [arquivos, publicacaoId]);
+  const [links, setLinks] = useState({});
+  const [previewIndex, setPreviewIndex] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (!relacionados.length) {
+      setLinks({});
+      return () => {
+        alive = false;
+      };
+    }
+    Promise.all(
+      relacionados.map(async (item) => {
+        const { data } = await supabase.storage.from(PORTAL_FILE_BUCKET).createSignedUrl(item.storage_path, 3600);
+        return [item.id, data?.signedUrl || ''];
+      }),
+    ).then((entries) => {
+      if (alive) setLinks(Object.fromEntries(entries));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [relacionados.map((a) => `${a.id}:${a.storage_path}`).join('|')]);
+  if (!relacionados.length) return null;
+  const imagens = relacionados.filter((item) => String(item.mime_type || '').startsWith('image/'));
+  const documentos = relacionados.filter((item) => !String(item.mime_type || '').startsWith('image/'));
+  const preview = previewIndex === null ? null : imagens[previewIndex];
+  const movePreview = (direction) =>
+    setPreviewIndex((current) => {
+      if (current === null) return null;
+      return (current + direction + imagens.length) % imagens.length;
+    });
+  return (
+    <>
+      {imagens.length > 0 && (
+        <div className={`muralGallery ${imagens.length === 1 ? 'single' : imagens.length === 2 ? 'double' : 'many'}`}>
+          {imagens.map((item, index) => {
+            const url = links[item.id];
+            return (
+              <figure key={item.id} className="muralImage">
+                <button type="button" disabled={!url} onClick={() => setPreviewIndex(index)} aria-label={`Ampliar ${item.nome_original}`}>
+                  {url ? <img src={url} alt={item.nome_original} /> : <span>Carregando imagem…</span>}
+                </button>
+                <figcaption>
+                  <span>{item.nome_original}</span>
+                  <a href={url || undefined} download target="_blank" rel="noreferrer">
+                    Baixar
+                  </a>
+                </figcaption>
+              </figure>
+            );
+          })}
+        </div>
+      )}
+      {documentos.length > 0 && (
+        <div className="postAttachments">
+          {documentos.map((item) => {
+            const url = links[item.id];
+            return (
+              <a key={item.id} className="postAttachment" href={url || undefined} target="_blank" rel="noreferrer" aria-disabled={!url}>
+                <span className="attachmentIcon">PDF</span>
+                <span>
+                  <b>{item.nome_original}</b>
+                  <small>{Math.max(1, Math.ceil(Number(item.tamanho_bytes || 0) / 1024))} KB · Visualizar PDF</small>
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+      {preview && (
+        <Modal title={preview.nome_original} onClose={() => setPreviewIndex(null)} wide>
+          <div className="muralLightbox">
+            <div className="lightboxStage">
+              {imagens.length > 1 && (
+                <button type="button" className="lightboxNav prev" onClick={() => movePreview(-1)} aria-label="Imagem anterior">
+                  ‹
+                </button>
+              )}
+              <img src={links[preview.id]} alt={preview.nome_original} />
+              {imagens.length > 1 && (
+                <button type="button" className="lightboxNav next" onClick={() => movePreview(1)} aria-label="Próxima imagem">
+                  ›
+                </button>
+              )}
+            </div>
+            <div className="lightboxFooter">
+              <span>
+                {previewIndex + 1} de {imagens.length}
+              </span>
+              <a className="btn" href={links[preview.id]} download target="_blank" rel="noreferrer">
+                Baixar imagem original
+              </a>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function PortalPublicationFilesAdmin({ publicacoes }) {
+  const tenant = React.useContext(TenantContext);
+  const arquivos = useTable('portal_publicacao_arquivos', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const [publicacaoId, setPublicacaoId] = useState('');
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const { toasts, push, close } = useToasts();
+  const atuais = arquivos.rows.filter((a) => a.publicacao_id === publicacaoId);
+  const selecionarArquivos = (event) => {
+    const selected = Array.from(event.target.files || []);
+    event.target.value = '';
+    const invalid = selected.find((f) => !PORTAL_FILE_MIMES.has(f.type) || f.size > PORTAL_FILE_MAX_BYTES);
+    if (invalid) {
+      push(`${invalid.name}: use PDF, JPG, PNG ou WEBP com até 5 MB.`, 'error');
+      return;
+    }
+    if (atuais.length + selected.length > 5) {
+      push('Cada publicação pode ter no máximo 5 arquivos.', 'error');
+      return;
+    }
+    setFiles(selected);
+  };
+  const enviar = async () => {
+    if (!publicacaoId || !files.length || !tenant?.empresaId) return;
+    setBusy(true);
+    const { data: userData } = await supabase.auth.getUser();
+    for (const file of files) {
+      const safe = String(file.name)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .slice(-100);
+      const id = crypto.randomUUID();
+      const path = `${tenant.empresaId}/${publicacaoId}/${id}-${safe}`;
+      const uploaded = await supabase.storage.from(PORTAL_FILE_BUCKET).upload(path, file, { contentType: file.type, upsert: false });
+      if (uploaded.error) {
+        push(`Falha ao enviar ${file.name}: ${uploaded.error.message}`, 'error');
+        continue;
+      }
+      const { error } = await supabase.from('portal_publicacao_arquivos').insert({
+        id,
+        empresa_id: tenant.empresaId,
+        publicacao_id: publicacaoId,
+        nome_original: file.name,
+        storage_path: path,
+        mime_type: file.type,
+        tamanho_bytes: file.size,
+        created_by: userData?.user?.id || null,
+      });
+      if (error) {
+        await supabase.storage.from(PORTAL_FILE_BUCKET).remove([path]);
+        push(`Falha ao registrar ${file.name}: ${error.message}`, 'error');
+      }
+    }
+    setBusy(false);
+    setFiles([]);
+    arquivos.reload();
+    push('Arquivos da publicação atualizados.');
+  };
+  const excluir = async (item) => {
+    if (!confirm(`Remover o arquivo ${item.nome_original}?`)) return;
+    const storageResult = await supabase.storage.from(PORTAL_FILE_BUCKET).remove([item.storage_path]);
+    if (storageResult.error) {
+      push(storageResult.error.message, 'error');
+      return;
+    }
+    const { error } = await supabase.from('portal_publicacao_arquivos').delete().eq('id', item.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    arquivos.reload();
+    push('Arquivo removido.');
+  };
+  return (
+    <section className="card portalFileAdmin">
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h3>Arquivos das publicações</h3>
+          <p className="muted">Anexe até 5 PDFs ou imagens, com no máximo 5 MB cada.</p>
+        </div>
+      </div>
+      <div className="grid cols2">
+        <div className="field">
+          <label>Publicação *</label>
+          <select
+            value={publicacaoId}
+            onChange={(e) => {
+              setPublicacaoId(e.target.value);
+              setFiles([]);
+            }}
+          >
+            <option value="">Selecione uma publicação</option>
+            {publicacoes.map((p) => (
+              <option value={p.id} key={p.id}>
+                {p.titulo}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Selecionar arquivos</label>
+          <input type="file" multiple accept="application/pdf,image/jpeg,image/png,image/webp" disabled={!publicacaoId || atuais.length >= 5} onChange={selecionarArquivos} />
+        </div>
+      </div>
+      {files.length > 0 && (
+        <div className="pendingFiles">
+          {files.map((f) => (
+            <span key={`${f.name}-${f.size}`}>
+              {f.name} · {Math.ceil(f.size / 1024)} KB
+            </span>
+          ))}
+          <button disabled={busy} onClick={enviar}>
+            {busy ? 'Enviando…' : 'Enviar arquivos'}
+          </button>
+        </div>
+      )}
+      <div className="fileAdminList">
+        {atuais.map((item) => (
+          <div key={item.id}>
+            <span className="attachmentIcon">{String(item.mime_type).startsWith('image/') ? 'IMG' : 'PDF'}</span>
+            <span>
+              <b>{item.nome_original}</b>
+              <small>{Math.ceil(Number(item.tamanho_bytes) / 1024)} KB</small>
+            </span>
+            <button className="smallBtn red" onClick={() => excluir(item)}>
+              Excluir
+            </button>
+          </div>
+        ))}
+        {publicacaoId && !atuais.length && (
+          <div className="emptyState">
+            <b>Nenhum arquivo anexado</b>
+            <span>Selecione os arquivos acima e clique em Enviar.</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PortalMembroModule({ profile }) {
+  const tenant = React.useContext(TenantContext);
+  const isManager = isMasterProfile(profile) || ['admin', 'gerente', 'secretario'].includes(profile?.role);
+  const [adminView, setAdminView] = useState(false);
+  const publicacoes = useTable('portal_publicacoes', {
+    order: 'publicado_em',
+    ascending: false,
+  });
+  const arquivosPublicacoes = useTable('portal_publicacao_arquivos', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const eventos = useTable('portal_eventos', {
+    order: 'inicio_em',
+    ascending: true,
+  });
+  const jornadas = useTable('portal_jornadas', {
+    order: 'ordem',
+    ascending: true,
+  });
+  const progressos = useTable('portal_jornada_progresso', {
+    order: 'updated_at',
+    ascending: false,
+  });
+  const checkins = useTable('portal_checkins', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const chavesPix = useTable('portal_chaves_pix', {
+    order: 'ordem',
+    ascending: true,
+  });
+  const membroId = profile?.membro_id || '';
+  const agora = new Date();
+  const proximosEventos = eventos.rows.filter((e) => e.ativo !== false && (!e.fim_em || new Date(e.fim_em) >= agora)).slice(0, 6);
+  const posts = publicacoes.rows.filter((p) => p.ativo !== false).slice(0, 12);
+  const progressoMap = Object.fromEntries(progressos.rows.filter((p) => !membroId || p.membro_id === membroId).map((p) => [p.jornada_id, p]));
+  const [contribuir, setContribuir] = useState(false);
+  const { toasts, push, close } = useToasts();
+  const pixAtivos = chavesPix.rows.filter((item) => item.ativo !== false);
+  const copiarPix = async (item) => {
+    const chave = String(item?.chave || '').trim();
+    if (!chave) return;
+    try {
+      await navigator.clipboard.writeText(chave);
+      push(`Chave ${item.identificacao || 'PIX'} copiada.`);
+    } catch {
+      push(`Chave PIX: ${chave}`, 'warning');
+    }
+  };
+  const confirmarEvento = async (evento) => {
+    if (!membroId) {
+      push('Seu acesso ainda não está vinculado ao cadastro de membro.', 'warning');
+      return;
+    }
+    const { error } = await supabase.from('portal_checkins').upsert(
+      {
+        empresa_id: tenant?.empresaId,
+        evento_id: evento.id,
+        membro_id: membroId,
+        status: 'confirmado',
+      },
+      { onConflict: 'evento_id,membro_id' },
+    );
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    checkins.reload();
+    push(`Presença confirmada em ${evento.titulo}.`);
+  };
+  if (adminView && isManager)
+    return (
+      <div>
+        <div className="toolbar">
+          <div>
+            <span className="eyebrow">Gestão do portal</span>
+            <h2>Cadastros do Portal do Membro</h2>
+            <p className="muted">Configure aqui tudo o que será exibido aos membros.</p>
+          </div>
+          <button className="secondary" onClick={() => setAdminView(false)}>
+            Ver como membro
+          </button>
+        </div>
+        <div className="portalAdminGrid">
+          <CrudPage
+            table="portal_chaves_pix"
+            title="Chaves PIX informativas"
+            order="ordem"
+            ascending
+            searchKeys={['identificacao', 'chave', 'beneficiario', 'banco']}
+            columns={[
+              { key: 'identificacao', label: 'Identificação' },
+              { key: 'tipo_chave', label: 'Tipo' },
+              { key: 'chave', label: 'Chave' },
+              { key: 'beneficiario', label: 'Beneficiário' },
+              {
+                key: 'ativo',
+                label: 'Visível',
+                render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+              },
+            ]}
+            fields={[
+              {
+                name: 'identificacao',
+                label: 'Identificação',
+                required: true,
+                help: 'Ex.: Conta principal, Missões ou Ação social',
+              },
+              {
+                name: 'tipo_chave',
+                label: 'Tipo de chave',
+                type: 'select',
+                required: true,
+                options: [
+                  { value: 'cnpj', label: 'CNPJ' },
+                  { value: 'cpf', label: 'CPF' },
+                  { value: 'email', label: 'E-mail' },
+                  { value: 'telefone', label: 'Telefone' },
+                  { value: 'aleatoria', label: 'Chave aleatória' },
+                ],
+              },
+              { name: 'chave', label: 'Chave PIX', required: true, full: true },
+              { name: 'beneficiario', label: 'Beneficiário', required: true },
+              { name: 'banco', label: 'Banco / instituição' },
+              { name: 'ordem', label: 'Ordem de exibição', type: 'number' },
+              { name: 'ativo', label: 'Exibir no portal', type: 'checkbox' },
+            ]}
+          />
+          <CrudPage
+            table="portal_publicacoes"
+            title="Publicações"
+            order="publicado_em"
+            ascending={false}
+            onAfterSave={publicacoes.reload}
+            searchKeys={['titulo', 'resumo', 'conteudo']}
+            columns={[
+              { key: 'titulo', label: 'Título' },
+              { key: 'tipo', label: 'Tipo' },
+              {
+                key: 'publicado_em',
+                label: 'Publicação',
+                render: (r) => fmtDate(String(r.publicado_em || '').slice(0, 10)),
+              },
+              {
+                key: 'ativo',
+                label: 'Visível',
+                render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+              },
+            ]}
+            fields={[
+              { name: 'titulo', label: 'Título', required: true, full: true },
+              { name: 'resumo', label: 'Resumo', full: true },
+              {
+                name: 'conteudo',
+                label: 'Conteúdo',
+                type: 'textarea',
+                full: true,
+              },
+              {
+                name: 'tipo',
+                label: 'Tipo',
+                type: 'select',
+                options: [
+                  { value: 'aviso', label: 'Aviso' },
+                  { value: 'estudo', label: 'Estudo' },
+                  { value: 'noticia', label: 'Notícia' },
+                ],
+              },
+              { name: 'publicado_em', label: 'Publicar em', type: 'date' },
+              { name: 'ativo', label: 'Visível', type: 'checkbox' },
+            ]}
+          />
+          <PortalPublicationFilesAdmin publicacoes={publicacoes.rows} />
+          <CrudPage
+            table="portal_eventos"
+            title="Eventos"
+            order="inicio_em"
+            ascending
+            searchKeys={['titulo', 'local', 'descricao']}
+            columns={[
+              { key: 'titulo', label: 'Evento' },
+              {
+                key: 'inicio_em',
+                label: 'Início',
+                render: (r) => new Date(r.inicio_em).toLocaleString('pt-BR'),
+              },
+              { key: 'local', label: 'Local' },
+              {
+                key: 'ativo',
+                label: 'Ativo',
+                render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+              },
+            ]}
+            fields={[
+              { name: 'titulo', label: 'Título', required: true, full: true },
+              {
+                name: 'descricao',
+                label: 'Descrição',
+                type: 'textarea',
+                full: true,
+              },
+              {
+                name: 'inicio_em',
+                label: 'Início',
+                type: 'datetime-local',
+                required: true,
+              },
+              { name: 'fim_em', label: 'Fim', type: 'datetime-local' },
+              { name: 'local', label: 'Local' },
+              { name: 'vagas', label: 'Vagas', type: 'number' },
+              { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+            ]}
+          />
+          <CrudPage
+            table="portal_jornadas"
+            title="Jornadas e cursos"
+            order="ordem"
+            ascending
+            searchKeys={['nome', 'descricao']}
+            columns={[
+              { key: 'nome', label: 'Jornada' },
+              { key: 'descricao', label: 'Descrição' },
+              { key: 'ordem', label: 'Ordem' },
+              {
+                key: 'ativo',
+                label: 'Ativa',
+                render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+              },
+            ]}
+            fields={[
+              {
+                name: 'nome',
+                label: 'Nome da jornada ou curso',
+                required: true,
+                full: true,
+              },
+              {
+                name: 'descricao',
+                label: 'Descrição',
+                type: 'textarea',
+                full: true,
+              },
+              { name: 'ordem', label: 'Ordem de exibição', type: 'number' },
+              { name: 'ativo', label: 'Exibir no portal', type: 'checkbox' },
+            ]}
+          />
+        </div>
+      </div>
+    );
+  return (
+    <div className="memberPortal">
+      <ToastStack toasts={toasts} close={close} />
+      <section className="portalWelcome">
+        <div>
+          <span className="eyebrow">Minha comunidade</span>
+          <h1>Olá, {String(profile?.nome || 'bem-vindo').split(' ')[0]}</h1>
+          <p>Acompanhe avisos, próximos encontros e sua jornada na comunidade.</p>
+        </div>
+        {isManager && (
+          <button className="secondary" onClick={() => setAdminView(true)}>
+            Gerenciar conteúdo
+          </button>
+        )}
+      </section>
+      <section className="portalHeroGrid">
+        <article className="contributionCard">
+          <span>Informações para contribuições</span>
+          <h2>Chaves PIX da igreja</h2>
+          <p>Consulte as chaves oficiais disponibilizadas pela igreja.</p>
+          <button onClick={() => setContribuir(true)}>Consultar chaves PIX</button>
+          <small>Esta área é somente informativa. Nenhuma transação é realizada pelo sistema.</small>
+        </article>
+        {proximosEventos[0] && (
+          <article className="nextEventCard">
+            <span className="eyebrow">Próximo evento</span>
+            <h2>{proximosEventos[0].titulo}</h2>
+            <p>
+              {new Date(proximosEventos[0].inicio_em).toLocaleString('pt-BR')} · {proximosEventos[0].local || 'Local a confirmar'}
+            </p>
+            <button className="secondary" onClick={() => confirmarEvento(proximosEventos[0])}>
+              Confirmar presença
+            </button>
+          </article>
+        )}
+      </section>
+      <div className="portalContentGrid">
+        <main>
+          <div className="sectionHeading">
+            <div>
+              <span className="eyebrow">Atualizações</span>
+              <h2>Da sua comunidade</h2>
+            </div>
+          </div>
+          <div className="communityFeed">
+            {posts.length === 0 ? (
+              <div className="emptyState">
+                <b>Nenhuma publicação por enquanto</b>
+                <span>Novos avisos e estudos aparecerão aqui.</span>
+              </div>
+            ) : (
+              posts.map((post) => (
+                <article key={post.id}>
+                  <span className="feedType">{post.tipo || 'Atualização'}</span>
+                  <h3>{post.titulo}</h3>
+                  <p>{post.resumo || post.conteudo}</p>
+                  <PortalPostAttachments publicacaoId={post.id} arquivos={arquivosPublicacoes.rows} />
+                  <small>{post.publicado_em ? new Date(post.publicado_em).toLocaleDateString('pt-BR') : ''}</small>
+                </article>
+              ))
+            )}
+          </div>
+        </main>
+        <aside>
+          <section className="modernPanel">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Jornada</span>
+                <h2>Próximos passos</h2>
+              </div>
+            </div>
+            <div className="journeyList">
+              {jornadas.rows.length === 0 ? (
+                <div className="emptyState">
+                  <b>Nenhuma jornada configurada</b>
+                  <span>Cursos e integrações aparecerão aqui.</span>
+                </div>
+              ) : (
+                jornadas.rows
+                  .filter((j) => j.ativo !== false)
+                  .map((j) => {
+                    const p = progressoMap[j.id];
+                    const pct = Math.max(0, Math.min(100, Number(p?.progresso) || 0));
+                    return (
+                      <div key={j.id}>
+                        <div>
+                          <b>{j.nome}</b>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="progressTrack">
+                          <i style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+          </section>
+          <section className="modernPanel">
+            <div className="sectionHeading">
+              <div>
+                <span className="eyebrow">Agenda</span>
+                <h2>Próximos eventos</h2>
+              </div>
+            </div>
+            <div className="eventList">
+              {proximosEventos.map((e) => (
+                <button className="eventItem" key={e.id} onClick={() => confirmarEvento(e)}>
+                  <time>
+                    {new Date(e.inicio_em).toLocaleDateString('pt-BR', {
+                      day: '2-digit',
+                      month: 'short',
+                    })}
+                  </time>
+                  <span>
+                    <b>{e.titulo}</b>
+                    <small>{e.local || 'Local a confirmar'}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        </aside>
+      </div>
+      {contribuir && (
+        <Modal title="Chaves PIX da igreja" onClose={() => setContribuir(false)}>
+          <div className="contributionModal">
+            <div className="infoBox">
+              <b>Área somente informativa</b>
+              <p>Confira o beneficiário antes de concluir qualquer pagamento no aplicativo do seu banco.</p>
+            </div>
+            <div className="pixKeysList">
+              {pixAtivos.map((item) => (
+                <div className="pixKey" key={item.id}>
+                  <span>{item.identificacao}</span>
+                  <b>{item.chave}</b>
+                  <small>
+                    {item.beneficiario}
+                    {item.banco ? ` · ${item.banco}` : ''}
+                  </small>
+                  <button onClick={() => copiarPix(item)}>Copiar</button>
+                </div>
+              ))}
+              {!pixAtivos.length && (
+                <div className="emptyState">
+                  <b>Nenhuma chave PIX cadastrada</b>
+                  <span>A igreja ainda não disponibilizou informações de PIX neste portal.</span>
+                </div>
+              )}
+            </div>
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="secondary" onClick={() => setContribuir(false)}>
+                Fechar
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function DadosGeraisEmpresaPage() {
+  const tenant = React.useContext(TenantContext);
+  const empresas = useTable('empresas', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+  });
+  const { toasts, push, close } = useToasts();
+  const empresa = empresas.rows.find((e) => e.id === tenant?.empresaId) || {};
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      nome: empresa.nome || '',
+      nome_fantasia: empresa.nome_fantasia || '',
+      cnpj: empresa.cnpj || '',
+      responsavel: empresa.responsavel || '',
+      telefone: empresa.telefone || '',
+      email: empresa.email || '',
+      endereco: empresa.endereco || '',
+      cidade: empresa.cidade || '',
+      estado: empresa.estado || '',
+      cep: empresa.cep || '',
+      obs: empresa.obs || '',
+      logomarca: empresa.logomarca || '',
+    });
+  }, [empresa.id]);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const carregarLogo = (file) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      push('Use uma imagem PNG, JPG ou WEBP.', 'error');
+      return;
+    }
+    if (file.size > 600 * 1024) {
+      push('A logo deve ter no máximo 600 KB.', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => set('logomarca', reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const salvar = async () => {
+    if (!tenant?.empresaId) {
+      push('Nenhuma igreja selecionada.', 'error');
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      nome: form.nome || '',
+      nome_fantasia: form.nome_fantasia || '',
+      cnpj: form.cnpj || '',
+      responsavel: form.responsavel || '',
+      telefone: form.telefone || '',
+      email: form.email || '',
+      endereco: form.endereco || '',
+      cidade: form.cidade || '',
+      estado: form.estado || '',
+      cep: form.cep || '',
+      obs: form.obs || '',
+      logomarca: form.logomarca || '',
+    };
+    const { error } = await supabase.from('empresas').update(payload).eq('id', tenant.empresaId);
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Dados gerais da igreja salvos com sucesso.');
+    empresas.reload();
+    window.dispatchEvent(new CustomEvent('igreja:tableRefresh', { detail: { table: 'empresas' } }));
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero">
+        <h1>🏢 Dados gerais da igreja</h1>
+        <p>Dados cadastrais, identidade visual e informações exibidas no sistema.</p>
+      </div>
+      <div className="grid cols2">
+        <div className="card">
+          <h3>Informações da empresa/igreja</h3>
+          <div className="grid cols2">
+            <div className="field full">
+              <label>Razão/Nome da igreja *</label>
+              <input value={form.nome || ''} onChange={(e) => set('nome', e.target.value)} />
+            </div>
+            <div className="field full">
+              <label>Nome fantasia / Nome exibido</label>
+              <input value={form.nome_fantasia || ''} onChange={(e) => set('nome_fantasia', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>CNPJ</label>
+              <input value={form.cnpj || ''} onChange={(e) => set('cnpj', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Responsável</label>
+              <input value={form.responsavel || ''} onChange={(e) => set('responsavel', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Telefone</label>
+              <input value={form.telefone || ''} onChange={(e) => set('telefone', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>E-mail</label>
+              <input type="email" value={form.email || ''} onChange={(e) => set('email', e.target.value)} />
+            </div>
+            <div className="field full">
+              <label>Endereço</label>
+              <input value={form.endereco || ''} onChange={(e) => set('endereco', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Cidade</label>
+              <input value={form.cidade || ''} onChange={(e) => set('cidade', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>UF</label>
+              <input maxLength="2" value={form.estado || ''} onChange={(e) => set('estado', e.target.value.toUpperCase())} />
+            </div>
+            <div className="field">
+              <label>CEP</label>
+              <input value={form.cep || ''} onChange={(e) => set('cep', e.target.value)} />
+            </div>
+            <div className="field full">
+              <label>Observações</label>
+              <textarea rows="3" value={form.obs || ''} onChange={(e) => set('obs', e.target.value)} />
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>Logo da igreja</h3>
+          <p className="muted">Esta logo aparece no cabeçalho, menu lateral e identificação visual da empresa selecionada.</p>
+          <div className="logoUploader big">
+            {form.logomarca ? <img className="logoPreview wide" src={form.logomarca} alt="Logo da igreja" /> : <div className="logoEmpty">⛪ Logo padrão ativa</div>}
+            <div className="logoActions">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  carregarLogo(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <button type="button" className="secondary" onClick={() => set('logomarca', '')}>
+                Remover logo
+              </button>
+              <small className="muted">Permitido: PNG, JPG ou WEBP. Máximo: 600 KB.</small>
+            </div>
+          </div>
+          <div className="empresaPreview" style={{ borderColor: form.cor_menu || '#1e2a4a' }}>
+            {form.logomarca ? <img src={form.logomarca} alt="Preview" /> : <span>⛪</span>}
+            <div>
+              <b>{form.nome_fantasia || form.nome || 'Igreja Demo'}</b>
+              <small>
+                {form.cidade || 'Cidade'}
+                {form.estado ? `/${form.estado}` : ''}
+              </small>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+        <button className="green" disabled={saving || !form.nome} onClick={salvar}>
+          {saving ? 'Salvando…' : 'Salvar dados gerais'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ThemeDragColorField({ label, value, onChange, fallback = DEFAULT_THEME_COLOR }) {
+  const safeValue = normalizeHexColor(value, fallback);
+  const hsv = rgbToHsv(hexToRgb(safeValue, fallback));
+  const hsvRef = useRef(hsv);
+  const squareRef = useRef(null);
+  const hueRef = useRef(null);
+  const draggingRef = useRef(null);
+
+  useEffect(() => {
+    hsvRef.current = hsv;
+  }, [hsv.h, hsv.s, hsv.v]);
+
+  const hueColor = hsvToHex({ h: hsv.h, s: 1, v: 1 });
+  const commitColor = (nextHsv) => {
+    hsvRef.current = nextHsv;
+    onChange(hsvToHex(nextHsv));
+  };
+
+  const updateFromSquare = (event) => {
+    const rect = squareRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const current = hsvRef.current;
+    const sValue = clamp((event.clientX - rect.left) / rect.width);
+    const vValue = clamp(1 - (event.clientY - rect.top) / rect.height);
+    commitColor({ ...current, s: sValue, v: vValue });
+  };
+
+  const updateFromHue = (event) => {
+    const rect = hueRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const current = hsvRef.current;
+    const hValue = clamp((event.clientX - rect.left) / rect.width) * 360;
+    commitColor({ ...current, h: hValue });
+  };
+
+  useEffect(() => {
+    const onMove = (event) => {
+      if (draggingRef.current === 'square') updateFromSquare(event);
+      if (draggingRef.current === 'hue') updateFromHue(event);
+    };
+    const onUp = () => {
+      draggingRef.current = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, []);
+
+  const beginDrag = (kind, event) => {
+    event.preventDefault();
+    draggingRef.current = kind;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    if (kind === 'square') updateFromSquare(event);
+    if (kind === 'hue') updateFromHue(event);
+  };
+
+  const handleHexInput = (event) => {
+    const raw = event.target.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(raw)) onChange(raw);
+  };
+
+  return (
+    <div className="themeActivePicker">
+      <div className="themeActivePickerTitle">
+        <b>{label}</b>
+        <span>{safeValue.toUpperCase()}</span>
+      </div>
+      <div
+        ref={squareRef}
+        className="themeColorSquare"
+        style={{
+          '--picker-hue': hueColor,
+          '--picker-x': `${hsv.s * 100}%`,
+          '--picker-y': `${(1 - hsv.v) * 100}%`,
+        }}
+        onPointerDown={(event) => beginDrag('square', event)}
+        role="slider"
+        aria-label={`${label}: saturação e brilho`}
+      >
+        <span />
+      </div>
+      <div ref={hueRef} className="themeHueSlider" style={{ '--picker-hue-left': `${(hsv.h / 360) * 100}%` }} onPointerDown={(event) => beginDrag('hue', event)} role="slider" aria-label={`${label}: matiz`}>
+        <span />
+      </div>
+      <div className="themeColorMeta compact">
+        <span className="themeColorSwatch" style={{ background: safeValue }} />
+        <input value={safeValue.toUpperCase()} onChange={handleHexInput} maxLength={7} aria-label={`${label} em hexadecimal`} />
+      </div>
+    </div>
+  );
+}
+
+const THEME_COLOR_FIELDS = [
+  ['cor_principal', 'Principal', DEFAULT_THEME_COLOR],
+  ['cor_secundaria', 'Secundária', DEFAULT_SECONDARY_COLOR],
+  ['cor_cards', 'Cards', DEFAULT_CARD_COLOR],
+  ['cor_icones', 'Ícones', DEFAULT_ICON_COLOR],
+  ['cor_titulos', 'Títulos', DEFAULT_TITLE_COLOR],
+  ['cor_fundo', 'Fundo', DEFAULT_BACKGROUND_COLOR],
+];
+
+function TemaSistemaPage() {
+  const tenant = React.useContext(TenantContext);
+  const empresas = useTable('empresas', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+  });
+  const { toasts, push, close } = useToasts();
+  const empresa = empresas.rows.find((e) => e.id === tenant?.empresaId) || {};
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [activeColorKey, setActiveColorKey] = useState('cor_principal');
+
+  useEffect(() => {
+    setForm({
+      tema_preset: empresa.tema_preset || 'labrea',
+      cor_menu: empresa.cor_menu || empresa.cor_principal || DEFAULT_THEME_COLOR,
+      cor_principal: empresa.cor_principal || empresa.cor_menu || DEFAULT_THEME_COLOR,
+      cor_secundaria: empresa.cor_secundaria || DEFAULT_SECONDARY_COLOR,
+      cor_cards: empresa.cor_cards || DEFAULT_CARD_COLOR,
+      cor_icones: empresa.cor_icones || DEFAULT_ICON_COLOR,
+      cor_titulos: empresa.cor_titulos || DEFAULT_TITLE_COLOR,
+      cor_fundo: empresa.cor_fundo || DEFAULT_BACKGROUND_COLOR,
+      tamanho_fonte_sistema: normalizeFontSizePreset(empresa.tamanho_fonte_sistema || empresa.tamanho_fonte || getStoredFontPreset(empresa) || 'normal'),
+      estilo_icones: normalizeIconStyle(empresa.estilo_icones || getStoredIconStyle(empresa) || 'classico'),
+    });
+  }, [empresa.id]);
+
+  const set = (k, v) =>
+    setForm((f) => ({
+      ...f,
+      tema_preset: 'personalizado',
+      [k]: v,
+      ...(k === 'cor_principal' ? { cor_menu: v } : {}),
+    }));
+  const setFontSize = (value) =>
+    setForm((f) => ({
+      ...f,
+      tamanho_fonte_sistema: normalizeFontSizePreset(value),
+    }));
+  const aplicarPresetTema = (key) => {
+    const preset = THEME_PRESETS[key] || THEME_PRESETS.labrea;
+    setForm((f) => ({
+      ...f,
+      tema_preset: key,
+      cor_menu: preset.principal,
+      cor_principal: preset.principal,
+      cor_secundaria: preset.secundaria,
+      cor_cards: preset.cards,
+      cor_icones: preset.icones,
+      cor_titulos: preset.titulos,
+      cor_fundo: preset.fundo,
+      tamanho_fonte_sistema: f.tamanho_fonte_sistema || 'normal',
+      estilo_icones: normalizeIconStyle(f.estilo_icones || 'classico'),
+    }));
+  };
+  const resetarTemaPadrao = () => aplicarPresetTema('labrea');
+  const previewTheme = empresaThemeStyle(form);
+  const selectedFontPreset = normalizeFontSizePreset(form.tamanho_fonte_sistema || 'normal');
+  const selectedIconStyle = normalizeIconStyle(form.estilo_icones || 'classico');
+
+  const salvar = async () => {
+    if (!tenant?.empresaId) {
+      push('Nenhuma igreja selecionada.', 'error');
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      tema_preset: form.tema_preset || 'personalizado',
+      cor_menu: form.cor_principal || DEFAULT_THEME_COLOR,
+      cor_principal: form.cor_principal || DEFAULT_THEME_COLOR,
+      cor_secundaria: form.cor_secundaria || DEFAULT_SECONDARY_COLOR,
+      cor_cards: form.cor_cards || DEFAULT_CARD_COLOR,
+      cor_icones: form.cor_icones || DEFAULT_ICON_COLOR,
+      cor_titulos: form.cor_titulos || DEFAULT_TITLE_COLOR,
+      cor_fundo: form.cor_fundo || DEFAULT_BACKGROUND_COLOR,
+      tamanho_fonte_sistema: normalizeFontSizePreset(form.tamanho_fonte_sistema || 'normal'),
+      estilo_icones: normalizeIconStyle(form.estilo_icones || 'classico'),
+    };
+    let payloadAtual = { ...payload };
+    let { error } = await supabase.from('empresas').update(payloadAtual).eq('id', tenant.empresaId);
+    let fonteSalvaLocalmente = false;
+    let iconesSalvosLocalmente = false;
+    if (error && /estilo_icones|schema cache|column/i.test(error.message || '')) {
+      const { estilo_icones, ...semIcones } = payloadAtual;
+      payloadAtual = semIcones;
+      storageSet(`igreja:${tenant.empresaId}:estilo_icones`, estilo_icones);
+      iconesSalvosLocalmente = true;
+      ({ error } = await supabase.from('empresas').update(payloadAtual).eq('id', tenant.empresaId));
+    }
+    if (error && /tamanho_fonte_sistema|schema cache|column/i.test(error.message || '')) {
+      const { tamanho_fonte_sistema, ...semFonte } = payloadAtual;
+      payloadAtual = semFonte;
+      storageSet(`igreja:${tenant.empresaId}:tamanho_fonte_sistema`, tamanho_fonte_sistema);
+      fonteSalvaLocalmente = true;
+      ({ error } = await supabase.from('empresas').update(payloadAtual).eq('id', tenant.empresaId));
+    }
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    if (!fonteSalvaLocalmente && tenant?.empresaId) storageRemove(`igreja:${tenant.empresaId}:tamanho_fonte_sistema`);
+    if (!iconesSalvosLocalmente && tenant?.empresaId) storageRemove(`igreja:${tenant.empresaId}:estilo_icones`);
+    const observacoesLocais = [fonteSalvaLocalmente ? 'tamanho da fonte' : '', iconesSalvosLocalmente ? 'estilo dos ícones' : ''].filter(Boolean);
+    push(observacoesLocais.length ? `Tema salvo. ${observacoesLocais.join(' e ')} aplicado(s) neste navegador; execute as migrações pendentes para salvar no banco.` : 'Tema do sistema salvo com sucesso.');
+    empresas.reload();
+    window.dispatchEvent(new CustomEvent('igreja:tableRefresh', { detail: { table: 'empresas' } }));
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero compactHero">
+        <h1>🎨 Tema do sistema</h1>
+        <p>Personalize somente as cores internas da igreja. Dados cadastrais e logo ficam em Dados gerais da igreja.</p>
+      </div>
+      <div className="card themeSystemCard compactThemeSystem" style={previewTheme}>
+        <div className="toolbar compactThemeHeader">
+          <div>
+            <h3>Preferências de tema</h3>
+            <p className="muted">Selecione uma cor na lista, arraste no seletor e veja a prévia ao lado em tempo real.</p>
+          </div>
+          <div className="themeHeaderActions">
+            <button type="button" className="secondary" onClick={resetarTemaPadrao} disabled={saving}>
+              Tema padrão
+            </button>
+            <button type="button" className="green" disabled={saving} onClick={salvar}>
+              {saving ? 'Salvando…' : 'Salvar tema'}
+            </button>
+          </div>
+        </div>
+        <div className="themeEditorLayout">
+          <section className="themeEditorPanel">
+            <div className="field themePresetField">
+              <label>Tema pronto</label>
+              <select value={form.tema_preset || 'labrea'} onChange={(e) => aplicarPresetTema(e.target.value)}>
+                {Object.entries(THEME_PRESETS).map(([key, p]) => (
+                  <option key={key} value={key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fontSizeThemeBox">
+              <div className="fontSizeThemeTitle">
+                <label>Tamanho da fonte</label>
+                <small>{FONT_SIZE_PRESETS[selectedFontPreset].desc}</small>
+              </div>
+              <div className="fontSizeOptions">
+                {Object.entries(FONT_SIZE_PRESETS).map(([key, option]) => (
+                  <button key={key} type="button" className={`fontSizeOption ${selectedFontPreset === key ? 'active' : ''}`} onClick={() => setFontSize(key)}>
+                    <span>{option.label}</span>
+                    <b style={{ fontSize: option.menu }}>{option.menu}px</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="iconStyleThemeBox">
+              <div className="iconStyleThemeTitle">
+                <label>Ícones do menu lateral</label>
+                <small>{ICON_STYLE_PRESETS[selectedIconStyle].desc}</small>
+              </div>
+              <div className="iconStyleOptions" role="radiogroup" aria-label="Estilo dos ícones do menu lateral">
+                {Object.entries(ICON_STYLE_PRESETS).map(([key, option]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedIconStyle === key}
+                    className={`iconStyleOption ${selectedIconStyle === key ? 'active' : ''}`}
+                    onClick={() => setForm((current) => ({ ...current, tema_preset: 'personalizado', estilo_icones: key }))}
+                  >
+                    <span className={`iconStyleMiniMenu iconStyleMiniMenu--${key}`} aria-hidden="true">
+                      <span><LtSvgIcon name="dashboard" variant={key} /><small>Dashboard</small></span>
+                      <span><LtSvgIcon name="financeiro" variant={key} /><small>Financeiro</small></span>
+                      <span><LtSvgIcon name="configuracoes" variant={key} /><small>Configurações</small></span>
+                    </span>
+                    <b>{option.label}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div
+              className="themeColorList"
+              style={{
+                '--theme-editor-sidebar': normalizeHexColor(form.cor_principal, '#0f2942'),
+                '--theme-editor-accent': normalizeHexColor(form.cor_secundaria, '#1d6fa4'),
+              }}
+            >
+              {THEME_COLOR_FIELDS.map(([key, label, fallback]) => {
+                const color = normalizeHexColor(form[key], fallback);
+                return (
+                  <button key={key} type="button" className={`themeColorListItem ${activeColorKey === key ? 'active' : ''}`} onClick={() => setActiveColorKey(key)}>
+                    <span className="themeColorDot" style={{ background: color }} />
+                    <b>{label}</b>
+                    <small>{color.toUpperCase()}</small>
+                  </button>
+                );
+              })}
+            </div>
+            {THEME_COLOR_FIELDS.filter(([key]) => key === activeColorKey).map(([key, label, fallback]) => (
+              <ThemeDragColorField key={key} label={`Cor ${label.toLowerCase()}`} value={form[key] || fallback} fallback={fallback} onChange={(v) => set(key, v)} />
+            ))}
+          </section>
+          <section className={`themeLivePreview improved compactPreview iconStyle-${selectedIconStyle}`}>
+            <aside className="sidebarIconPreview">
+              <b>Menu</b>
+              <span><i><LtSvgIcon name="dashboard" variant={selectedIconStyle} /></i>Dashboard</span>
+              <span><i><LtSvgIcon name="financeiro" variant={selectedIconStyle} /></i>Financeiro</span>
+              <span><i><LtSvgIcon name="secretaria" variant={selectedIconStyle} /></i>Secretaria</span>
+            </aside>
+            <main>
+              <div className="themePreviewTopbar">
+                <b>Pré-visualização</b>
+                <small>Atualização em tempo real.</small>
+              </div>
+              <div className="themePreviewStat">
+                <small>Entradas</small>
+                <strong>R$ 5.094,00</strong>
+              </div>
+              <div className="themePreviewCard">
+                <span>⛪</span>
+                <div>
+                  <b>Card do sistema</b>
+                  <small>Cards e ícones seguem as cores escolhidas.</small>
+                </div>
+              </div>
+              <div className="themePreviewActions">
+                <button type="button">Botão principal</button>
+                <button type="button" className="secondary">
+                  Secundário
+                </button>
+              </div>
+              <div className="themePreviewTable">
+                <div>
+                  <b>Coluna</b>
+                  <b>Status</b>
+                </div>
+                <div>
+                  <span>Lançamento exemplo</span>
+                  <em>Ativo</em>
+                </div>
+              </div>
+            </main>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BackupGeralPage() {
+  const tenant = React.useContext(TenantContext);
+  const { toasts, push, close } = useToasts();
+  const [loading, setLoading] = useState(false);
+  const backupTables = ['empresas', 'profiles', 'tipos_caixa', 'categorias_despesas', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'transferencias_agendadas', 'fechamentos_mensais', 'membros', 'turmas_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_manutencoes'];
+
+  const exportar = async () => {
+    if (!tenant?.empresaId) {
+      push('Nenhuma igreja selecionada.', 'error');
+      return;
+    }
+    setLoading(true);
+    const dump = {
+      versao: APP_VERSION,
+      tipo: 'backup_geral_igreja',
+      empresa_id: tenant.empresaId,
+      gerado_em: new Date().toISOString(),
+      tabelas: {},
+    };
+    for (const table of backupTables) {
+      let query = supabase.from(table).select('*');
+      if (TENANT_TABLES.has(table)) query = query.eq('empresa_id', tenant.empresaId);
+      if (table === 'empresas') query = query.eq('id', tenant.empresaId);
+      if (table === 'profiles') query = query.eq('empresa_id', tenant.empresaId);
+      const { data, error } = await query;
+      if (error) {
+        setLoading(false);
+        push(`Erro ao exportar ${table}: ${error.message}`, 'error');
+        return;
+      }
+      dump.tabelas[table] = data || [];
+    }
+    const blob = new Blob([JSON.stringify(dump, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const data = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `backup-igreja-${data}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setLoading(false);
+    push('Backup geral exportado com sucesso.');
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero">
+        <h1>💾 Backup geral</h1>
+        <p>Exportação completa dos dados da igreja selecionada para arquivo JSON.</p>
+      </div>
+      <div className="grid cols2">
+        <div className="card">
+          <h3>Exportar backup</h3>
+          <p className="muted">Gera um arquivo com dados gerais, usuários da igreja, financeiro, secretaria, EBD e patrimônio.</p>
+          <button className="green" disabled={loading} onClick={exportar}>
+            {loading ? 'Gerando backup…' : 'Baixar backup geral'}
+          </button>
+        </div>
+        <div className="card">
+          <h3>Restauração</h3>
+          <p className="muted">Por segurança, a restauração geral deve ser feita pelo usuário Master ou via rotina administrativa controlada, evitando sobrescrever dados por engano.</p>
+          <div className="warningBox">
+            <b>Recomendado:</b> use a restauração apenas em ambiente de desenvolvimento ou com confirmação formal do cliente.
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>O que entra no backup</h3>
+        <div className="chips">
+          {backupTables.map((t) => (
+            <span key={t} className="chip">
+              {t}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CadastroMestrePage({ table, title, descricao = 'Cadastro mestre da igreja.', moduleKey, createLabel, codeKey = '', softDeleteOnly = false }) {
+  const codeColumn = codeKey
+    ? [
+        {
+          key: codeKey,
+          label: 'Cód.',
+          render: (r) => <b className="cadastroCode">{formatCadastroCode(r[codeKey])}</b>,
+        },
+      ]
+    : [];
+  const codeField = codeKey
+    ? [
+        {
+          name: codeKey,
+          label: 'Código',
+          type: 'number',
+          readOnly: true,
+          help: 'Gerado automaticamente pelo sistema.',
+        },
+      ]
+    : [];
+  return (
+    <CrudPage
+      table={table}
+      title={title}
+      order="nome"
+      ascending
+      searchKeys={['nome', 'descricao', ...(codeKey ? [codeKey] : [])]}
+      moduleKey={moduleKey}
+      createLabel={createLabel}
+      softDeleteOnly={softDeleteOnly}
+      columns={[
+        ...codeColumn,
+        { key: 'nome', label: 'Nome' },
+        { key: 'descricao', label: 'Descrição' },
+        {
+          key: 'ativo',
+          label: 'Ativo',
+          render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[...codeField, { name: 'nome', label: 'Nome', required: true, full: true }, { name: 'descricao', label: 'Descrição', type: 'textarea', full: true }, { name: 'ativo', label: 'Ativo', type: 'checkbox' }]}
+    />
+  );
+}
+function TiposReceitaPage() {
+  return <CadastroMestrePage table="tipos_receita" title="Tipos de Receita" codeKey="numero_tipo" />;
+}
+function FormasPagamentoPage() {
+  return <CadastroMestrePage table="formas_pagamento" title="Formas de Pagamento" />;
+}
+function CentrosCustoPage() {
+  return <CadastroMestrePage table="centros_custo" title="Centros de Custo" />;
+}
+function CongregacoesPage() {
+  return <CadastroMestrePage table="congregacoes" title="Congregações" />;
+}
+function MinisteriosPage() {
+  return <CadastroMestrePage table="ministerios" title="Ministérios" />;
+}
+function MinisteriosSecretariaPage() {
+  return <CadastroMestrePage table="ministerios" title="Ministérios" descricao="Departamentos e equipes da igreja." moduleKey="secretaria" createLabel="+ Novo Ministério" />;
+}
+function SetoresPage() {
+  return <CadastroMestrePage table="setores" title="Setores" />;
+}
+function CargosPage() {
+  return <CadastroMestrePage table="cargos" title="Cargos" />;
+}
+function CargosSecretariaPage() {
+  return <CadastroMestrePage table="cargos" title="Cargos" descricao="Funções e cargos dos membros." moduleKey="secretaria" createLabel="+ Novo Cargo" />;
+}
+function ProfissoesPage() {
+  return <CadastroMestrePage table="profissoes" title="Profissões" />;
+}
+function FamiliasPage() {
+  return <CadastroMestrePage table="familias" title="Famílias" />;
+}
+function EscolaridadesPage() {
+  return <CadastroMestrePage table="escolaridades" title="Escolaridades" />;
+}
+function FornecedoresPage() {
+  return <CadastroMestrePage table="patrimonio_fornecedores" title="Fornecedores" />;
+}
+
+function BancosPage() {
+  return <CadastroMestrePage table="bancos" title="Bancos" descricao="Bancos usados na importação bancária e nos caixas." />;
+}
+function CredoresPage() {
+  return (
+    <CrudPage
+      table="credores"
+      title="Credores"
+      order="nome"
+      ascending
+      searchKeys={['nome', 'razao_social', 'documento', 'email', 'telefone', 'cidade']}
+      softDeleteOnly
+      columns={[
+        { key: 'nome', label: 'Nome / identificação' },
+        { key: 'razao_social', label: 'Razão social' },
+        { key: 'documento', label: 'CPF/CNPJ' },
+        { key: 'telefone', label: 'Telefone' },
+        { key: 'cidade', label: 'Cidade' },
+        { key: 'ativo', label: 'Ativo', render: (r) => (r.ativo !== false ? 'Sim' : 'Não') },
+      ]}
+      fields={[
+        { name: 'tipo_pessoa', label: 'Tipo de pessoa', type: 'select', options: ['Pessoa jurídica', 'Pessoa física'] },
+        { name: 'nome', label: 'Nome / identificação', required: true },
+        { name: 'razao_social', label: 'Razão social / nome completo' },
+        { name: 'documento', label: 'CPF/CNPJ' },
+        { name: 'inscricao_estadual', label: 'Inscrição estadual/municipal' },
+        { name: 'telefone', label: 'Telefone / WhatsApp' },
+        { name: 'email', label: 'E-mail', type: 'email' },
+        { name: 'chave_pix', label: 'Chave PIX' },
+        { name: 'cep', label: 'CEP' },
+        { name: 'endereco', label: 'Endereço' },
+        { name: 'numero', label: 'Número' },
+        { name: 'complemento', label: 'Complemento' },
+        { name: 'bairro', label: 'Bairro' },
+        { name: 'cidade', label: 'Cidade' },
+        { name: 'uf', label: 'UF' },
+        { name: 'observacoes', label: 'Observações internas', type: 'textarea', full: true, help: 'Não aparecem no recibo.' },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+      ]}
+    />
+  );
+}
+function SalasEbdPage() {
+  return <CadastroMestrePage table="salas_ebd" title="Salas da EBD" descricao="Salas e locais usados nas turmas de EBD." />;
+}
+function ProfessoresEbdPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const professores = useTable('professores_ebd', {
+    order: 'nome',
+    ascending: true,
+  });
+  const membros = useTable('membros', { order: 'nome', ascending: true });
+  const turmas = useTable('turmas_ebd', { order: 'nome', ascending: true });
+  const vinculos = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
+  const [turmaFiltro, setTurmaFiltro] = useState('');
+  const [statusFiltro, setStatusFiltro] = useState('ativos');
+  const [form, setForm] = useState({
+    membro_id: '',
+    nome: '',
+    email: '',
+    telefone: '',
+    observacoes: '',
+    ativo: true,
+    turma_ids: [],
+    principal_turma_ids: [],
+  });
+  const canCreate = access.can('ebd', 'create');
+  const canUpdate = access.can('ebd', 'update');
+  const canDelete = access.can('ebd', 'delete');
+
+  const turmaOptions = useMemo(() => turmas.rows.filter((t) => t.ativo !== false).map((t) => ({ value: t.id, label: t.nome })), [turmas.rows]);
+  const membroOptions = useMemo(() => membros.rows.filter((m) => m.ativo !== false).map((m) => ({ value: m.id, label: m.nome || 'Membro sem nome' })), [membros.rows]);
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [String(t.id), t.nome])), [turmas.rows]);
+
+  const professorVinculos = useCallback((professorId, { onlyActive = true } = {}) => vinculos.rows.filter((v) => String(v.professor_id) === String(professorId || '')).filter((v) => !onlyActive || v.ativo !== false), [vinculos.rows]);
+
+  const turmasDoProfessor = useCallback(
+    (professorId) =>
+      professorVinculos(professorId)
+        .map((v) => turmaMap[String(v.turma_id)] || 'Turma')
+        .filter(Boolean),
+    [professorVinculos, turmaMap],
+  );
+
+  const filtered = professores.rows.filter((p) => {
+    const turmaIds = professorVinculos(p.id).map((v) => String(v.turma_id));
+    const turmaNames = turmaIds.map((id) => turmaMap[id]).join(' ');
+    const qOk = !q || normalizeText(`${p.nome || ''} ${p.email || ''} ${p.telefone || ''} ${turmaNames}`).includes(normalizeText(q));
+    const turmaOk = !turmaFiltro || turmaIds.includes(String(turmaFiltro));
+    const statusOk = statusFiltro === 'todos' || (statusFiltro === 'ativos' ? p.ativo !== false : p.ativo === false);
+    return qOk && turmaOk && statusOk;
+  });
+
+  const fillFromMember = (membroId) => {
+    const membro = membros.rows.find((m) => String(m.id) === String(membroId || ''));
+    setForm((f) => ({
+      ...f,
+      membro_id: membroId || '',
+      nome: membro?.nome || f.nome,
+      email: membro?.email || f.email || '',
+      telefone: membro?.telefone_celular || membro?.telefone || membro?.telefone_residencial || f.telefone || '',
+    }));
+  };
+
+  const openNew = () => {
+    setForm({
+      membro_id: '',
+      nome: '',
+      email: '',
+      telefone: '',
+      observacoes: '',
+      ativo: true,
+      turma_ids: [],
+      principal_turma_ids: [],
+    });
+    setModal('new');
+  };
+  const openEdit = (professor) => {
+    const profVinculos = professorVinculos(professor.id, { onlyActive: true });
+    setForm({
+      membro_id: professor.membro_id || '',
+      nome: professor.nome || '',
+      email: professor.email || '',
+      telefone: professor.telefone || '',
+      observacoes: professor.observacoes || '',
+      ativo: professor.ativo !== false,
+      turma_ids: profVinculos.map((v) => String(v.turma_id)),
+      principal_turma_ids: profVinculos.filter((v) => v.principal === true).map((v) => String(v.turma_id)),
+    });
+    setModal(professor);
+  };
+
+  const syncTurmas = async (professorId, userId) => {
+    const selectedTurmas = new Set((form.turma_ids || []).map(String));
+    const principalTurmas = new Set((form.principal_turma_ids || []).map(String));
+    const atuais = vinculos.rows.filter((v) => String(v.professor_id) === String(professorId));
+    let error = null;
+
+    for (const row of atuais) {
+      if (!selectedTurmas.has(String(row.turma_id))) {
+        const res = await supabase.from('turma_professores_ebd').delete().eq('id', row.id);
+        if (res.error) {
+          error = res.error;
+          break;
+        }
+      }
+    }
+    if (error) return error;
+
+    for (const turmaId of selectedTurmas) {
+      const principal = principalTurmas.has(String(turmaId));
+      if (principal) {
+        const clear = await supabase.from('turma_professores_ebd').update({ principal: false }).eq('turma_id', turmaId);
+        if (clear.error) {
+          error = clear.error;
+          break;
+        }
+      }
+      const existing = atuais.find((v) => String(v.turma_id) === String(turmaId));
+      const payload = {
+        empresa_id: tenant?.empresaId,
+        turma_id: turmaId,
+        professor_id: professorId,
+        principal,
+        ativo: true,
+      };
+      const res = existing ? await supabase.from('turma_professores_ebd').update(payload).eq('id', existing.id) : await supabase.from('turma_professores_ebd').insert({ ...payload, created_by: userId ?? null });
+      if (res.error) {
+        error = res.error;
+        break;
+      }
+    }
+    return error;
+  };
+
+  const save = async () => {
+    const editing = modal && modal !== 'new' && modal.id;
+    if (editing && !canUpdate) {
+      push('Seu perfil não tem permissão para editar professor da EBD.', 'error');
+      return;
+    }
+    if (!editing && !canCreate) {
+      push('Seu perfil não tem permissão para cadastrar professor da EBD.', 'error');
+      return;
+    }
+    if (!form.nome?.trim()) {
+      push('Informe o nome do professor.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = {
+      membro_id: form.membro_id || null,
+      nome: form.nome.trim(),
+      email: form.email?.trim() || null,
+      telefone: form.telefone?.trim() || null,
+      observacoes: form.observacoes || null,
+      ativo: form.ativo !== false,
+    };
+    let professorId = modal?.id;
+    let error = null;
+    if (editing) {
+      const res = await supabase.from('professores_ebd').update(payload).eq('id', modal.id);
+      error = res.error;
+    } else {
+      const res = await supabase
+        .from('professores_ebd')
+        .insert({
+          ...payload,
+          empresa_id: tenant?.empresaId,
+          created_by: userData?.user?.id ?? null,
+        })
+        .select('id')
+        .single();
+      error = res.error;
+      professorId = res.data?.id;
+    }
+    if (!error && professorId) error = await syncTurmas(professorId, userData?.user?.id);
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Professor salvo e vinculado às turmas com sucesso.');
+    setModal(null);
+    professores.reload();
+    vinculos.reload();
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'professores_ebd' },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'turma_professores_ebd' },
+      }),
+    );
+  };
+
+  const remove = async (professor) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir professor da EBD.', 'error');
+      return;
+    }
+    if (!confirm('Excluir este professor? Os vínculos com turmas serão removidos.')) return;
+    const { error } = await supabase.from('professores_ebd').delete().eq('id', professor.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Professor excluído.');
+    professores.reload();
+    vinculos.reload();
+  };
+
+  const setTurmaIds = (ids) =>
+    setForm((f) => ({
+      ...f,
+      turma_ids: ids,
+      principal_turma_ids: (f.principal_turma_ids || []).filter((id) => ids.map(String).includes(String(id))),
+    }));
+  const togglePrincipalTurma = (turmaId, checked) =>
+    setForm((f) => {
+      const set = new Set((f.principal_turma_ids || []).map(String));
+      if (checked) set.add(String(turmaId));
+      else set.delete(String(turmaId));
+      return { ...f, principal_turma_ids: Array.from(set) };
+    });
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2 style={{ margin: 0 }}>Professores da EBD</h2>
+          <p className="muted" style={{ margin: '6px 0 0' }}>
+            Cadastre professores, vincule a membros e informe em quais turmas eles atuam.
+          </p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar professor, e-mail ou turma…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 250 }} />
+          <div style={{ minWidth: 220 }}>
+            <SearchableSelect value={turmaFiltro} onChange={setTurmaFiltro} options={turmaOptions} placeholder="Todas as turmas" />
+          </div>
+          <select value={statusFiltro} onChange={(e) => setStatusFiltro(e.target.value)} style={{ minWidth: 130 }}>
+            <option value="ativos">Ativos</option>
+            <option value="inativos">Inativos</option>
+            <option value="todos">Todos</option>
+          </select>
+          <span className="muted smallText">
+            {filtered.length}/{professores.rows.length}
+          </span>
+          <button
+            className="secondary smallBtn"
+            type="button"
+            onClick={() => {
+              setQ('');
+              setTurmaFiltro('');
+              setStatusFiltro('ativos');
+            }}
+          >
+            Limpar
+          </button>
+          {canCreate && <button onClick={openNew}>+ Novo professor</button>}
+        </div>
+      </div>
+      <div className="selectionInfoNote">
+        <b>Professor por turma</b>
+        <span>O professor cadastrado aqui pode ser vinculado a uma ou várias turmas. Na chamada, a lista de professor será filtrada pela turma escolhida.</span>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Professor</th>
+              <th>E-mail</th>
+              <th>Telefone</th>
+              <th>Turmas</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {professores.loading && (
+              <tr>
+                <td colSpan="6" className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!professores.loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan="6" className="center muted">
+                  Nenhum professor encontrado.
+                </td>
+              </tr>
+            )}
+            {filtered.map((p) => {
+              const nomesTurmas = turmasDoProfessor(p.id);
+              return (
+                <tr key={p.id}>
+                  <td>
+                    <b>{p.nome}</b>
+                    {p.membro_id && <div className="muted smallText">Vinculado a membro</div>}
+                  </td>
+                  <td>{p.email || '—'}</td>
+                  <td>{p.telefone || '—'}</td>
+                  <td>{nomesTurmas.length ? nomesTurmas.join(', ') : <span className="muted">Sem turma vinculada</span>}</td>
+                  <td>
+                    <span className={`badge ${p.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{p.ativo !== false ? 'Ativo' : 'Inativo'}</span>
+                  </td>
+                  <td className="actionsCell">
+                    <div className="actionsInline">
+                      {canUpdate && (
+                        <button className="smallBtn secondary" onClick={() => openEdit(p)}>
+                          Editar
+                        </button>
+                      )}
+                      {canDelete && (
+                        <button className="smallBtn red" onClick={() => remove(p)}>
+                          Excluir
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {modal && (
+        <Modal title={modal === 'new' ? 'Novo registro — Professores da EBD' : 'Editar — Professores da EBD'} onClose={() => setModal(null)} wide>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Vincular a membro cadastrado</label>
+              <SearchableSelect value={form.membro_id} onChange={fillFromMember} options={membroOptions} placeholder="Pesquisar membro cadastrado…" emptyText="Nenhum membro encontrado." />
+              <small className="muted">Opcional. Ao selecionar, nome, e-mail e telefone são preenchidos automaticamente.</small>
+            </div>
+            <div className="field">
+              <label>Nome do professor *</label>
+              <input value={form.nome} onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>E-mail</label>
+              <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
+              <small className="muted">Usado para listar as aulas em “Minhas aulas”.</small>
+            </div>
+            <div className="field">
+              <label>Telefone</label>
+              <input value={form.telefone} onChange={(e) => setForm((f) => ({ ...f, telefone: e.target.value }))} />
+            </div>
+            <div className="field full">
+              <label>Turmas do professor</label>
+              <MultiSearchableSelect value={form.turma_ids} onChange={setTurmaIds} options={turmaOptions} placeholder="Selecionar uma ou mais turmas…" emptyText="Nenhuma turma cadastrada." />
+              <small className="muted">Essa escolha também alimenta a lista de professores na chamada da turma.</small>
+            </div>
+            {form.turma_ids.length > 0 && (
+              <div className="field full">
+                <label>Professor principal por turma</label>
+                <div className="linkedTurmaPrincipalList">
+                  {form.turma_ids.map((id) => (
+                    <label key={id} className="checkLine linkedTurmaPrincipalItem">
+                      <input type="checkbox" checked={(form.principal_turma_ids || []).map(String).includes(String(id))} onChange={(e) => togglePrincipalTurma(id, e.target.checked)} /> <span>{turmaMap[String(id)] || 'Turma'}</span>
+                      <small>Marque para sugerir este professor automaticamente nas aulas dessa turma.</small>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="field full">
+              <label>Observações</label>
+              <textarea rows="3" value={form.observacoes} onChange={(e) => setForm((f) => ({ ...f, observacoes: e.target.value }))} />
+            </div>
+            <label className="checkLine">
+              <input type="checkbox" checked={form.ativo !== false} onChange={(e) => setForm((f) => ({ ...f, ativo: e.target.checked }))} /> Professor ativo
+            </label>
+          </div>
+          <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={() => setModal(null)}>
+              Cancelar
+            </button>
+            <button disabled={saving || !form.nome?.trim()} onClick={save}>
+              {saving ? 'Salvando…' : 'Salvar professor'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ProfessoresTurmaEbdPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const turmas = useLookup('turmas_ebd');
+  const professores = useLookup('professores_ebd');
+  const { rows, loading, reload } = useTable('turma_professores_ebd', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState('');
+  const [form, setForm] = useState({
+    turma_id: '',
+    professor_id: '',
+    principal: false,
+    ativo: true,
+  });
+  const canCreate = access.can('ebd', 'create');
+  const canUpdate = access.can('ebd', 'update');
+  const canDelete = access.can('ebd', 'delete');
+  const turmaMap = useMemo(() => Object.fromEntries(turmas.rows.map((t) => [t.id, t.nome])), [turmas.rows]);
+  const professorMap = useMemo(() => Object.fromEntries(professores.rows.map((p) => [p.id, p])), [professores.rows]);
+
+  useEffect(() => {
+    if (!modal) return;
+    setForm({
+      turma_id: modal === 'new' ? '' : modal.turma_id || '',
+      professor_id: modal === 'new' ? '' : modal.professor_id || '',
+      principal: modal === 'new' ? false : modal.principal === true,
+      ativo: modal === 'new' ? true : modal.ativo !== false,
+    });
+  }, [modal]);
+
+  const filtered = rows.filter((r) => {
+    const text = normalizeText(`${turmaMap[r.turma_id] || ''} ${professorMap[r.professor_id]?.nome || ''} ${professorMap[r.professor_id]?.email || ''}`);
+    return !q || text.includes(normalizeText(q));
+  });
+
+  const save = async () => {
+    const editing = modal && modal !== 'new' && modal.id;
+    if (editing && !canUpdate) {
+      push('Seu perfil não tem permissão para editar vínculo de professor.', 'error');
+      return;
+    }
+    if (!editing && !canCreate) {
+      push('Seu perfil não tem permissão para vincular professor à turma.', 'error');
+      return;
+    }
+    if (!form.turma_id || !form.professor_id) {
+      push('Selecione a turma e o professor.', 'warning');
+      return;
+    }
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    if (form.principal) {
+      await supabase.from('turma_professores_ebd').update({ principal: false }).eq('turma_id', form.turma_id);
+    }
+    const payload = {
+      empresa_id: tenant?.empresaId,
+      turma_id: form.turma_id,
+      professor_id: form.professor_id,
+      principal: form.principal === true,
+      ativo: form.ativo !== false,
+    };
+    let error;
+    if (editing) ({ error } = await supabase.from('turma_professores_ebd').update(payload).eq('id', modal.id));
+    else ({ error } = await supabase.from('turma_professores_ebd').insert({ ...payload, created_by: userData?.user?.id ?? null }));
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Professor vinculado à turma com sucesso.');
+    setModal(null);
+    reload();
+    window.dispatchEvent(
+      new CustomEvent('igreja:tableRefresh', {
+        detail: { table: 'turma_professores_ebd' },
+      }),
+    );
+  };
+
+  const remove = async (row) => {
+    if (!canDelete) {
+      push('Seu perfil não tem permissão para excluir vínculo.', 'error');
+      return;
+    }
+    if (!confirm('Remover este professor da turma?')) return;
+    const { error } = await supabase.from('turma_professores_ebd').delete().eq('id', row.id);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Vínculo removido.');
+    reload();
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar">
+        <div>
+          <h2>Professores por turma</h2>
+          <p className="muted">Vincule um ou mais professores a cada turma. O professor principal será sugerido ao gerar aulas e na chamada.</p>
+        </div>
+        <div className="row">
+          <input placeholder="Buscar turma ou professor…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {canCreate && <button onClick={() => setModal('new')}>+ Vincular professor</button>}
+        </div>
+      </div>
+      <div className="selectionInfoNote">
+        <b>Regra da chamada</b>
+        <span>Na chamada, o professor passa a ser escolhido em lista somente entre os professores vinculados à turma.</span>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Turma</th>
+              <th>Professor</th>
+              <th>Principal</th>
+              <th>Status</th>
+              <th className="center">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={5} className="center">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={5} className="center muted">
+                  Nenhum professor vinculado às turmas.
+                </td>
+              </tr>
+            )}
+            {filtered.map((r) => {
+              const prof = professorMap[r.professor_id] || {};
+              return (
+                <tr key={r.id}>
+                  <td>
+                    <b>{turmaMap[r.turma_id] || '—'}</b>
+                  </td>
+                  <td>{professorEbdLabel(prof)}</td>
+                  <td>{r.principal ? 'Sim' : 'Não'}</td>
+                  <td>
+                    <span className={`badge ${r.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{r.ativo !== false ? 'Ativo' : 'Inativo'}</span>
+                  </td>
+                  <td className="actionsCell">
+                    <div className="actionsInline">
+                      {canUpdate && (
+                        <button className="smallBtn secondary" onClick={() => setModal(r)}>
+                          Editar
+                        </button>
+                      )}
+                      {canDelete && (
+                        <button className="smallBtn red" onClick={() => remove(r)}>
+                          Excluir
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {modal && (
+        <Modal title={modal === 'new' ? 'Vincular professor à turma' : 'Editar vínculo de professor'} onClose={() => setModal(null)} wide>
+          <div className="grid cols2">
+            <div className="field">
+              <label>Turma *</label>
+              <SearchableSelect value={form.turma_id} onChange={(v) => setForm((f) => ({ ...f, turma_id: v }))} options={turmas.options} />
+            </div>
+            <div className="field">
+              <label>Professor *</label>
+              <SearchableSelect
+                value={form.professor_id}
+                onChange={(v) => setForm((f) => ({ ...f, professor_id: v }))}
+                options={professores.options.map((o) => ({
+                  ...o,
+                  label: professorEbdLabel(professorMap[o.value] || { nome: o.label }),
+                }))}
+              />
+            </div>
+            <label className="checkLine">
+              <input type="checkbox" checked={!!form.principal} onChange={(e) => setForm((f) => ({ ...f, principal: e.target.checked }))} /> Professor principal da turma
+            </label>
+            <label className="checkLine">
+              <input type="checkbox" checked={form.ativo !== false} onChange={(e) => setForm((f) => ({ ...f, ativo: e.target.checked }))} /> Vínculo ativo
+            </label>
+          </div>
+          <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={() => setModal(null)}>
+              Cancelar
+            </button>
+            <button disabled={saving || !form.turma_id || !form.professor_id} onClick={save}>
+              {saving ? 'Salvando…' : 'Salvar vínculo'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function PatrimonioSituacoesPage() {
+  return (
+    <div>
+      <div className="hero compactHero">
+        <h1>📌 Situações do Patrimônio</h1>
+        <p>Use os status padrão: Ativo, Em manutenção e Baixado. Novos status personalizados poderão ser incluídos em tabela própria em uma próxima migração.</p>
+      </div>
+      <div className="grid cols3">
+        <div className="card">
+          <h3>Ativo</h3>
+          <p className="muted">Bem disponível e em uso.</p>
+        </div>
+        <div className="card">
+          <h3>Em manutenção</h3>
+          <p className="muted">Bem temporariamente indisponível.</p>
+        </div>
+        <div className="card">
+          <h3>Baixado</h3>
+          <p className="muted">Bem retirado do patrimônio ativo.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+function RegrasImportacaoPage() {
+  return (
+    <CrudPage
+      table="regras_importacao_bancaria"
+      title="Regras de Importação OFX"
+      order="padrao"
+      ascending
+      searchKeys={['padrao', 'categoria', 'tipo']}
+      columns={[
+        { key: 'padrao', label: 'Quando contiver' },
+        { key: 'tipo', label: 'Tipo' },
+        { key: 'categoria', label: 'Categoria/Tipo' },
+        {
+          key: 'ativo',
+          label: 'Ativa',
+          render: (r) => (r.ativo !== false ? 'Sim' : 'Não'),
+        },
+      ]}
+      fields={[
+        {
+          name: 'padrao',
+          label: 'Texto a localizar no histórico',
+          required: true,
+          full: true,
+        },
+        {
+          name: 'tipo',
+          label: 'Tipo',
+          type: 'select',
+          options: [
+            { value: 'receita', label: 'Receita' },
+            { value: 'despesa', label: 'Despesa' },
+          ],
+          required: true,
+        },
+        { name: 'categoria', label: 'Categoria/Tipo sugerido', required: true },
+        { name: 'ativo', label: 'Ativa', type: 'checkbox' },
+      ]}
+    />
+  );
+}
+
+const DEFAULT_MENU_HUBS = {
+  financeiro: {
+    icon: '💰',
+    title: 'Financeiro',
+    desc: 'Livro caixa, receitas, despesas, transferências, fechamento mensal e relatórios.',
+    sections: [
+      {
+        title: 'Financeiro',
+        items: [
+          {
+            id: 'livro',
+            icon: '📘',
+            title: 'Livro Caixa',
+            desc: 'Fonte única da verdade financeira.',
+            color: 'blue',
+          },
+          {
+            id: 'receita',
+            icon: '💚',
+            title: 'Cadastrar Receita',
+            desc: 'Dízimos, ofertas, doações e outras entradas.',
+            color: 'green',
+          },
+          {
+            id: 'despesa',
+            icon: '💸',
+            title: 'Cadastrar Despesa',
+            desc: 'Contas, pagamentos e saídas por caixa.',
+            color: 'red',
+          },
+          {
+            id: 'transferencia',
+            icon: '🔁',
+            title: 'Transferência entre caixas',
+            desc: 'Movimentação interna entre caixas.',
+            color: 'purple',
+          },
+          {
+            id: 'importacao',
+            icon: '🏦',
+            title: 'Importação Bancária OFX',
+            desc: 'BB e Bradesco com classificação automática.',
+            color: 'orange',
+          },
+          {
+            id: 'historico_importacoes',
+            icon: '📋',
+            title: 'Histórico de Importações',
+            desc: 'Visualizar, editar ou cancelar importações bancárias.',
+            color: 'slate',
+          },
+          {
+            id: 'fechamento',
+            icon: '🔒',
+            title: 'Fechamento Mensal',
+            desc: 'Apuração mensal por caixa.',
+            color: 'blue',
+          },
+          {
+            id: 'relatorios',
+            icon: '📊',
+            title: 'Relatórios',
+            desc: 'Resumo financeiro mensal e por caixa.',
+            color: 'green',
+          },
+          {
+            id: 'prestacao',
+            icon: '🎞️',
+            title: 'Prestação de Contas',
+            desc: 'Gerar resumo trimestral em slides com itens selecionados.',
+            color: 'purple',
+          },
+        ],
+      },
+    ],
+  },
+  secretaria: {
+    icon: '🗂️',
+    title: 'Secretaria',
+    desc: 'Membros, famílias, ministérios, cargos e relatórios.',
+    sections: [
+      {
+        title: 'Secretaria',
+        items: [
+          {
+            id: 'membros',
+            icon: '👥',
+            title: 'Cadastro de membros',
+            desc: 'Dados cadastrais, contato, batismo e situação.',
+            color: 'blue',
+          },
+          {
+            id: 'familias',
+            icon: '👨‍👩‍👧',
+            title: 'Famílias',
+            desc: 'Agrupamento familiar e responsáveis.',
+            color: 'green',
+          },
+          {
+            id: 'filhos',
+            icon: '🧒',
+            title: 'Filhos e dependentes',
+            desc: 'Responsáveis legais e vínculo familiar.',
+            color: 'blue',
+          },
+          {
+            id: 'ministerios',
+            icon: '🙌',
+            title: 'Ministérios',
+            desc: 'Departamentos e equipes da igreja.',
+            color: 'purple',
+          },
+          {
+            id: 'cargos',
+            icon: '🎖️',
+            title: 'Cargos',
+            desc: 'Cargos e funções dos membros.',
+            color: 'orange',
+          },
+          {
+            id: 'relatorios',
+            icon: '📊',
+            title: 'Relatórios',
+            desc: 'Listagens e indicadores da secretaria.',
+            color: 'slate',
+          },
+        ],
+      },
+    ],
+  },
+  ebd: {
+    icon: '📖',
+    title: 'EBD — Escola Bíblica Dominical',
+    desc: 'Turmas, calendário de aulas, chamada e relatórios de frequência.',
+    sections: [
+      {
+        title: 'EBD',
+        items: [
+          {
+            id: 'turmas',
+            icon: '📚',
+            title: 'Turmas',
+            desc: 'Cadastro de turmas, dia, horário e configuração geral.',
+            color: 'purple',
+          },
+          {
+            id: 'professores',
+            icon: '👨‍🏫',
+            title: 'Professores',
+            desc: 'Cadastro próprio dos professores da EBD.',
+            color: 'green',
+          },
+          {
+            id: 'professores_turma',
+            icon: '🔗',
+            title: 'Professores por turma',
+            desc: 'Vincular professores e definir principal por turma.',
+            color: 'blue',
+          },
+          {
+            id: 'matriculas',
+            icon: '📝',
+            title: 'Matrícula de Membros',
+            desc: 'Vincular membros às turmas de EBD.',
+            color: 'blue',
+          },
+          {
+            id: 'gerar_aulas',
+            icon: '🗓️',
+            title: 'Gerar aulas',
+            desc: 'Gerar automaticamente as aulas do período.',
+            color: 'orange',
+          },
+          {
+            id: 'aulas',
+            icon: '📅',
+            title: 'Aulas geradas',
+            desc: 'Consultar, editar, cancelar ou criar aula avulsa.',
+            color: 'slate',
+          },
+          {
+            id: 'minhas_aulas',
+            icon: '👨‍🏫',
+            title: 'Minhas aulas',
+            desc: 'Tela do professor para fazer chamada.',
+            color: 'green',
+          },
+          {
+            id: 'chamada',
+            icon: '✅',
+            title: 'Chamada / Frequência',
+            desc: 'Registrar presença dos alunos por aula.',
+            color: 'green',
+          },
+          {
+            id: 'relatorios',
+            icon: '📊',
+            title: 'Relatórios EBD',
+            desc: 'Presenças, ausências e frequência por turma.',
+            color: 'blue',
+          },
+        ],
+      },
+    ],
+  },
+  patrimonio: {
+    icon: '🏛️',
+    title: 'Patrimônio',
+    desc: 'Controle completo de bens, categorias, locais e manutenções.',
+    sections: [
+      {
+        title: 'Patrimônio',
+        items: [
+          {
+            id: 'cadastro',
+            icon: '🏷️',
+            title: 'Cadastro',
+            desc: 'Bens patrimoniais da igreja, valor, status e localização.',
+            color: 'orange',
+          },
+          {
+            id: 'categorias',
+            icon: '🗃️',
+            title: 'Categorias',
+            desc: 'Móveis, eletrônicos, instrumentos, veículos e outros grupos.',
+            color: 'blue',
+          },
+          {
+            id: 'locais',
+            icon: '📍',
+            title: 'Locais',
+            desc: 'Templo, salas, secretaria, congregações e departamentos.',
+            color: 'green',
+          },
+          {
+            id: 'manutencoes',
+            icon: '🛠️',
+            title: 'Manutenções',
+            desc: 'Histórico de manutenção, custo, data e responsável.',
+            color: 'red',
+          },
+        ],
+      },
+    ],
+  },
+  cadastros: {
+    icon: '⚙️',
+    title: 'Cadastros',
+    desc: 'Cadastros gerais separados por módulo. Você pode alterar nomes, descrições e ordem dos cards em Configurações.',
+    sections: [
+      {
+        title: 'Cadastros Gerais',
+        items: [
+          {
+            id: 'congregacoes',
+            icon: '⛪',
+            title: 'Congregações',
+            desc: 'Sede, congregações e pontos de pregação.',
+            color: 'blue',
+          },
+          {
+            id: 'setores',
+            icon: '🧭',
+            title: 'Setores',
+            desc: 'Setores internos da igreja.',
+            color: 'blue',
+          },
+          {
+            id: 'ministerios',
+            icon: '🙌',
+            title: 'Ministérios',
+            desc: 'Departamentos e equipes da igreja.',
+            color: 'blue',
+          },
+          {
+            id: 'cargos',
+            icon: '🎖️',
+            title: 'Cargos',
+            desc: 'Funções e cargos dos membros.',
+            color: 'blue',
+          },
+          {
+            id: 'profissoes',
+            icon: '💼',
+            title: 'Profissões',
+            desc: 'Profissões usadas no cadastro de membros.',
+            color: 'blue',
+          },
+          {
+            id: 'familias',
+            icon: '👨‍👩‍👧',
+            title: 'Famílias',
+            desc: 'Agrupamentos familiares e responsáveis.',
+            color: 'blue',
+          },
+          {
+            id: 'escolaridades',
+            icon: '🎓',
+            title: 'Escolaridades',
+            desc: 'Níveis de escolaridade.',
+            color: 'blue',
+          },
+        ],
+      },
+      {
+        title: 'Financeiro',
+        items: [
+          {
+            id: 'caixas',
+            icon: '💼',
+            title: 'Caixas',
+            desc: 'Caixas financeiros e contas internas.',
+            color: 'green',
+          },
+          {
+            id: 'tiposReceita',
+            icon: '💚',
+            title: 'Tipos de entrada',
+            desc: 'Dízimos, ofertas, doações e outras entradas.',
+            color: 'green',
+          },
+          {
+            id: 'categorias',
+            icon: '💸',
+            title: 'Categorias de despesas',
+            desc: 'Água, energia, tarifas, manutenção e outras despesas.',
+            color: 'green',
+          },
+          {
+            id: 'prestacaoRelatorios',
+            icon: '🎞️',
+            title: 'Relatórios da prestação',
+            desc: 'Slides/blocos que podem ser usados na prestação de contas.',
+            color: 'purple',
+          },
+          {
+            id: 'prestacaoGrupos',
+            icon: '🧩',
+            title: 'Grupos dos slides',
+            desc: 'Linhas e agrupamentos exibidos em cada slide.',
+            color: 'purple',
+          },
+          {
+            id: 'formas',
+            icon: '💳',
+            title: 'Formas de pagamento',
+            desc: 'Dinheiro, Pix, cartão, transferência e cheque.',
+            color: 'green',
+          },
+          {
+            id: 'centros',
+            icon: '🏷️',
+            title: 'Centros de custo',
+            desc: 'Administração, missões, construção e departamentos.',
+            color: 'green',
+          },
+          {
+            id: 'credores',
+            icon: '🏢',
+            title: 'Credores',
+            desc: 'Fornecedores, bancos e prestadores.',
+            color: 'green',
+          },
+          {
+            id: 'bancos',
+            icon: '🏦',
+            title: 'Bancos',
+            desc: 'BB, Bradesco e outros bancos usados em OFX.',
+            color: 'green',
+          },
+          {
+            id: 'regrasOfx',
+            icon: '⚙️',
+            title: 'Regras de importação OFX',
+            desc: 'Classificação automática de extratos bancários.',
+            color: 'green',
+          },
+        ],
+      },
+      {
+        title: 'EBD',
+        items: [
+          {
+            id: 'turmasEbd',
+            icon: '📖',
+            title: 'Turmas',
+            desc: 'Turmas e classes da Escola Bíblica.',
+            color: 'purple',
+          },
+          {
+            id: 'salasEbd',
+            icon: '🚪',
+            title: 'Salas',
+            desc: 'Salas e locais de aula.',
+            color: 'purple',
+          },
+          {
+            id: 'professoresEbd',
+            icon: '👩‍🏫',
+            title: 'Professores',
+            desc: 'Cadastro de apoio para professores/facilitadores.',
+            color: 'purple',
+          },
+        ],
+      },
+      {
+        title: 'Patrimônio',
+        items: [
+          {
+            id: 'patCat',
+            icon: '🏷️',
+            title: 'Categorias',
+            desc: 'Categorias dos bens patrimoniais.',
+            color: 'orange',
+          },
+          {
+            id: 'patLocais',
+            icon: '📍',
+            title: 'Locais',
+            desc: 'Locais onde os bens ficam guardados.',
+            color: 'orange',
+          },
+          {
+            id: 'fornecedores',
+            icon: '🏭',
+            title: 'Fornecedores',
+            desc: 'Fornecedores usados no patrimônio.',
+            color: 'orange',
+          },
+          {
+            id: 'patSituacoes',
+            icon: '📌',
+            title: 'Situações',
+            desc: 'Situações padrão dos bens.',
+            color: 'orange',
+          },
+        ],
+      },
+    ],
+  },
+};
+const MENU_CONFIG_LABELS = {
+  financeiro: 'Financeiro',
+  secretaria: 'Secretaria',
+  ebd: 'EBD',
+  patrimonio: 'Patrimônio',
+  cadastros: 'Cadastros',
+};
+const MENU_COLOR_OPTIONS = [
+  { value: 'blue', label: 'Azul' },
+  { value: 'green', label: 'Verde' },
+  { value: 'orange', label: 'Laranja' },
+  { value: 'purple', label: 'Roxo' },
+  { value: 'red', label: 'Vermelho' },
+  { value: 'slate', label: 'Cinza' },
+  { value: 'teal', label: 'Verde água' },
+  { value: 'pink', label: 'Rosa' },
+  { value: 'dark', label: 'Escuro' },
+];
+const MENU_CARD_PALETTE = {
+  blue: {
+    accent: '#1d78b6',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#f5fbff 100%)',
+    iconBg: '#eaf6ff',
+    text: '#0b1728',
+    muted: '#52657d',
+  },
+  green: {
+    accent: '#16a34a',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#f2fff7 100%)',
+    iconBg: '#e8fff0',
+    text: '#0b1728',
+    muted: '#4e6b5b',
+  },
+  orange: {
+    accent: '#f59e0b',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#fff8ed 100%)',
+    iconBg: '#fff2d6',
+    text: '#0b1728',
+    muted: '#715b34',
+  },
+  purple: {
+    accent: '#7c3aed',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#f8f4ff 100%)',
+    iconBg: '#f0e8ff',
+    text: '#0b1728',
+    muted: '#625278',
+  },
+  red: {
+    accent: '#dc2626',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#fff5f5 100%)',
+    iconBg: '#ffe8e8',
+    text: '#0b1728',
+    muted: '#704747',
+  },
+  slate: {
+    accent: '#64748b',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)',
+    iconBg: '#eef2f7',
+    text: '#0b1728',
+    muted: '#52657d',
+  },
+  teal: {
+    accent: '#0f9f9a',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#effefd 100%)',
+    iconBg: '#dffafa',
+    text: '#0b1728',
+    muted: '#456d70',
+  },
+  pink: {
+    accent: '#db2777',
+    bg: 'linear-gradient(180deg,#ffffff 0%,#fff3f8 100%)',
+    iconBg: '#ffe4f1',
+    text: '#0b1728',
+    muted: '#745064',
+  },
+  dark: {
+    accent: '#38bdf8',
+    bg: 'linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%)',
+    iconBg: 'rgba(255,255,255,.12)',
+    text: '#ffffff',
+    muted: '#dbeafe',
+  },
+};
+function menuCardStyle(color) {
+  const p = MENU_CARD_PALETTE[color] || MENU_CARD_PALETTE.blue;
+  return {
+    '--shortcut-accent': p.accent,
+    '--shortcut-bg': p.bg,
+    '--shortcut-icon-bg': p.iconBg,
+    '--shortcut-icon-color': p.accent,
+    '--shortcut-title-color': p.text,
+    '--shortcut-desc-color': p.muted,
+  };
+}
+const DEFAULT_SIDE_MENU = [
+  {
+    title: 'Início',
+    items: [
+      { id: 'dashboard', icon: '📊', label: 'Dashboard', visible: true },
+    ],
+  },
+  {
+    title: 'Operação',
+    items: [
+      { id: 'financeiro', icon: '💰', label: 'Financeiro', visible: true },
+      { id: 'secretaria', icon: '🗂️', label: 'Comunidade', visible: true },
+      { id: 'ebd', icon: '📖', label: 'Ensino / EBD', visible: true },
+      { id: 'patrimonio', icon: '🏛️', label: 'Patrimônio', visible: true },
+      { id: 'portal', icon: '◉', label: 'Portal do Membro', visible: true },
+    ],
+  },
+  {
+    title: 'Administração',
+    items: [
+      { id: 'cadastros', icon: '⚙️', label: 'Cadastros', visible: true },
+      { id: 'usuarios', icon: '🔐', label: 'Usuários', visible: true },
+      {
+        id: 'configuracoes',
+        icon: '🛠️',
+        label: 'Configurações',
+        visible: true,
+      },
+      { id: 'assinatura', icon: '💳', label: 'Assinatura', visible: true },
+      { id: 'logs', icon: '🔎', label: 'Logs / Auditoria', visible: true },
+      { id: 'tutorial', icon: '🚀', label: 'Tutorial', visible: true },
+    ],
+  },
+];
+const MENU_ICON_OPTIONS = [
+  '📊', '🏠', '🧭', '💰', '💳', '🧾', '🏦', '🗂️', '📁', '📋', '📖', '🎓',
+  '🏛️', '📦', '🧰', '◉', '👥', '👤', '⚙️', '🛠️', '🔐', '🔎', '📈', '🚀',
+  '🎨', '💾', '📅', '🔔', '✅', '⭐', '❤️', '⛪', '🙏', '🎵', '📣', '🌐',
+];
+
+function MenuIconPicker({ value = '', onChange, label = 'Selecionar ícone' }) {
+  const [open, setOpen] = useState(false);
+  const normalizedValue = String(value || '');
+  return (
+    <div className="menuIconPicker">
+      <div className="menuIconPicker__control">
+        <input
+          aria-label={label}
+          value={normalizedValue}
+          placeholder="Digite ou escolha"
+          onChange={(e) => onChange?.(e.target.value)}
+        />
+        <button
+          type="button"
+          className="secondary smallBtn menuIconPicker__toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          title="Escolher outro ícone"
+        >
+          ＋
+        </button>
+      </div>
+      {open && (
+        <div className="menuIconPicker__panel" role="listbox" aria-label="Biblioteca de ícones">
+          {MENU_ICON_OPTIONS.map((icon) => (
+            <button
+              key={icon}
+              type="button"
+              className={`menuIconPicker__option ${normalizedValue === icon ? 'active' : ''}`}
+              onClick={() => {
+                onChange?.(icon);
+                setOpen(false);
+              }}
+              aria-label={`Usar ícone ${icon}`}
+            >
+              {icon}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="secondary menuIconPicker__clear"
+            onClick={() => {
+              onChange?.('');
+              setOpen(false);
+            }}
+          >
+            Remover ícone
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function cloneMenuConfig(v) {
+  return JSON.parse(JSON.stringify(v));
+}
+const MENU_ITEM_VISUAL_KEYS = new Set(['icon', 'title', 'label', 'desc', 'color', 'visible']);
+function visualMenuPatch(item) {
+  const patch = {};
+  Object.entries(item || {}).forEach(([key, value]) => {
+    if (MENU_ITEM_VISUAL_KEYS.has(key)) patch[key] = value;
+  });
+  return patch;
+}
+function mergeMenuItemsById(baseItems = [], customItems = [], preserveCustomOrder = false) {
+  const safeCustom = Array.isArray(customItems) ? customItems.filter(Boolean) : [];
+  const baseById = new Map((baseItems || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  const customById = new Map(safeCustom.filter((item) => item?.id).map((item) => [item.id, item]));
+
+  if (preserveCustomOrder) {
+    const ordered = [];
+    const used = new Set();
+    safeCustom.forEach((customItem) => {
+      const baseItem = baseById.get(customItem?.id);
+      if (!baseItem || used.has(baseItem.id)) return;
+      ordered.push({ ...baseItem, ...visualMenuPatch(customItem) });
+      used.add(baseItem.id);
+    });
+    (baseItems || []).forEach((baseItem) => {
+      if (!baseItem?.id || used.has(baseItem.id)) return;
+      ordered.push({ ...baseItem, ...visualMenuPatch(customById.get(baseItem.id)) });
+    });
+    return ordered;
+  }
+
+  return (baseItems || []).map((baseItem, index) => {
+    const byId = customById.get(baseItem.id);
+    const byIndex = safeCustom[index];
+    const compatibleByIndex = !byIndex?.id || byIndex.id === baseItem.id;
+    const patchSource = byId || (compatibleByIndex ? byIndex : null);
+    return { ...baseItem, ...visualMenuPatch(patchSource) };
+  });
+}
+function mergeMenuConfig(base, custom) {
+  const raw = custom?.hubs || custom || {};
+  const next = cloneMenuConfig(base);
+  Object.entries(raw).forEach(([mod, cfg]) => {
+    if (!next[mod] || !cfg) return;
+    const sections = next[mod].sections.map((sec, si) => {
+      const csec = cfg.sections?.[si] || {};
+      return {
+        ...sec,
+        title: csec.title || sec.title,
+        items: mergeMenuItemsById(sec.items, csec.items || []),
+      };
+    });
+    next[mod] = {
+      ...next[mod],
+      icon: cfg.icon || next[mod].icon,
+      title: cfg.title || next[mod].title,
+      desc: cfg.desc || next[mod].desc,
+      sections,
+    };
+  });
+  return next;
+}
+function mergeSideMenu(custom) {
+  const raw = custom?.sideNav || custom?.menu_lateral || null;
+  const base = cloneMenuConfig(DEFAULT_SIDE_MENU);
+  if (!Array.isArray(raw)) return base;
+  return base.map((grp, gi) => {
+    const cgrp = raw[gi] || {};
+    return {
+      ...grp,
+      title: cgrp.title || grp.title,
+      items: mergeMenuItemsById(grp.items, cgrp.items || [], true),
+    };
+  });
+}
+function menuConfigPayload(value) {
+  if (value?.hubs || value?.sideNav) return value;
+  return { hubs: value || {}, sideNav: DEFAULT_SIDE_MENU };
+}
+function useMenuPersonalizado() {
+  const tenant = React.useContext(TenantContext);
+  const key = `menus_personalizados_${tenant?.empresaId || 'global'}`;
+  const config = useTable('app_configuracoes', {
+    order: 'chave',
+    ascending: true,
+  });
+  const row = config.rows.find((r) => r.chave === key || r.chave === 'menus_personalizados_global');
+  const valor = menuConfigPayload(row?.valor || {});
+  return {
+    loading: config.loading,
+    key,
+    rows: config.rows,
+    reload: config.reload,
+    menus: mergeMenuConfig(DEFAULT_MENU_HUBS, valor),
+    sideNav: mergeSideMenu(valor),
+    valor,
+  };
+}
+function LTModuleCard({ icon = '📌', title, desc, color = 'blue', onClick }) {
+  const palette = MENU_CARD_PALETTE[color] || MENU_CARD_PALETTE.blue;
+  const style = {
+    '--lt-card-accent': palette.accent || MENU_CARD_PALETTE.blue.accent,
+    '--lt-card-icon-bg': palette.iconBg || '#eef6fb',
+  };
+  const handleKeyDown = (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && onClick) {
+      e.preventDefault();
+      onClick();
+    }
+  };
+  return (
+    <div className="ltModuleCard" style={style} onClick={onClick} onKeyDown={handleKeyDown} role="button" tabIndex={0}>
+      <div className="ltModuleCard__accent" />
+      <div className="ltModuleCard__icon">{icon}</div>
+      <div className="ltModuleCard__content">
+        <h3>{title}</h3>
+        <p>{desc}</p>
+      </div>
+    </div>
+  );
+}
+function HubCard({ item, onClick }) {
+  if (item.visible === false) return null;
+  return <LTModuleCard icon={item.icon || '📌'} title={item.title} desc={item.desc} color={item.color || 'blue'} onClick={onClick} />;
+}
+function ModuleHubHome({ moduleKey, setPage }) {
+  const { menus } = useMenuPersonalizado();
+  const hub = menus[moduleKey] || DEFAULT_MENU_HUBS[moduleKey];
+  return (
+    <div className={`moduleHub moduleHub-${moduleKey}`}>
+      <div className="hero compactHero moduleHeroModern">
+        <h1>
+          {hub.icon} {hub.title}
+        </h1>
+        <p>{hub.desc}</p>
+      </div>
+      {hub.sections.map((section, idx) => (
+        <section key={`${section.title}-${idx}`} className="hubSection">
+          <div className="hubSectionTitle">
+            <span>{section.title}</span>
+            <small>{section.items.filter((i) => i.visible !== false).length} opções</small>
+          </div>
+          <div className="shortcutGrid">
+            {section.items.map((item) => (
+              <HubCard key={item.id} item={item} onClick={() => setPage(item.id)} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+function ConfiguradorMenusPage() {
+  const tenant = React.useContext(TenantContext);
+  const { toasts, push, close } = useToasts();
+  const key = `menus_personalizados_${tenant?.empresaId || 'global'}`;
+  const config = useTable('app_configuracoes', {
+    order: 'chave',
+    ascending: true,
+  });
+  const savedRaw = config.rows.find((r) => r.chave === key)?.valor || {};
+  const saved = menuConfigPayload(savedRaw);
+  const [draft, setDraft] = useState(() => ({
+    hubs: mergeMenuConfig(DEFAULT_MENU_HUBS, saved),
+    sideNav: mergeSideMenu(saved),
+  }));
+  const [tab, setTab] = useState('lateral');
+  useEffect(() => {
+    setDraft({
+      hubs: mergeMenuConfig(DEFAULT_MENU_HUBS, saved),
+      sideNav: mergeSideMenu(saved),
+    });
+  }, [JSON.stringify(savedRaw), key]);
+  const updateItem = (moduleKey, sectionIndex, itemIndex, patch) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      next.hubs[moduleKey].sections[sectionIndex].items[itemIndex] = {
+        ...next.hubs[moduleKey].sections[sectionIndex].items[itemIndex],
+        ...patch,
+      };
+      return next;
+    });
+  const moveItem = (moduleKey, sectionIndex, itemIndex, dir) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      const arr = next.hubs[moduleKey].sections[sectionIndex].items;
+      const ni = itemIndex + dir;
+      if (ni < 0 || ni >= arr.length) return prev;
+      [arr[itemIndex], arr[ni]] = [arr[ni], arr[itemIndex]];
+      return next;
+    });
+  const updateHub = (moduleKey, patch) =>
+    setDraft((prev) => ({
+      ...prev,
+      hubs: {
+        ...prev.hubs,
+        [moduleKey]: { ...prev.hubs[moduleKey], ...patch },
+      },
+    }));
+  const updateSectionTitle = (moduleKey, si, title) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      next.hubs[moduleKey].sections[si].title = title;
+      return next;
+    });
+  const updateSideGroup = (gi, patch) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      next.sideNav[gi] = { ...next.sideNav[gi], ...patch };
+      return next;
+    });
+  const updateSideItem = (gi, ii, patch) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      next.sideNav[gi].items[ii] = { ...next.sideNav[gi].items[ii], ...patch };
+      return next;
+    });
+  const moveSideItem = (gi, ii, dir) =>
+    setDraft((prev) => {
+      const next = cloneMenuConfig(prev);
+      const arr = next.sideNav[gi].items;
+      const ni = ii + dir;
+      if (ni < 0 || ni >= arr.length) return prev;
+      [arr[ii], arr[ni]] = [arr[ni], arr[ii]];
+      return next;
+    });
+  const save = async () => {
+    const payload = {
+      hubs: draft.hubs,
+      sideNav: draft.sideNav,
+      atualizado_em: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('app_configuracoes').upsert({ chave: key, valor: payload });
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Menus salvos. A navegação lateral e os cards já usam esta configuração.');
+    config.reload();
+  };
+  const restore = async () => {
+    const payload = {
+      hubs: cloneMenuConfig(DEFAULT_MENU_HUBS),
+      sideNav: cloneMenuConfig(DEFAULT_SIDE_MENU),
+      atualizado_em: new Date().toISOString(),
+    };
+    setDraft(payload);
+    const { error } = await supabase.from('app_configuracoes').upsert({ chave: key, valor: payload });
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    push('Padrão dos menus restaurado.');
+    config.reload();
+  };
+  return (
+    <div className="menuCustomizerPage">
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero compactHero">
+        <h1>🧩 Personalização de menus</h1>
+        <p>Um único local para alterar o menu lateral principal e os cards internos dos módulos.</p>
+      </div>
+      <div className="toolbar stickyActions">
+        <div className="row">
+          <button className={tab === 'lateral' ? '' : 'secondary'} onClick={() => setTab('lateral')}>
+            Menu lateral
+          </button>
+          <button className={tab === 'cards' ? '' : 'secondary'} onClick={() => setTab('cards')}>
+            Cards dos módulos
+          </button>
+        </div>
+        <div className="row">
+          <button className="secondary" onClick={restore}>
+            Restaurar padrão
+          </button>
+          <button onClick={save}>Salvar personalização</button>
+        </div>
+      </div>
+      {tab === 'lateral' && (
+        <section className="card menuEditorCard">
+          <h3>Menu principal/lateral</h3>
+          <p className="muted">Edite textos, ícones e visibilidade do menu da esquerda. Isso corrige o menu principal, não apenas os cards.</p>
+          {draft.sideNav.map((group, gi) => (
+            <div className="menuEditorSection" key={gi}>
+              <div className="field compact">
+                <label>Grupo do menu</label>
+                <input value={group.title || ''} onChange={(e) => updateSideGroup(gi, { title: e.target.value })} />
+              </div>
+              <div className="tablewrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Visível</th>
+                      <th>Ícone</th>
+                      <th>Nome no menu lateral</th>
+                      <th>Ordem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.items.map((item, ii) => (
+                      <tr key={item.id}>
+                        <td className="center">
+                          <input
+                            type="checkbox"
+                            checked={item.visible !== false}
+                            onChange={(e) =>
+                              updateSideItem(gi, ii, {
+                                visible: e.target.checked,
+                              })
+                            }
+                          />
+                        </td>
+                        <td style={{ width: 180 }}>
+                          <MenuIconPicker
+                            value={item.icon || ''}
+                            label={`Ícone de ${item.label || item.id}`}
+                            onChange={(icon) => updateSideItem(gi, ii, { icon })}
+                          />
+                        </td>
+                        <td>
+                          <input value={item.label || ''} onChange={(e) => updateSideItem(gi, ii, { label: e.target.value })} />
+                        </td>
+                        <td style={{ width: 130 }}>
+                          <button className="secondary smallBtn" onClick={() => moveSideItem(gi, ii, -1)}>
+                            ↑
+                          </button>{' '}
+                          <button className="secondary smallBtn" onClick={() => moveSideItem(gi, ii, 1)}>
+                            ↓
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+      {tab === 'cards' &&
+        Object.entries(draft.hubs).map(([moduleKey, hub]) => (
+          <section className="card menuEditorCard" key={moduleKey}>
+            <div className="toolbar">
+              <h3>{MENU_CONFIG_LABELS[moduleKey] || moduleKey}</h3>
+              <div className="row">
+                <div className="field compact">
+                  <label>Ícone</label>
+                  <input value={hub.icon || ''} onChange={(e) => updateHub(moduleKey, { icon: e.target.value })} />
+                </div>
+                <div className="field compact">
+                  <label>Título</label>
+                  <input value={hub.title || ''} onChange={(e) => updateHub(moduleKey, { title: e.target.value })} />
+                </div>
+              </div>
+            </div>
+            <div className="field">
+              <label>Descrição do módulo</label>
+              <input value={hub.desc || ''} onChange={(e) => updateHub(moduleKey, { desc: e.target.value })} />
+            </div>
+            {hub.sections.map((section, si) => (
+              <div className="menuEditorSection" key={si}>
+                <div className="field compact">
+                  <label>Grupo</label>
+                  <input value={section.title || ''} onChange={(e) => updateSectionTitle(moduleKey, si, e.target.value)} />
+                </div>
+                <div className="tablewrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Visível</th>
+                        <th>Ícone</th>
+                        <th>Nome do card</th>
+                        <th>Descrição</th>
+                        <th>Cor</th>
+                        <th>Ordem</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {section.items.map((item, ii) => (
+                        <tr key={item.id}>
+                          <td className="center">
+                            <input
+                              type="checkbox"
+                              checked={item.visible !== false}
+                              onChange={(e) =>
+                                updateItem(moduleKey, si, ii, {
+                                  visible: e.target.checked,
+                                })
+                              }
+                            />
+                          </td>
+                          <td style={{ width: 90 }}>
+                            <input
+                              value={item.icon || ''}
+                              onChange={(e) =>
+                                updateItem(moduleKey, si, ii, {
+                                  icon: e.target.value,
+                                })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              value={item.title || ''}
+                              onChange={(e) =>
+                                updateItem(moduleKey, si, ii, {
+                                  title: e.target.value,
+                                })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              value={item.desc || ''}
+                              onChange={(e) =>
+                                updateItem(moduleKey, si, ii, {
+                                  desc: e.target.value,
+                                })
+                              }
+                            />
+                          </td>
+                          <td style={{ width: 190 }}>
+                            <div className="colorSelectCell">
+                              <select
+                                value={item.color || 'blue'}
+                                onChange={(e) =>
+                                  updateItem(moduleKey, si, ii, {
+                                    color: e.target.value,
+                                  })
+                                }
+                              >
+                                {MENU_COLOR_OPTIONS.map((o) => (
+                                  <option key={o.value} value={o.value}>
+                                    {o.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <span
+                                className="colorPreview"
+                                style={{
+                                  background: MENU_CARD_PALETTE[item.color || 'blue']?.accent || MENU_CARD_PALETTE.blue.accent,
+                                }}
+                              />
+                            </div>
+                          </td>
+                          <td style={{ width: 130 }}>
+                            <button className="secondary smallBtn" onClick={() => moveItem(moduleKey, si, ii, -1)}>
+                              ↑
+                            </button>{' '}
+                            <button className="secondary smallBtn" onClick={() => moveItem(moduleKey, si, ii, 1)}>
+                              ↓
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </section>
+        ))}
+    </div>
+  );
+}
+
+function CadastrosModule() {
+  const [page, setPage] = usePersistentPage('cadastros');
+  const cards = [
+    {
+      sec: 'Cadastros Gerais',
+      items: [
+        ['congregacoes', '⛪ Congregações', 'Sede, congregações e pontos de pregação.'],
+        ['setores', '🧭 Setores', 'Setores internos da igreja.'],
+        ['ministerios', '🙌 Ministérios', 'Departamentos e equipes da igreja.'],
+        ['cargos', '🎖️ Cargos', 'Funções e cargos dos membros.'],
+        ['profissoes', '💼 Profissões', 'Profissões usadas no cadastro de membros.'],
+        ['familias', '👨‍👩‍👧 Famílias', 'Agrupamentos familiares e responsáveis.'],
+        ['escolaridades', '🎓 Escolaridades', 'Níveis de escolaridade.'],
+      ],
+    },
+    {
+      sec: 'Financeiro',
+      items: [
+        ['caixas', '💼 Caixas', 'Caixas financeiros e contas internas.'],
+        ['tiposReceita', '💚 Tipos de entrada', 'Dízimos, ofertas, doações e outras entradas.'],
+        ['categorias', '💸 Categorias de despesas', 'Água, energia, tarifas, manutenção e outras despesas.'],
+        ['prestacaoRelatorios', '🎞️ Relatórios da prestação', 'Slides/blocos usados na prestação de contas.'],
+        ['prestacaoGrupos', '🧩 Grupos dos slides', 'Agrupamentos exibidos dentro dos slides.'],
+        ['formas', '💳 Formas de pagamento', 'Dinheiro, Pix, cartão, transferência e cheque.'],
+        ['centros', '🏷️ Centros de custo', 'Administração, missões, construção e departamentos.'],
+        ['credores', '🏢 Credores', 'Fornecedores, bancos e prestadores.'],
+        ['bancos', '🏦 Bancos', 'BB, Bradesco e outros bancos usados em OFX.'],
+        ['regrasOfx', '⚙️ Regras de importação OFX', 'Classificação automática de extratos bancários.'],
+      ],
+    },
+    {
+      sec: 'EBD',
+      items: [
+        ['turmasEbd', '📖 Turmas', 'Turmas e classes da Escola Bíblica.'],
+        ['salasEbd', '🚪 Salas', 'Salas e locais de aula.'],
+        ['professoresEbd', '👩‍🏫 Professores', 'Cadastro de apoio para professores/facilitadores.'],
+      ],
+    },
+    {
+      sec: 'Patrimônio',
+      items: [
+        ['patCat', '🏷️ Categorias', 'Categorias dos bens patrimoniais.'],
+        ['patLocais', '📍 Locais', 'Locais onde os bens ficam guardados.'],
+        ['fornecedores', '🏭 Fornecedores', 'Fornecedores usados no patrimônio.'],
+        ['patSituacoes', '📌 Situações', 'Situações padrão dos bens.'],
+      ],
+    },
+  ];
+  if (page === 'home') return <ModuleHubHome moduleKey="cadastros" setPage={setPage} />;
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar para Cadastros
+      </button>
+      {page === 'caixas' && <TiposCaixaPage />}
+      {page === 'tiposReceita' && <TiposReceitaPage />}
+      {page === 'categorias' && <CategoriasDespesasPage />}
+      {page === 'prestacaoRelatorios' && <PrestacaoRelatoriosPage />}
+      {page === 'prestacaoGrupos' && <PrestacaoGruposRelatorioPage />}
+      {page === 'formas' && <FormasPagamentoPage />}
+      {page === 'centros' && <CentrosCustoPage />}
+      {page === 'congregacoes' && <CongregacoesPage />}
+      {page === 'ministerios' && <MinisteriosPage />}
+      {page === 'setores' && <SetoresPage />}
+      {page === 'cargos' && <CargosPage />}
+      {page === 'familias' && <FamiliasPage />}
+      {page === 'profissoes' && <ProfissoesPage />}
+      {page === 'escolaridades' && <EscolaridadesPage />}
+      {page === 'fornecedores' && <FornecedoresPage />}
+      {page === 'bancos' && <BancosPage />}
+      {page === 'credores' && <CredoresPage />}
+      {page === 'regrasOfx' && <RegrasImportacaoPage />}
+      {page === 'turmasEbd' && <TurmasEbdPage />}
+      {page === 'salasEbd' && <SalasEbdPage />}
+      {page === 'professoresEbd' && <ProfessoresEbdPage />}
+      {page === 'patCat' && <PatrimonioCategoriasPage />}
+      {page === 'patLocais' && <PatrimonioLocaisPage />}
+      {page === 'patSituacoes' && <PatrimonioSituacoesPage />}
+    </div>
+  );
+}
+
+function ConfiguracoesModule() {
+  const [page, setPage] = usePersistentPage('configuracoes');
+  if (page === 'home')
+    return (
+      <div className="moduleHub moduleHub-configuracoes">
+        <div className="hero compactHero moduleHeroModern">
+          <h1>🛠️ Configurações</h1>
+          <p>Dados da igreja, tema, backup e preferências gerais.</p>
+        </div>
+        <section className="hubSection">
+          <div className="hubSectionTitle">
+            <span>Configurações</span>
+            <small>4 opções</small>
+          </div>
+          <div className="shortcutGrid">
+            <LTModuleCard icon="🏛️" title="Dados gerais da igreja" desc="Nome, CNPJ, responsável, contatos, endereço e logo." color="blue" onClick={() => setPage('dados')} />
+            <LTModuleCard icon="🎨" title="Tema do sistema" desc="Cores internas, temas prontos e pré-visualização." color="orange" onClick={() => setPage('tema')} />
+            <LTModuleCard icon="💾" title="Backup geral" desc="Exportação completa dos dados da igreja selecionada." color="purple" onClick={() => setPage('backup')} />
+            <LTModuleCard icon="🧩" title="Personalizar menus" desc="Altere nomes, descrições, ícones, cores e ordem dos cards." color="green" onClick={() => setPage('menus')} />
+          </div>
+        </section>
+        <div className="infoBox" style={{ marginTop: 16 }}>
+          <b>Organização:</b> caixas, categorias, congregações, cargos, credores, bancos, EBD e patrimônio ficam em <b>Administração › Cadastros</b>. Perfis e permissões ficam em <b>Usuários</b>.
+        </div>
+      </div>
+    );
+  return (
+    <div>
+      <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
+        ← Voltar para Configurações
+      </button>
+      {page === 'dados' && <DadosGeraisEmpresaPage />}
+      {page === 'tema' && <TemaSistemaPage />}
+      {page === 'backup' && <BackupGeralPage />}
+      {page === 'menus' && <ConfiguradorMenusPage />}
+      {page === 'preferencias' && (
+        <div>
+          <div className="hero compactHero">
+            <h1>🎨 Preferências visuais</h1>
+            <p>Preferências visuais gerais ficam concentradas aqui. Para alterar menu lateral e cards, use o menu único Personalizar menus.</p>
+          </div>
+          <div className="grid cols2">
+            <div className="card">
+              <h3>Identidade visual</h3>
+              <p className="muted">Nome, logo e dados cadastrais ficam em Dados gerais; cores ficam em Tema do sistema.</p>
+              <button className="secondary" onClick={() => setPage('tema')}>
+                Abrir tema do sistema
+              </button>
+            </div>
+            <div className="card">
+              <h3>Personalização dos menus</h3>
+              <p className="muted">Existe uma única tela para alterar menu lateral e cards dos módulos, evitando duplicidade.</p>
+              <button onClick={() => setPage('menus')}>Abrir personalizar menus</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TutorialModule() {
+  return (
+    <div>
+      <div className="hero">
+        <h1>🚀 Tutorial</h1>
+        <p>Guia rápido de implantação e uso do Sistema Igreja Online.</p>
+      </div>
+      <div className="grid cols2">
+        <div className="card">
+          <h3>1. Configure a igreja</h3>
+          <p>Informe dados gerais, logo e cores em Configurações.</p>
+        </div>
+        <div className="card">
+          <h3>2. Preencha Cadastros</h3>
+          <p>Cadastre caixas, categorias, congregações, cargos, formas de pagamento e demais listas.</p>
+        </div>
+        <div className="card">
+          <h3>3. Importe membros</h3>
+          <p>Use Secretaria › Cadastro de membros para baixar o modelo, importar e conferir.</p>
+        </div>
+        <div className="card">
+          <h3>4. Lance ou importe financeiro</h3>
+          <p>Use Livro Caixa ou Importação Bancária OFX para registrar entradas e saídas.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* =========================================================
+   ADMIN: usuários e permissões no padrão Transportadora
+========================================================= */
+function badgeLabel(value) {
+  return String(value || '').replace(/\s+/g, '');
+}
+
+function UsuariosPermissoesPage() {
+  const tenant = React.useContext(TenantContext);
+  const { rows, loading, reload } = useTable('profiles', {
+    order: 'nome',
+    ascending: true,
+  });
+  const config = useTable('app_configuracoes', {
+    order: 'chave',
+    ascending: true,
+  });
+  const membros = useLookup('membros');
+  const permissoesConfigKey = `permissoes_usuarios_${tenant?.empresaId || 'global'}`;
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [invitingId, setInvitingId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletingId, setDeletingId] = useState('');
+  const [modoAvancado, setModoAvancado] = useState(false);
+  const [busca, setBusca] = useState('');
+  const [perfil, setPerfil] = useState('todos');
+  const [status, setStatus] = useState('todos');
+
+  const cfg = normalizePermissionsConfig(config.rows.find((r) => r.chave === permissoesConfigKey)?.valor || {});
+  const [local, setLocal] = useState(cfg.menus || DEFAULT_PERMISSIONS);
+  const [dashboardPerms, setDashboardPerms] = useState(cfg.dashboard || DEFAULT_DASHBOARD_PERMISSIONS);
+  const [pay, setPay] = useState(cfg.pagamentos || Object.fromEntries(USER_ROLE_ENTRIES.map(([r]) => [r, Object.fromEntries(PAYMENT_FORMS.map((f) => [f, r === 'admin' || r === 'gerente']))])));
+  const [fin, setFin] = useState(cfg.financeiro || defaultFinancialPermissions);
+  const [roleLabels, setRoleLabels] = useState({
+    ...DEFAULT_ROLE_LABELS,
+    ...(cfg.nomenclaturas || {}),
+  });
+  const [roleDescriptions, setRoleDescriptions] = useState({
+    ...DEFAULT_ROLE_DESCRIPTIONS,
+    ...(cfg.descricoes || {}),
+  });
+  const roleEntries = USER_ROLE_ENTRIES.map(([role]) => [role, roleLabels[role] || DEFAULT_ROLE_LABELS[role] || role]);
+
+  useEffect(() => {
+    const next = config.rows.find((r) => r.chave === permissoesConfigKey)?.valor;
+    const normalized = normalizePermissionsConfig(next || {});
+    if (next?.menus) setLocal(normalized.menus);
+    setDashboardPerms(normalized.dashboard);
+    if (next?.pagamentos) setPay(next.pagamentos);
+    if (next?.financeiro) setFin(next.financeiro);
+    if (next?.nomenclaturas) setRoleLabels({ ...DEFAULT_ROLE_LABELS, ...next.nomenclaturas });
+    if (next?.descricoes) setRoleDescriptions({ ...DEFAULT_ROLE_DESCRIPTIONS, ...next.descricoes });
+  }, [config.rows, permissoesConfigKey]);
+
+  const users = rows.filter((u) => !isMasterProfile(u) && (tenant?.isMaster || !tenant?.empresaId || u.empresa_id === tenant.empresaId));
+  const filtered = users.filter((u) => {
+    const q = busca.toLowerCase();
+    const okBusca =
+      !q ||
+      String(u.nome || '')
+        .toLowerCase()
+        .includes(q) ||
+      String(u.email || '')
+        .toLowerCase()
+        .includes(q);
+    const okPerfil = perfil === 'todos' || u.role === perfil;
+    const okStatus = status === 'todos' || String(!!u.ativo) === status;
+    return okBusca && okPerfil && okStatus;
+  });
+
+  const updateInviteStatus = async (profileId, action) => {
+    if (!profileId) return;
+    try {
+      await supabase
+        .from('profiles')
+        .update({
+          convite_enviado_em: new Date().toISOString(),
+          ultimo_convite_status: action,
+        })
+        .eq('id', profileId);
+    } catch (_) {
+      // Colunas opcionais: não bloqueia o convite se a migration ainda não foi executada.
+    }
+  };
+
+  const sendInviteByMagicLink = async (user) => {
+    const email = String(user?.email || '')
+      .trim()
+      .toLowerCase();
+    const redirectTo = `${window.location.origin}/`;
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: redirectTo,
+        shouldCreateUser: true,
+        data: {
+          nome: user?.nome || '',
+          primeiro_acesso: true,
+          profile_id: user?.id || '',
+        },
+      },
+    });
+    if (error) throw error;
+    await updateInviteStatus(user.id, 'magic_link_sent');
+    return { action: 'magic_link_sent' };
+  };
+
+  const isEdgeFunctionUnavailable = (raw) => {
+    const msg = String(raw || '').toLowerCase();
+    return msg.includes('failed to fetch') || msg.includes('failed to send') || msg.includes('networkerror') || msg.includes('404') || msg.includes('not found') || msg.includes('function') || msg.includes('edge');
+  };
+
+  const sendInvite = async (user, silent = false) => {
+    const email = String(user?.email || '')
+      .trim()
+      .toLowerCase();
+    if (!email || !user?.id) {
+      if (!silent) push('Informe um e-mail válido antes de enviar o convite.', 'error');
+      return false;
+    }
+    setInvitingId(user.id);
+    try {
+      let result = null;
+      try {
+        const { data, error } = await supabase.functions.invoke('enviar-convite-usuario', {
+          body: {
+            profile_id: user.id,
+            redirect_to: `${window.location.origin}/`,
+          },
+        });
+        if (error) {
+          let details = '';
+          try {
+            const ctx = error.context;
+            if (ctx && typeof ctx.json === 'function') {
+              const json = await ctx.json();
+              details = json?.error || json?.message || '';
+            }
+          } catch (_) {}
+          const raw = details || error?.context?.message || error?.message || '';
+          if (!isEdgeFunctionUnavailable(raw)) throw new Error(raw || 'Não foi possível enviar o convite pela função Supabase.');
+          result = await sendInviteByMagicLink(user);
+        } else if (data?.error) {
+          const raw = String(data.error || '');
+          if (!isEdgeFunctionUnavailable(raw)) throw new Error(raw);
+          result = await sendInviteByMagicLink(user);
+        } else {
+          result = data || { action: 'invite_sent' };
+        }
+      } catch (fnErr) {
+        const raw = fnErr?.message || '';
+        if (!isEdgeFunctionUnavailable(raw)) throw fnErr;
+        result = await sendInviteByMagicLink(user);
+      }
+
+      const tipo = result?.action === 'password_reset_sent' ? 'link de redefinição de senha' : result?.action === 'magic_link_sent' ? 'link de primeiro acesso' : 'convite de acesso';
+      if (!silent) push(`Enviado: ${tipo} para ${email}.`);
+      reload();
+      return true;
+    } catch (err) {
+      const raw = err?.context?.message || err?.message || '';
+      const friendly = raw.toLowerCase().includes('signups not allowed') || raw.toLowerCase().includes('signup') ? 'Convite não enviado. O envio alternativo precisa que o cadastro por e-mail esteja permitido no Supabase Auth, ou que a Edge Function enviar-convite-usuario esteja implantada.' : `Convite não enviado: ${raw || 'verifique as configurações de Auth/E-mail no Supabase.'}`;
+      if (!silent) push(friendly, 'error');
+      return false;
+    } finally {
+      setInvitingId('');
+    }
+  };
+
+  const removeUser = async () => {
+    const user = deleteTarget;
+    if (!user?.id) return;
+    setDeletingId(user.id);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      if (userData?.user?.id && user.id === userData.user.id) {
+        push('Você não pode excluir o próprio acesso. Peça para outro administrador fazer essa alteração.', 'error');
+        return;
+      }
+      if (isMasterProfile(user) || String(user.role || '').toLowerCase() === 'master') {
+        push('Perfil Master não pode ser excluído por este módulo.', 'error');
+        return;
+      }
+
+      const { error } = await supabase.from('profiles').delete().eq('id', user.id);
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('row-level security') || msg.includes('violates row-level security') || msg.includes('permission denied')) {
+          push('Exclusão bloqueada pela segurança do Supabase. Execute o SQL supabase/24_EXCLUIR_USUARIOS_ACESSO.sql no Supabase e tente novamente.', 'error');
+        } else {
+          push(error.message, 'error');
+        }
+        return;
+      }
+
+      push('Usuário removido dos acessos da igreja. A conta de autenticação, se existir, fica sem permissão ativa.');
+      setDeleteTarget(null);
+      reload();
+    } finally {
+      setDeletingId('');
+    }
+  };
+
+  const saveUser = async (form) => {
+    setSaving(true);
+    try {
+      if (form.role === 'master' || isMasterEmail(form.email)) {
+        push('Admin Master não é perfil de empresa. Somente Lábrea Tech possui acesso Master.', 'error');
+        return;
+      }
+      const role = normalizeProfileRole(form.role, roleLabels);
+      const payload = {
+        nome: form.nome || '',
+        email: String(form.email || '')
+          .trim()
+          .toLowerCase(),
+        role,
+        ativo: !!form.ativo,
+        membro_id: role === 'membro' ? form.membro_id || null : null,
+      };
+      if (tenant?.empresaId) payload.empresa_id = tenant.empresaId;
+      let error;
+      let savedUser = null;
+      if (modal?.id) {
+        ({ error } = await supabase.from('profiles').update(payload).eq('id', modal.id));
+        savedUser = { ...modal, ...payload };
+      } else {
+        const result = await supabase.from('profiles').insert(payload).select('*').single();
+        error = result.error;
+        savedUser = result.data;
+      }
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('row-level security') || msg.includes('violates row-level security')) {
+          push('Cadastro bloqueado pela segurança do Supabase. Execute o SQL supabase/21_CORRIGIR_CADASTRO_USUARIOS_RLS.sql no Supabase e tente novamente.', 'error');
+        } else if (msg.includes('profiles_role_check') || msg.includes('check constraint')) {
+          push('Perfil bloqueado pela regra antiga do banco. Execute o SQL supabase/22_CORRIGIR_PERFIS_USUARIOS_CHECK.sql no Supabase e tente novamente.', 'error');
+        } else {
+          push(error.message, 'error');
+        }
+        return;
+      }
+
+      if (!modal?.id && form.enviar_convite !== false && savedUser?.id) {
+        const sent = await sendInvite(savedUser, true);
+        push(sent ? 'Usuário criado e convite de acesso enviado por e-mail.' : 'Usuário criado, mas o convite não foi enviado. Verifique as configurações de e-mail/Auth do Supabase e tente pelo botão “Enviar convite”.', sent ? 'success' : 'warning');
+      } else {
+        push(modal?.id ? 'Usuário atualizado com sucesso.' : 'Usuário criado com sucesso. Use “Enviar convite” para ele criar a senha.');
+      }
+      setModal(null);
+      reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const savePermissions = async () => {
+    const valor = {
+      menus: normalizeMenusConfig(local),
+      dashboard: normalizeDashboardPermissionsConfig(dashboardPerms),
+      pagamentos: pay,
+      financeiro: fin,
+      nomenclaturas: roleLabels,
+      descricoes: roleDescriptions,
+      atualizado_em: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('app_configuracoes').upsert({ chave: permissoesConfigKey, valor });
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    setLocal(valor.menus);
+    setDashboardPerms(valor.dashboard);
+    push('Permissões salvas com sucesso. O menu e os acessos foram atualizados.');
+    config.reload();
+    window.dispatchEvent(
+      new CustomEvent('igreja:permissionsChanged', {
+        detail: { chave: permissoesConfigKey },
+      }),
+    );
+  };
+
+  const toggle = (role, menu, action) => {
+    if (role === 'admin') return;
+    setLocal((prev) => ({
+      ...prev,
+      [role]: {
+        ...(prev[role] || {}),
+        [menu]: {
+          ...((prev[role] || {})[menu] || {}),
+          [action]: !prev?.[role]?.[menu]?.[action],
+        },
+      },
+    }));
+  };
+  const togglePay = (role, forma) => {
+    if (role === 'admin') return;
+    setPay((prev) => ({
+      ...prev,
+      [role]: { ...(prev[role] || {}), [forma]: !prev?.[role]?.[forma] },
+    }));
+  };
+  const keyFor = (action, forma) => `${action}_${normalizeKey(forma)}`;
+  const toggleFin = (role, key) => {
+    if (role === 'admin') return;
+    setFin((prev) => ({
+      ...prev,
+      [role]: { ...(prev[role] || {}), [key]: !prev?.[role]?.[key] },
+    }));
+  };
+  const toggleDashboard = (role, blockId) => {
+    if (role === 'admin') return;
+    setDashboardPerms((prev) => ({
+      ...prev,
+      [role]: { ...(prev[role] || {}), [blockId]: !prev?.[role]?.[blockId] },
+    }));
+  };
+  const setAllPay = (role, value) => {
+    if (role === 'admin') return;
+    setPay((prev) => ({
+      ...prev,
+      [role]: Object.fromEntries(PAYMENT_FORMS.map((f) => [f, value])),
+    }));
+  };
+  const setAllFinByAction = (role, action, value) => {
+    if (role === 'admin') return;
+    setFin((prev) => {
+      const next = { ...prev, [role]: { ...(prev[role] || {}) } };
+      PAYMENT_FORMS.forEach((f) => {
+        next[role][keyFor(action, f)] = value;
+      });
+      return next;
+    });
+  };
+  const clearFinancialRole = (role) => {
+    if (role === 'admin') return;
+    setAllPay(role, false);
+    setFin((prev) => ({
+      ...prev,
+      [role]: Object.fromEntries(PAYMENT_FORMS.flatMap((f) => FINANCIAL_PERMISSION_ACTIONS.map((a) => [keyFor(a.id, f), false]))),
+    }));
+  };
+  const restoreDefault = () => {
+    setLocal(DEFAULT_PERMISSIONS);
+    setDashboardPerms(DEFAULT_DASHBOARD_PERMISSIONS);
+    setPay(Object.fromEntries(USER_ROLE_ENTRIES.map(([r]) => [r, Object.fromEntries(PAYMENT_FORMS.map((f) => [f, r === 'admin' || r === 'gerente']))])));
+    setFin(defaultFinancialPermissions);
+  };
+
+  const fields = [
+    { name: 'nome', label: 'Nome', required: true },
+    { name: 'email', label: 'E-mail', required: true },
+    {
+      name: 'role',
+      label: 'Perfil',
+      type: 'select',
+      required: true,
+      options: roleEntries.map(([value, label]) => ({ value, label })),
+    },
+    {
+      name: 'membro_id',
+      label: 'Cadastro de membro vinculado',
+      type: 'select',
+      options: [{ value: '', label: 'Nenhum' }, ...membros.options],
+      help: 'Obrigatório para usar confirmações, jornadas e preferências pessoais no Portal do Membro.',
+    },
+    { name: 'ativo', label: 'Ativo / liberado', type: 'checkbox' },
+    ...(!modal?.id
+      ? [
+          {
+            name: 'enviar_convite',
+            label: 'Enviar convite de acesso ao salvar',
+            type: 'checkbox',
+            defaultValue: true,
+            full: true,
+            help: 'O usuário receberá um e-mail para criar a senha. O sistema usa a Edge Function quando disponível e, se ela não estiver implantada, usa o link nativo de primeiro acesso do Supabase Auth.',
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero compactHero moduleHeroModern usersHero">
+        <div>
+          <h1>🔐 Usuários e permissões</h1>
+          <p>Gerencie acessos, perfis e permissões por operação.</p>
+        </div>
+        <div className="heroActions">
+          <button className="secondary" onClick={() => setModoAvancado(!modoAvancado)}>
+            {modoAvancado ? 'Usar modo simples' : 'Personalizar permissões'}
+          </button>
+          <button onClick={() => setModal({})}>Novo Usuário</button>
+        </div>
+      </div>
+      <div className="grid cols4 usersKpis">
+        <div className="stat blue">
+          <small>Usuários ativos</small>
+          <b>{users.filter((u) => u.ativo).length}</b>
+        </div>
+        <div className="stat green">
+          <small>Administradores</small>
+          <b>{users.filter((u) => u.role === 'admin').length}</b>
+        </div>
+        <div className="stat orange">
+          <small>Operadores</small>
+          <b>{users.filter((u) => u.role === 'operador').length}</b>
+        </div>
+        <div className="stat purple">
+          <small>Modo atual</small>
+          <b>{modoAvancado ? 'Avançado' : 'Simples'}</b>
+        </div>
+      </div>
+      <div className="usersLayout">
+        <section className="card usersPanel">
+          <h3>Usuários cadastrados</h3>
+          <p className="muted">Busque por nome, e-mail, perfil ou status. Use “Enviar convite” para o usuário criar a própria senha com segurança.</p>
+          <div className="grid cols3 compactFilters">
+            <div className="field">
+              <label>Busca</label>
+              <input placeholder="Nome ou e-mail" value={busca} onChange={(e) => setBusca(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Perfil</label>
+              <select value={perfil} onChange={(e) => setPerfil(e.target.value)}>
+                <option value="todos">Todos</option>
+                {roleEntries.map(([r, n]) => (
+                  <option key={r} value={r}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Status</label>
+              <select value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="todos">Todos</option>
+                <option value="true">Ativo</option>
+                <option value="false">Inativo</option>
+              </select>
+            </div>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Email</th>
+                  <th>Perfil</th>
+                  <th>Ativo</th>
+                  <th>Convite</th>
+                  <th>Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr>
+                    <td colSpan="6" className="center">
+                      Carregando…
+                    </td>
+                  </tr>
+                )}
+                {!loading && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan="6" className="center muted">
+                      Nenhum usuário encontrado.
+                    </td>
+                  </tr>
+                )}
+                {filtered.map((u) => (
+                  <tr key={u.id}>
+                    <td>
+                      <b>{u.nome || '—'}</b>
+                    </td>
+                    <td>{u.email}</td>
+                    <td>
+                      <span className={`badge ${badgeLabel(roleLabels[u.role] || ROLE_LABEL[u.role] || u.role)}`}>{roleLabels[u.role] || ROLE_LABEL[u.role] || u.role}</span>
+                    </td>
+                    <td>
+                      <span className={`badge ${u.ativo ? 'Ativo' : 'Inativo'}`}>{u.ativo ? 'Ativo' : 'Inativo'}</span>
+                    </td>
+                    <td>{u.convite_enviado_em ? <span className="inviteStatus sent">Enviado {new Date(u.convite_enviado_em).toLocaleDateString('pt-BR')}</span> : <span className="inviteStatus pending">Pendente</span>}</td>
+                    <td className="actionsCell">
+                      <div className="actionsInline">
+                        <button className="smallBtn secondary" onClick={() => setModal(u)}>
+                          Editar
+                        </button>
+                        <button className="smallBtn green" disabled={invitingId === u.id} onClick={() => sendInvite(u)}>
+                          {invitingId === u.id ? 'Enviando…' : 'Enviar convite'}
+                        </button>
+                        <button className="smallBtn red" disabled={deletingId === u.id} onClick={() => setDeleteTarget(u)}>
+                          Excluir
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section className="card permissionsPanel">
+          <div className="toolbar stickyActions">
+            <div>
+              <h3>Perfis e permissões</h3>
+              <p className="muted">Personalize os nomes dos perfis para a realidade da igreja. As permissões continuam usando chaves internas seguras.</p>
+            </div>
+            <button onClick={savePermissions}>Salvar permissões</button>
+          </div>
+          <div className="card light roleNamingBox">
+            <div>
+              <b>Nomenclatura dos perfis</b>
+              <p className="muted">Altere apenas o nome exibido. Exemplo: Gerente pode virar Pastor Auxiliar; Operador pode virar Tesoureiro(a).</p>
+            </div>
+            <div className="grid cols4">
+              {roleEntries.map(([role]) => (
+                <div className="field" key={role}>
+                  <label>{DEFAULT_ROLE_LABELS[role]}</label>
+                  <input
+                    value={roleLabels[role] || ''}
+                    onChange={(e) =>
+                      setRoleLabels((prev) => ({
+                        ...prev,
+                        [role]: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="grid cols2 roleDescGrid">
+              {roleEntries.map(([role]) => (
+                <div className="field" key={role}>
+                  <label>Descrição — {roleLabels[role]}</label>
+                  <textarea
+                    rows="2"
+                    value={roleDescriptions[role] || ''}
+                    onChange={(e) =>
+                      setRoleDescriptions((prev) => ({
+                        ...prev,
+                        [role]: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="row">
+              <button
+                className="secondary smallBtn"
+                onClick={() => {
+                  setRoleLabels(DEFAULT_ROLE_LABELS);
+                  setRoleDescriptions(DEFAULT_ROLE_DESCRIPTIONS);
+                }}
+              >
+                Restaurar nomenclatura padrão
+              </button>
+            </div>
+          </div>
+          <div className="profileCards">
+            {roleEntries.map(([role, name]) => (
+              <div key={role} className={`profileCard ${role}`}>
+                <div className="profileIcon">{role === 'admin' ? '👑' : role === 'gerente' ? '🧭' : role === 'operador' ? '📦' : '👁️'}</div>
+                <h4>{name}</h4>
+                <p>{roleDescriptions[role]}</p>
+              </div>
+            ))}
+          </div>
+          <div className="card light readyProfiles">
+            <div>
+              <b>Perfis prontos</b>
+              <p className="muted">Restaure o padrão recomendado para implantação inicial. Depois ajuste no modo avançado, se necessário.</p>
+            </div>
+            <button className="secondary smallBtn" onClick={restoreDefault}>
+              Restaurar perfis padrão
+            </button>
+          </div>
+          {roleEntries.map(([role, name]) => (
+            <details key={role} className="permAccordion" open={role === 'admin' || modoAvancado}>
+              <summary>
+                <span>
+                  <b>{name}</b>
+                  <small>{roleDescriptions[role]}</small>
+                </span>
+                <span className="badge Ativo">{role === 'admin' ? 'Acesso total' : modoAvancado ? 'Personalizável' : 'Perfil pronto'}</span>
+              </summary>
+              {!modoAvancado && (
+                <div className="simplePermNote">
+                  <p className="muted">
+                    Modo simples ativo. Este perfil usa as permissões prontas recomendadas. Clique em <b>Personalizar permissões</b> para editar checkboxes detalhados.
+                  </p>
+                </div>
+              )}
+              {modoAvancado && (
+                <>
+                  <div className="permSection">
+                    <h4>Permissões por módulo</h4>
+                    <div className="tablewrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Menu</th>
+                            {PERMISSION_ACTIONS.map((a) => (
+                              <th key={a.id}>{a.label}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {PERMISSION_MENUS.map((m) => (
+                            <tr key={m.id}>
+                              <td>
+                                <b>{m.label}</b>
+                              </td>
+                              {PERMISSION_ACTIONS.map((a) => (
+                                <td key={a.id} className="center">
+                                  <input type="checkbox" disabled={role === 'admin'} checked={!!local?.[role]?.[m.id]?.[a.id]} onChange={() => toggle(role, m.id, a.id)} />
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="permSection dashboardPermSection">
+                    <h4>Permissões do Dashboard</h4>
+                    <p className="muted">Defina quais informações aparecem no Dashboard para este perfil. Exemplo: Professor EBD pode ver apenas os blocos de EBD.</p>
+                    <div className="dashboardPermGrid">
+                      {DASHBOARD_BLOCKS.map((block) => (
+                        <label key={block.id} className="dashboardPermItem">
+                          <input type="checkbox" disabled={role === 'admin'} checked={!!dashboardPerms?.[role]?.[block.id]} onChange={() => toggleDashboard(role, block.id)} />
+                          <span>
+                            <b>{block.label}</b>
+                            <small>{block.desc}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="infoBox muted">
+                    <b>Permissões financeiras e formas de pagamento ocultas.</b>
+                    <p>Para a igreja, ficam ativas as permissões por módulo e os blocos do Dashboard.</p>
+                  </div>
+                </>
+              )}
+            </details>
+          ))}
+        </section>
+      </div>
+      {modal && (
+        <Modal title={modal.id ? 'Editar usuário' : 'Novo usuário — Usuários do Sistema'} onClose={() => setModal(null)} wide>
+          {!modal.id && (
+            <div className="infoBox inviteInfoBox" style={{ marginBottom: 14 }}>
+              <b>Cadastro profissional:</b> informe o e-mail, perfil e status. Ao salvar, o sistema envia um link seguro para o usuário criar a própria senha.
+            </div>
+          )}
+          <EntityForm fields={fields} initial={modal.id ? modal : { ativo: true, role: 'consulta', enviar_convite: true }} onCancel={() => setModal(null)} onSave={saveUser} saving={saving} />
+        </Modal>
+      )}
+      {deleteTarget && (
+        <Modal title="Excluir usuário" onClose={() => setDeleteTarget(null)}>
+          <div className="dangerConfirmBox">
+            <div className="dangerConfirmIcon">⚠️</div>
+            <div>
+              <h3>Remover acesso deste usuário?</h3>
+              <p>
+                Você está prestes a excluir <b>{deleteTarget.nome || deleteTarget.email}</b> da lista de usuários da igreja.
+              </p>
+              <p className="muted">Essa ação remove o perfil e o acesso interno. A conta de autenticação, caso já exista no Supabase Auth, não é apagada automaticamente, mas ficará sem permissão ativa para entrar no sistema.</p>
+            </div>
+          </div>
+          <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+            <button className="secondary" onClick={() => setDeleteTarget(null)}>
+              Cancelar
+            </button>
+            <button className="red" disabled={deletingId === deleteTarget.id} onClick={removeUser}>
+              {deletingId === deleteTarget.id ? 'Excluindo…' : 'Sim, excluir usuário'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   ASSINATURA DO CLIENTE
+========================================================= */
+function ClienteAssinaturaPage({ profile }) {
+  const tenant = React.useContext(TenantContext);
+  const empresaId = tenant?.empresaId || profile?.empresa_id || '';
+  const empresas = useTable('empresas', { order: 'nome', ascending: true });
+  const assinaturas = useTable('assinaturas', { order: 'created_at', ascending: false });
+  const planos = useTable('assinaturas_planos', { order: 'valor', ascending: true });
+  const pagamentos = useTable('assinaturas_pagamentos', { order: 'created_at', ascending: false });
+  const { toasts, push, close } = useToasts();
+  const [generatingPlanId, setGeneratingPlanId] = useState('');
+  const [pixResult, setPixResult] = useState(null);
+
+  const empresa = empresas.rows.find((row) => row.id === empresaId) || {};
+  const assinatura = assinaturas.rows.find((row) => row.empresa_id === empresaId) || null;
+  const planoAtual = planos.rows.find((row) => row.id === assinatura?.plano_id) || null;
+  const planosAtivos = planos.rows.filter((row) => row.ativo !== false);
+  const historico = pagamentos.rows.filter((row) => row.empresa_id === empresaId).slice(0, 20);
+  const vencimento = assinatura?.vencimento_em ? new Date(assinatura.vencimento_em) : null;
+  const agora = new Date();
+  const diasRestantes = vencimento ? Math.ceil((vencimento.getTime() - agora.getTime()) / 86400000) : null;
+  const vencida = Boolean(vencimento && vencimento.getTime() < agora.getTime());
+  const status = vencida ? 'Vencida' : assinatura?.status || 'Sem assinatura';
+
+  const reloadAll = () => {
+    assinaturas.reload();
+    pagamentos.reload();
+    planos.reload();
+  };
+
+  const gerarPix = async (plano) => {
+    if (!empresaId || !plano?.id) return push('Não foi possível identificar a empresa ou o plano.', 'error');
+    setGeneratingPlanId(plano.id);
+    const { data, error } = await supabase.functions.invoke('mercado-pago-criar-pix', {
+      body: { empresa_id: empresaId, plano_id: plano.id },
+    });
+    setGeneratingPlanId('');
+    if (error || data?.error) return push(data?.error || error?.message || 'Não foi possível gerar o Pix.', 'error');
+    setPixResult({ ...data, plano_nome: plano.nome });
+    pagamentos.reload();
+    push('Cobrança Pix criada. O pagamento será reconhecido automaticamente.');
+  };
+
+  const copiarPix = async (codigo) => {
+    if (!codigo) return;
+    try {
+      await navigator.clipboard.writeText(codigo);
+      push('Código Pix copiado.');
+    } catch (_) {
+      push('Não foi possível copiar automaticamente. Selecione o código manualmente.', 'error');
+    }
+  };
+
+  const statusClass = status === 'Ativa' ? 'Ativa' : status === 'Teste' ? 'Teste' : 'Pendente';
+  return (
+    <div className="subscriptionClientPage">
+      <ToastStack toasts={toasts} close={close} />
+      <div className="hero compactHero subscriptionHero">
+        <div>
+          <span className="eyebrow">Gestão da assinatura</span>
+          <h1>Assinatura</h1>
+          <p>Consulte seu plano, gere uma cobrança Pix e acompanhe a confirmação automática do pagamento.</p>
+        </div>
+        <button type="button" className="secondary" onClick={reloadAll}>Atualizar status</button>
+      </div>
+
+      <div className="subscriptionSummaryGrid">
+        <div className="card subscriptionStatusCard">
+          <span className={`badge ${statusClass}`}>{status}</span>
+          <h2>{planoAtual?.nome || (status === 'Teste' ? 'Período de teste' : 'Nenhum plano contratado')}</h2>
+          <p className="muted">{empresa.nome_fantasia || empresa.nome || 'Sua igreja'}</p>
+          <div className="subscriptionMeta">
+            <div><small>Vencimento</small><b>{vencimento ? vencimento.toLocaleDateString('pt-BR') : 'Não definido'}</b></div>
+            <div><small>Dias restantes</small><b className={diasRestantes !== null && diasRestantes < 0 ? 'negative' : ''}>{diasRestantes === null ? '—' : Math.max(diasRestantes, 0)}</b></div>
+            <div><small>Último pagamento</small><b>{assinatura?.pago_em ? new Date(assinatura.pago_em).toLocaleDateString('pt-BR') : '—'}</b></div>
+            <div><small>Valor atual</small><b>{fmtMoney(assinatura?.valor || planoAtual?.valor || 0)}</b></div>
+          </div>
+          {vencida && <div className="alert subscriptionWarning"><b>Assinatura vencida.</b> Gere um Pix abaixo para renovar o acesso.</div>}
+        </div>
+        <div className="card subscriptionSecurityCard">
+          <h3>Pagamento protegido</h3>
+          <p>O Pix é criado diretamente pelo Mercado Pago. O sistema não armazena dados bancários.</p>
+          <ul>
+            <li>QR Code e Pix copia e cola</li>
+            <li>Confirmação automática via webhook</li>
+            <li>Renovação conforme os dias do plano</li>
+          </ul>
+          <small className="muted">Webhook ativo: mercado-pago-webhook</small>
+        </div>
+      </div>
+
+      <section className="card">
+        <div className="sectionHeading">
+          <div><span className="eyebrow">Escolha sua renovação</span><h2>Planos disponíveis</h2></div>
+        </div>
+        {planos.loading ? <div className="emptyState">Carregando planos…</div> : planosAtivos.length === 0 ? (
+          <div className="emptyState"><b>Nenhum plano disponível</b><span>Entre em contato com o administrador do sistema.</span></div>
+        ) : (
+          <div className="subscriptionPlansGrid">
+            {planosAtivos.map((plano) => (
+              <article className={`subscriptionPlanCard ${planoAtual?.id === plano.id ? 'isCurrent' : ''}`} key={plano.id}>
+                {planoAtual?.id === plano.id && <span className="planCurrentLabel">Plano atual</span>}
+                <h3>{plano.nome}</h3>
+                <div className="subscriptionPrice">{fmtMoney(plano.valor)}</div>
+                <p>{plano.descricao || `${plano.dias_acesso || 30} dias de acesso ao sistema.`}</p>
+                <small>{plano.dias_acesso || 30} dias de acesso</small>
+                <button type="button" disabled={generatingPlanId === plano.id} onClick={() => gerarPix(plano)}>
+                  {generatingPlanId === plano.id ? 'Gerando Pix…' : 'Gerar Pix'}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="sectionHeading"><div><span className="eyebrow">Transparência</span><h2>Histórico de pagamentos</h2></div></div>
+        <div className="tablewrap">
+          <table>
+            <thead><tr><th>Data</th><th>Plano</th><th>Status</th><th>Valor</th><th>Vencimento do Pix</th></tr></thead>
+            <tbody>
+              {historico.length === 0 ? <tr><td colSpan="5" className="muted center">Nenhuma cobrança gerada.</td></tr> : historico.map((pagamento) => {
+                const plano = planos.rows.find((row) => row.id === pagamento.plano_id);
+                return <tr key={pagamento.id}>
+                  <td>{pagamento.created_at ? new Date(pagamento.created_at).toLocaleString('pt-BR') : '—'}</td>
+                  <td>{plano?.nome || '—'}</td>
+                  <td><span className={`badge ${pagamento.status === 'Pago' ? 'Ativa' : 'Pendente'}`}>{pagamento.status || 'Pendente'}</span></td>
+                  <td>{fmtMoney(pagamento.valor || 0)}</td>
+                  <td>{pagamento.vencimento_em ? new Date(pagamento.vencimento_em).toLocaleString('pt-BR') : '—'}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {pixResult && (
+        <Modal title={`Pix — ${pixResult.plano_nome || 'Assinatura'}`} onClose={() => setPixResult(null)} wide>
+          <div className="subscriptionPixModal">
+            <div className="pixQrPanel">
+              {pixResult.qr_code_base64 ? <img src={`data:image/png;base64,${pixResult.qr_code_base64}`} alt="QR Code Pix da assinatura" /> : <div className="emptyState">QR Code indisponível</div>}
+              <b>{fmtMoney(pixResult.valor || 0)}</b>
+              <small>Válido até {pixResult.vencimento_em ? new Date(pixResult.vencimento_em).toLocaleString('pt-BR') : '—'}</small>
+            </div>
+            <div className="pixCodePanel">
+              <label>Pix copia e cola</label>
+              <textarea readOnly value={pixResult.pix_copia_cola || pixResult.qr_code || ''} rows="8" />
+              <button type="button" onClick={() => copiarPix(pixResult.pix_copia_cola || pixResult.qr_code)}>Copiar código Pix</button>
+              {pixResult.ticket_url && <a className="button secondary" href={pixResult.ticket_url} target="_blank" rel="noreferrer">Abrir no Mercado Pago</a>}
+              <p className="muted">Após o pagamento, clique em <b>Atualizar status</b>. O webhook também fará a confirmação automaticamente.</p>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   PAINEL MASTER SAAS
+========================================================= */
+function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule }) {
+  const empresas = useTable('empresas', { order: 'nome', ascending: true });
+  const assinaturas = useTable('assinaturas', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const planos = useTable('assinaturas_planos', {
+    order: 'valor',
+    ascending: true,
+  });
+  const pagamentos = useTable('assinaturas_pagamentos', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const config = useTable('app_configuracoes', {
+    order: 'updated_at',
+    ascending: false,
+  });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [savingBrand, setSavingBrand] = useState(false);
+  const [generatingPixFor, setGeneratingPixFor] = useState('');
+  const [pixResult, setPixResult] = useState(null);
+
+  const cfgLogin = config.rows.find((c) => c.chave === 'login_publico')?.valor || {};
+  const cfgPagamento = config.rows.find((c) => c.chave === 'mercado_pago')?.valor || null;
+  const [landingForm, setLandingForm] = useState({
+    cadastro_publico_ativo: cfgLogin.cadastro_publico_ativo ?? true,
+    teste_gratis_ativo: cfgLogin.teste_gratis_ativo ?? true,
+    cor_primaria: cfgLogin.cor_primaria || '#0f2942',
+    cor_secundaria: cfgLogin.cor_secundaria || '#1d6fa4',
+    login_chamada: cfgLogin.login_chamada || 'SaaS para igrejas',
+    login_titulo: cfgLogin.login_titulo || 'Sistema Igreja Online',
+    login_subtitulo: cfgLogin.login_subtitulo || 'Gestão online para igrejas, financeiro, secretaria e EBD',
+    login_beneficio_1: cfgLogin.login_beneficio_1 || 'Teste grátis por 10 dias',
+    login_beneficio_2: cfgLogin.login_beneficio_2 || 'Controle de dízimos, membros e patrimônio',
+    login_card_titulo: cfgLogin.login_card_titulo || 'Sistema Igreja Online',
+    login_card_subtitulo: cfgLogin.login_card_subtitulo || 'Acesse sua área de gestão.',
+    login_botao_entrar: cfgLogin.login_botao_entrar || 'Entrar',
+    login_botao_cadastro: cfgLogin.login_botao_cadastro || 'Criar conta grátis',
+    usar_logo: cfgLogin.usar_logo || false,
+    logo_base64: cfgLogin.logo_base64 || '',
+  });
+
+  useEffect(() => {
+    if (config.rows.length) {
+      const c = config.rows.find((x) => x.chave === 'login_publico')?.valor || {};
+      setLandingForm((f) => ({ ...f, ...c }));
+    }
+  }, [config.rows]);
+
+  const empresaSelecionada = empresas.rows.find((e) => e.id === selectedEmpresaId);
+  const ativas = assinaturas.rows.filter((a) => ['Ativa', 'Teste'].includes(a.status)).length;
+  const vencidas = assinaturas.rows.filter((a) => a.vencimento_em && new Date(a.vencimento_em) < new Date() && a.status !== 'Ativa').length;
+  const recebidoMes = assinaturas.rows.filter((a) => a.pago_em && new Date(a.pago_em).getMonth() === new Date().getMonth()).reduce((s, a) => s + Number(a.valor || 0), 0);
+  const corPrimaria = landingForm.cor_primaria || '#0f2942';
+  const corSecundaria = landingForm.cor_secundaria || '#1d6fa4';
+
+  const updateLanding = (key, value) => setLandingForm((f) => ({ ...f, [key]: value }));
+  const salvarConfiguracaoSistema = async (valor, acao = 'salvar_configuracao') => {
+    setSavingBrand(true);
+    const payload = { ...DEFAULT_PORTAL_CONFIG, ...(valor || {}) };
+    const { error } = await supabase.from('app_configuracoes').upsert(
+      {
+        chave: 'login_publico',
+        valor: payload,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'chave' },
+    );
+    setSavingBrand(false);
+    if (error) return push(error.message, 'error');
+    setLandingForm(payload);
+    try {
+      localStorage.setItem('igreja:login_publico:last_saved', JSON.stringify({ savedAt: Date.now(), valor: payload }));
+    } catch (_) {}
+    window.dispatchEvent(new CustomEvent('igreja:portalConfigChanged'));
+    push('Tela inicial/Login salva. Saia da conta ou abra a tela pública em uma aba anônima para conferir.');
+    config.reload();
+  };
+
+  const carregarLogoSistema = (file) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return push('Envie somente PNG, JPG ou WEBP.', 'error');
+    if (file.size > 450000) return push('Use uma imagem de até 450 KB.', 'error');
+    const reader = new FileReader();
+    reader.onload = () => salvarConfiguracaoSistema({ ...landingForm, usar_logo: true, logo_base64: reader.result }, 'alterar_logo_sistema');
+    reader.readAsDataURL(file);
+  };
+
+  const criarEmpresa = async (form) => {
+    const payload = {
+      nome: form.nome,
+      nome_fantasia: form.nome_fantasia || form.nome,
+      cnpj: form.cnpj || '',
+      telefone: form.telefone || '',
+      email: form.email || '',
+      cidade: form.cidade || '',
+      estado: form.estado || '',
+      ativo: true,
+    };
+    const { data, error } = await supabase.from('empresas').insert(payload).select('*').single();
+    if (error) return push(error.message, 'error');
+    await supabase.from('assinaturas').insert({
+      empresa_id: data.id,
+      status: 'Teste',
+      inicio_em: new Date().toISOString(),
+      vencimento_em: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString(),
+      valor: 0,
+      observacoes: 'Teste grátis inicial criado pelo Admin Master',
+    });
+    push('Igreja/empresa criada com teste grátis.');
+    setModal(null);
+    empresas.reload();
+    assinaturas.reload();
+  };
+
+  const salvarPlano = async (form) => {
+    const payload = {
+      nome: form.nome,
+      valor: Number(form.valor || 0),
+      dias_acesso: Number(form.dias_acesso || 30),
+      descricao: form.descricao || '',
+      ativo: !!form.ativo,
+    };
+    const q = editing?.id ? supabase.from('assinaturas_planos').update(payload).eq('id', editing.id) : supabase.from('assinaturas_planos').insert(payload);
+    const { error } = await q;
+    if (error) return push(error.message, 'error');
+    push('Plano salvo.');
+    setModal(null);
+    setEditing(null);
+    planos.reload();
+  };
+
+  const gerarPixAssinatura = async (empresa, planoId) => {
+    if (!empresa?.id || !planoId) return push('Selecione uma empresa e um plano.', 'error');
+    setGeneratingPixFor(empresa.id);
+    const { data, error } = await supabase.functions.invoke('mercado-pago-criar-pix', {
+      body: { empresa_id: empresa.id, plano_id: planoId },
+    });
+    setGeneratingPixFor('');
+    if (error || data?.error) return push(data?.error || error?.message || 'Não foi possível gerar o Pix.', 'error');
+    setPixResult({ ...data, empresa_nome: empresa.nome_fantasia || empresa.nome });
+    pagamentos.reload();
+    push('Cobrança Pix criada com segurança.');
+  };
+
+  const salvarMercadoPago = async (form) => {
+    const valor = {
+      status: form.status || 'Operacional',
+      notification_url: form.notification_url || '',
+      observacoes: form.observacoes || '',
+    };
+    const { error } = await supabase.from('app_configuracoes').upsert({ chave: 'mercado_pago', valor });
+    if (error) return push(error.message, 'error');
+    push('Configuração Mercado Pago salva.');
+    setModal(null);
+    config.reload();
+  };
+
+  return (
+    <div>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="toolbar masterHeader">
+        <div>
+          <div className="sectionTitle">Painel Master</div>
+          <h2>🛡️ Painel Master</h2>
+          <p className="muted">Área global do dono do sistema. O cliente entra direto na própria igreja; o Master escolhe qual empresa deseja administrar.</p>
+          {empresaSelecionada && (
+            <p className="alert">
+              Visualizando empresa: <b>{empresaSelecionada.nome_fantasia || empresaSelecionada.nome}</b>
+            </p>
+          )}
+        </div>
+        <div className="row">
+          {empresaSelecionada && (
+            <button
+              className="secondary"
+              onClick={() => {
+                setSelectedEmpresaId('');
+                setActiveModule('admin_master');
+              }}
+            >
+              Voltar ao Painel Master
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setEditing(null);
+              setModal('plano');
+            }}
+          >
+            Novo plano
+          </button>
+          <button className="secondary" onClick={() => setModal('mercado_pago')}>
+            {cfgPagamento ? 'Editar Mercado Pago' : 'Configurar Mercado Pago'}
+          </button>
+          <button className="green" onClick={() => setModal('empresa')}>
+            Nova igreja
+          </button>
+        </div>
+      </div>
+
+      <div className="grid auto">
+        <div className="card kpi">
+          <div className="label">Empresas</div>
+          <div className="value">{empresas.rows.length}</div>
+        </div>
+        <div className="card kpi success">
+          <div className="label">Assinaturas ativas/teste</div>
+          <div className="value">{ativas}</div>
+        </div>
+        <div className="card kpi warning">
+          <div className="label">Vencidas</div>
+          <div className="value">{vencidas}</div>
+        </div>
+        <div className="card kpi success">
+          <div className="label">Recebido no mês</div>
+          <div className="value">{fmtMoney(recebidoMes)}</div>
+        </div>
+      </div>
+      <br />
+
+      <div className="grid cols2">
+        <div className="card">
+          <h3>Planos globais</h3>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Plano</th>
+                  <th>Valor</th>
+                  <th>Dias</th>
+                  <th>Ativo</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {planos.rows.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.nome}</td>
+                    <td>{fmtMoney(p.valor)}</td>
+                    <td>{p.dias_acesso || 30}</td>
+                    <td>{p.ativo !== false ? 'Sim' : 'Não'}</td>
+                    <td>
+                      <button
+                        className="secondary smallBtn"
+                        onClick={() => {
+                          setEditing(p);
+                          setModal('plano');
+                        }}
+                      >
+                        Editar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="card">
+          <h3>Segurança do SaaS</h3>
+          <p className="muted">Controles globais da tela pública. O cadastro e teste grátis só ficam disponíveis quando você permitir.</p>
+          <div className="grid cols2">
+            <label className="checkLine">
+              <input type="checkbox" checked={!!landingForm.cadastro_publico_ativo} onChange={(e) => updateLanding('cadastro_publico_ativo', e.target.checked)} /> Cadastro público ativo
+            </label>
+            <label className="checkLine">
+              <input type="checkbox" checked={!!landingForm.teste_gratis_ativo} onChange={(e) => updateLanding('teste_gratis_ativo', e.target.checked)} /> Teste grátis ativo
+            </label>
+          </div>
+          <p className="muted">Recomendação: desative o cadastro público se começar a receber cadastros indevidos ou testes abusivos.</p>
+          <button className="secondary" disabled={savingBrand} onClick={() => salvarConfiguracaoSistema(landingForm, 'alterar_configuracoes_seguranca')}>
+            Salvar segurança
+          </button>
+        </div>
+      </div>
+      <br />
+
+      <div className="card">
+        <div className="toolbar">
+          <div>
+            <h3>Tela inicial / Login</h3>
+            <p className="muted">Altere os textos vistos pelos usuários sem mexer no código. A prévia abaixo usa as cores e textos atuais.</p>
+          </div>
+          <button className="green" disabled={savingBrand} onClick={() => salvarConfiguracaoSistema(landingForm, 'alterar_textos_login')}>
+            {savingBrand ? 'Salvando...' : 'Salvar tela inicial'}
+          </button>
+        </div>
+        <div className="grid cols2">
+          <div>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Cor principal</label>
+                <input type="color" value={corPrimaria} onChange={(e) => updateLanding('cor_primaria', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Cor secundária</label>
+                <input type="color" value={corSecundaria} onChange={(e) => updateLanding('cor_secundaria', e.target.value)} />
+              </div>
+            </div>
+            <div className="field">
+              <label>Texto superior</label>
+              <input value={landingForm.login_chamada || ''} onChange={(e) => updateLanding('login_chamada', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Título principal</label>
+              <input value={landingForm.login_titulo || ''} onChange={(e) => updateLanding('login_titulo', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Subtítulo</label>
+              <textarea rows="2" value={landingForm.login_subtitulo || ''} onChange={(e) => updateLanding('login_subtitulo', e.target.value)} />
+            </div>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Benefício 1</label>
+                <input value={landingForm.login_beneficio_1 || ''} onChange={(e) => updateLanding('login_beneficio_1', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Benefício 2</label>
+                <input value={landingForm.login_beneficio_2 || ''} onChange={(e) => updateLanding('login_beneficio_2', e.target.value)} />
+              </div>
+            </div>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Título do card</label>
+                <input value={landingForm.login_card_titulo || ''} onChange={(e) => updateLanding('login_card_titulo', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Subtítulo do card</label>
+                <input value={landingForm.login_card_subtitulo || ''} onChange={(e) => updateLanding('login_card_subtitulo', e.target.value)} />
+              </div>
+            </div>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Botão entrar</label>
+                <input value={landingForm.login_botao_entrar || ''} onChange={(e) => updateLanding('login_botao_entrar', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Botão cadastro</label>
+                <input value={landingForm.login_botao_cadastro || ''} onChange={(e) => updateLanding('login_botao_cadastro', e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <div
+            className="loginPreview"
+            style={{
+              '--login-primary': corPrimaria,
+              '--login-secondary': corSecundaria,
+            }}
+          >
+            <div className="loginPreviewHero">
+              <p className="loginEyebrow">{landingForm.login_chamada}</p>
+              <h2>{landingForm.login_titulo}</h2>
+              <p>{landingForm.login_subtitulo}</p>
+              <div className="loginFeatureList small">
+                {landingForm.teste_gratis_ativo && <span>✅ {landingForm.login_beneficio_1}</span>}
+                {landingForm.login_beneficio_2 && <span>⛪ {landingForm.login_beneficio_2}</span>}
+              </div>
+            </div>
+            <div className="loginPreviewCard">
+              <h3>{landingForm.login_card_titulo}</h3>
+              <p className="muted">{landingForm.login_card_subtitulo}</p>
+              <button>{landingForm.login_botao_entrar}</button>
+              {landingForm.cadastro_publico_ativo && <button className="secondary">{landingForm.login_botao_cadastro}</button>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <br />
+
+      <div className="grid cols2">
+        <div className="card">
+          <h3>Identidade visual do sistema</h3>
+          <p className="muted">Configure a logo global exibida no login/cadastro. A remoção volta para o ícone padrão seguro, evitando tela branca.</p>
+          <div className="logoUploader">
+            {landingForm.usar_logo && landingForm.logo_base64 ? <img className="logoPreview wide" src={landingForm.logo_base64} alt="Logo do sistema" /> : <div className="logoEmpty">Logo padrão ativa</div>}
+            <div className="logoActions">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  carregarLogoSistema(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <button type="button" className="secondary" disabled={savingBrand} onClick={() => salvarConfiguracaoSistema({ ...landingForm, usar_logo: false, logo_base64: '' }, 'remover_logo_sistema')}>
+                Remover logo personalizada
+              </button>
+              <small className="muted">Permitido: PNG, JPG ou WEBP. Máximo: 450 KB. SVG bloqueado por segurança.</small>
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <h3>Mercado Pago</h3>
+          {cfgPagamento ? (
+            <div className="successBox">
+              <p>
+                <b>Status:</b> {cfgPagamento.status || 'Configurado'}
+              </p>
+              <p>
+                <b>Token:</b> Configurado nos Secrets da Edge Function
+              </p>
+              <p>
+                <b>Webhook:</b> {cfgPagamento.notification_url ? 'Configurado' : 'super-action ativo'}
+              </p>
+              <small className="muted">Tokens e secrets não são exibidos no frontend.</small>
+            </div>
+          ) : (
+            <div className="successBox">
+              <p>
+                <b>Status:</b> Operacional
+              </p>
+              <p>
+                <b>Token:</b> Configurado nos Secrets da Edge Function
+              </p>
+              <p>
+                <b>Webhook:</b> mercado-pago-webhook ativo
+              </p>
+              <small className="muted">Tokens e secrets não são exibidos no frontend.</small>
+            </div>
+          )}
+          <button className="secondary" onClick={() => setModal('mercado_pago')}>
+            Abrir configuração
+          </button>
+        </div>
+      </div>
+      <br />
+
+      <div className="card">
+        <h3>Empresas cadastradas</h3>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Empresa</th>
+                <th>Cidade/UF</th>
+                <th>Ativo</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {empresas.rows.map((e) => (
+                <tr key={e.id} className={selectedEmpresaId === e.id ? 'selectedRow' : ''}>
+                  <td>
+                    <b>{e.nome_fantasia || e.nome}</b>
+                    <br />
+                    <span className="muted">{e.email || e.cnpj || '—'}</span>
+                  </td>
+                  <td>{[e.cidade, e.estado].filter(Boolean).join('/') || '—'}</td>
+                  <td>{e.ativo !== false ? 'Sim' : 'Não'}</td>
+                  <td>
+                    <button
+                      className="secondary smallBtn"
+                      onClick={() => {
+                        setSelectedEmpresaId(e.id);
+                        setActiveModule('dashboard');
+                      }}
+                    >
+                      Acessar empresa
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <br />
+      <div className="card">
+        <h3>Assinaturas e pagamentos</h3>
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Empresa</th>
+                <th>Status</th>
+                <th>Vencimento</th>
+                <th>Último pagamento</th>
+                <th>Valor</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assinaturas.rows.map((a) => {
+                const emp = empresas.rows.find((e) => e.id === a.empresa_id);
+                const pl = planos.rows.find((p) => p.id === a.plano_id);
+                return (
+                  <tr key={a.id}>
+                    <td>{emp?.nome_fantasia || emp?.nome || '—'}</td>
+                    <td>
+                      <span className={`badge ${a.status === 'Ativa' ? 'Ativa' : 'Pendente'}`}>{a.status || '—'}</span>
+                    </td>
+                    <td>{a.vencimento_em ? new Date(a.vencimento_em).toLocaleDateString('pt-BR') : '—'}</td>
+                    <td>{a.mercado_pago_id || a.pago_em || '—'}</td>
+                    <td>{fmtMoney(a.valor || pl?.valor || 0)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="secondary smallBtn"
+                        disabled={!pl?.id || generatingPixFor === emp?.id}
+                        onClick={() => gerarPixAssinatura(emp, pl?.id)}
+                      >
+                        {generatingPixFor === emp?.id ? 'Gerando…' : 'Gerar Pix'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {modal === 'empresa' && (
+        <Modal title="Nova Igreja/Empresa" onClose={() => setModal(null)} wide>
+          <EntityForm
+            saving={false}
+            onCancel={() => setModal(null)}
+            onSave={criarEmpresa}
+            fields={[
+              {
+                name: 'nome',
+                label: 'Razão/Nome da igreja',
+                required: true,
+                full: true,
+              },
+              { name: 'nome_fantasia', label: 'Nome fantasia', full: true },
+              { name: 'cnpj', label: 'CNPJ' },
+              { name: 'telefone', label: 'Telefone' },
+              { name: 'email', label: 'E-mail', type: 'email' },
+              { name: 'cidade', label: 'Cidade' },
+              { name: 'estado', label: 'UF' },
+            ]}
+          />
+        </Modal>
+      )}
+      {modal === 'plano' && (
+        <Modal
+          title={editing ? 'Editar plano' : 'Novo plano'}
+          onClose={() => {
+            setModal(null);
+            setEditing(null);
+          }}
+        >
+          <EntityForm
+            saving={false}
+            initial={editing}
+            onCancel={() => {
+              setModal(null);
+              setEditing(null);
+            }}
+            onSave={salvarPlano}
+            fields={[
+              {
+                name: 'nome',
+                label: 'Nome do plano',
+                required: true,
+                full: true,
+              },
+              { name: 'valor', label: 'Valor', type: 'money', required: true },
+              {
+                name: 'dias_acesso',
+                label: 'Dias de acesso',
+                type: 'number',
+                required: true,
+              },
+              {
+                name: 'descricao',
+                label: 'Descrição',
+                type: 'textarea',
+                full: true,
+              },
+              { name: 'ativo', label: 'Ativo', type: 'checkbox' },
+            ]}
+          />
+        </Modal>
+      )}
+      {pixResult && (
+        <Modal title="Cobrança Pix da assinatura" onClose={() => setPixResult(null)}>
+          <div className="pixPaymentResult">
+            <div className="successBox">
+              <b>{pixResult.empresa_nome}</b>
+              <p>Valor: <b>{fmtMoney(pixResult.valor || 0)}</b></p>
+              <p>Status: <b>{pixResult.status || 'Aguardando Pix'}</b></p>
+              <p>Expira em: <b>{pixResult.vencimento_em ? new Date(pixResult.vencimento_em).toLocaleString('pt-BR') : '—'}</b></p>
+            </div>
+            {pixResult.qr_code_base64 && <img className="pixPaymentQr" src={`data:image/png;base64,${pixResult.qr_code_base64}`} alt="QR Code Pix da assinatura" />}
+            <label>Pix copia e cola</label>
+            <textarea readOnly rows={5} value={pixResult.pix_copia_cola || ''} />
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button type="button" className="secondary" onClick={() => navigator.clipboard?.writeText(pixResult.pix_copia_cola || '').then(() => push('Código Pix copiado.'))}>Copiar código Pix</button>
+              <button type="button" onClick={() => setPixResult(null)}>Fechar</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {modal === 'mercado_pago' && (
+        <Modal title="Configurar Mercado Pago" onClose={() => setModal(null)}>
+          <EntityForm
+            saving={false}
+            initial={cfgPagamento || { status: 'Operacional' }}
+            onCancel={() => setModal(null)}
+            onSave={salvarMercadoPago}
+            fields={[
+              { name: 'status', label: 'Status', required: true },
+              {
+                name: 'notification_url',
+                label: 'Webhook/Notification URL',
+                full: true,
+              },
+              {
+                name: 'observacoes',
+                label: 'Observações',
+                type: 'textarea',
+                full: true,
+              },
+            ]}
+          />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function GlobalFilterBar({ activeModule }) {
+  const tenant = React.useContext(TenantContext);
+  const { referencia, caixaIds, setReferencia, setCaixaIds, limparFiltros, presetsCaixas, salvarPresetCaixas } = useGlobalFilters();
+  const caixas = useTable('tipos_caixa', {
+    order: 'nome',
+    ascending: true,
+    enabled: !!tenant?.empresaId,
+    select: 'id,nome,numero_caixa,ativo',
+  });
+  const [openCaixas, setOpenCaixas] = useState(false);
+  const [incluirCaixasInativos, setIncluirCaixasInativos] = useState(false);
+  const panelRef = useRef(null);
+  const panelId = React.useId();
+
+  useEffect(() => {
+    if (!openCaixas) return undefined;
+    const closePanel = (event) => {
+      if (event.type === 'keydown' && event.key === 'Escape') {
+        setOpenCaixas(false);
+        return;
+      }
+      if (event.type === 'mousedown' && panelRef.current && !panelRef.current.contains(event.target)) setOpenCaixas(false);
+    };
+    document.addEventListener('mousedown', closePanel);
+    document.addEventListener('keydown', closePanel);
+    return () => {
+      document.removeEventListener('mousedown', closePanel);
+      document.removeEventListener('keydown', closePanel);
+    };
+  }, [openCaixas]);
+
+  if (!tenant?.empresaId || activeModule === 'admin_master') return null;
+  const moduloFinanceiro = ['dashboard', 'financeiro'].includes(activeModule);
+  const selected = (Array.isArray(caixaIds) ? caixaIds : []).map(String);
+  const selectedNames = caixas.rows.filter((c) => selected.includes(String(c.id))).map((c) => caixaNomeExibicao(c));
+  const caixasDisponiveisFiltro = caixas.rows.filter((c) => c.ativo !== false || incluirCaixasInativos || selected.includes(String(c.id)));
+  const caixaLabel = selected.length === 0 ? 'Todos os caixas' : selected.length <= 2 ? selectedNames.join(', ') : `${selected.length} caixas selecionados`;
+  const toggleCaixa = (id) => {
+    const sid = String(id);
+    setCaixaIds(selected.includes(sid) ? selected.filter((value) => value !== sid) : [...selected, sid]);
+  };
+  const marcarTodas = () => setCaixaIds(caixasDisponiveisFiltro.map((c) => String(c.id)));
+  const salvarFavorito = () => {
+    const nome = window.prompt('Nome do favorito de caixas:', selectedNames.join(' + ') || 'Meus caixas');
+    salvarPresetCaixas(nome, selected);
+  };
+  return (
+    <div className="globalFilterBar globalFilterBarMulti" aria-label="Filtros globais">
+      <div className="globalFilterTitle">
+        <b>Contexto de trabalho</b>
+        <span>{fmtReferencia(referencia || currentReferencia())} · {moduloFinanceiro ? caixaLabel : 'Todos os módulos'}</span>
+      </div>
+      <div className="field compact">
+        <label htmlFor="global-filter-referencia">Referência</label>
+        <input id="global-filter-referencia" type="month" value={referencia || currentReferencia()} onChange={(e) => setReferencia(e.target.value)} />
+      </div>
+      {moduloFinanceiro && (
+        <div className="field compact caixaMultiField" ref={panelRef}>
+          <label>Caixas</label>
+          <button type="button" className="multiSelectButton" onClick={() => setOpenCaixas((value) => !value)} aria-expanded={openCaixas} aria-controls={panelId} aria-haspopup="listbox">
+            {caixas.loading ? 'Carregando caixas…' : caixaLabel} <span aria-hidden="true">▾</span>
+          </button>
+          {openCaixas && (
+            <div className="multiSelectPanel" id={panelId} role="group" aria-label="Seleção de caixas">
+              <div className="multiSelectActions">
+                <button type="button" className="smallBtn secondary" onClick={marcarTodas} disabled={caixas.loading || caixasDisponiveisFiltro.length === 0}>
+                  Marcar todos
+                </button>
+                <button type="button" className="smallBtn secondary" onClick={() => setCaixaIds([])}>
+                  Limpar
+                </button>
+                <button type="button" className="smallBtn" disabled={selected.length === 0} onClick={salvarFavorito}>
+                  Salvar favorito
+                </button>
+              </div>
+              {presetsCaixas?.length > 0 && (
+                <div className="presetList">
+                  <b>Favoritos</b>
+                  {presetsCaixas.map((preset) => (
+                    <button type="button" key={preset.nome} className="presetChip" onClick={() => setCaixaIds((preset.ids || []).map(String))}>
+                      ⭐ {preset.nome}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <label className="includeInactiveToggle">
+                <input type="checkbox" checked={incluirCaixasInativos} onChange={(e) => setIncluirCaixasInativos(e.target.checked)} />
+                <span>Incluir caixas inativos nos filtros históricos</span>
+              </label>
+              <div className="checkList" role="listbox" aria-multiselectable="true">
+                {caixasDisponiveisFiltro.map((caixa) => {
+                  const checked = selected.includes(String(caixa.id));
+                  return (
+                    <label key={caixa.id} className={`checkItem ${caixa.ativo === false ? 'inactiveCheckItem' : ''}`} role="option" aria-selected={checked}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleCaixa(caixa.id)} />{' '}
+                      <span>
+                        {caixaNomeExibicao(caixa, { comCodigo: true })}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {caixas.error && <div className="multiSelectError" role="alert">Não foi possível carregar os caixas.</div>}
+              <div className="multiSelectFooter">
+                <span>{selected.length === 0 ? 'Todos os caixas' : `${selected.length} selecionado(s)`}</span>
+                <button type="button" className="smallBtn" onClick={() => setOpenCaixas(false)}>
+                  Aplicar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <button className="secondary smallBtn" type="button" onClick={limparFiltros} aria-label="Limpar filtros globais">
+        Limpar
+      </button>
+    </div>
+  );
+}
+
+function AuditoriaModule() {
+  const tenant = React.useContext(TenantContext);
+  const logs = useTable('auditoria_logs', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const { referencia } = useGlobalFilters();
+  const [busca, setBusca] = useState('');
+  const [acao, setAcao] = useState('todos');
+  const [tabela, setTabela] = useState('todos');
+  const [usuario, setUsuario] = useState('todos');
+  const [origem, setOrigem] = useState('todos');
+  const [periodo, setPeriodo] = useState('referencia');
+  const [dataIni, setDataIni] = useState('');
+  const [dataFim, setDataFim] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const refIni = `${referencia || currentReferencia()}-01`;
+  const refFim = (() => {
+    const [ano, mes] = String(referencia || currentReferencia())
+      .split('-')
+      .map(Number);
+    return new Date(ano, mes, 0).toISOString().slice(0, 10);
+  })();
+  const tabelas = useMemo(() => Array.from(new Set(logs.rows.map((l) => l.tabela).filter(Boolean))).sort(), [logs.rows]);
+  const usuarios = useMemo(() => Array.from(new Set(logs.rows.map((l) => l.usuario_email || l.usuario_nome || l.usuario_id).filter(Boolean))).sort(), [logs.rows]);
+  const rows = useMemo(
+    () =>
+      logs.rows.filter((l) => {
+        const created = String(l.created_at || '').slice(0, 10);
+        const ini = periodo === 'referencia' ? refIni : dataIni;
+        const fim = periodo === 'referencia' ? refFim : dataFim;
+        const periodoOk = (!ini || created >= ini) && (!fim || created <= fim);
+        const acaoOk = acao === 'todos' || l.acao === acao;
+        const tabelaOk = tabela === 'todos' || l.tabela === tabela;
+        const usuarioOk = usuario === 'todos' || [l.usuario_email, l.usuario_nome, l.usuario_id].includes(usuario);
+        const origemOk = origem === 'todos' || (origem === 'sistema' ? !!l.origem : !l.origem) || l.origem === origem;
+        const hay = [l.tabela, l.acao, l.registro_id, l.usuario_email, l.usuario_nome, l.origem, l.descricao, JSON.stringify(l.dados_antes || {}), JSON.stringify(l.dados_depois || {})].join(' ').toLowerCase();
+        const buscaOk = !busca || hay.includes(busca.toLowerCase());
+        return periodoOk && acaoOk && tabelaOk && usuarioOk && origemOk && buscaOk;
+      }),
+    [logs.rows, periodo, refIni, refFim, dataIni, dataFim, acao, tabela, usuario, origem, busca],
+  );
+  const kpis = useMemo(
+    () => ({
+      total: rows.length,
+      criacoes: rows.filter((r) => r.acao === 'INSERT').length,
+      alteracoes: rows.filter((r) => r.acao === 'UPDATE').length,
+      exclusoes: rows.filter((r) => r.acao === 'DELETE').length,
+    }),
+    [rows],
+  );
+  const exportCsv = () => {
+    const csv = rowsToCsv(
+      rows.map((r) => ({
+        data: new Date(r.created_at).toLocaleString('pt-BR'),
+        acao: AUDIT_ACTION_LABELS[r.acao] || r.acao,
+        tabela: AUDIT_TABLE_LABELS[r.tabela] || r.tabela,
+        registro: r.registro_id,
+        usuario: r.usuario_email || r.usuario_nome || r.usuario_id || '—',
+        origem: r.origem || 'Sistema',
+        descricao: r.descricao || '',
+      })),
+      [
+        { key: 'data', label: 'Data/Hora' },
+        { key: 'acao', label: 'Ação' },
+        { key: 'tabela', label: 'Tabela' },
+        { key: 'registro', label: 'Registro' },
+        { key: 'usuario', label: 'Usuário' },
+        { key: 'origem', label: 'Origem' },
+        { key: 'descricao', label: 'Descrição' },
+      ],
+    );
+    downloadTextFile(`auditoria_${referencia || currentReferencia()}.csv`, csv);
+  };
+  const clear = () => {
+    setBusca('');
+    setAcao('todos');
+    setTabela('todos');
+    setUsuario('todos');
+    setOrigem('todos');
+    setPeriodo('referencia');
+    setDataIni('');
+    setDataFim('');
+  };
+
+  return (
+    <div>
+      <div className="hero">
+        <h1>🧾 Auditoria do Sistema</h1>
+        <p>Rastreia criações, alterações e exclusões em todos os módulos da igreja, com filtros e exportação.</p>
+      </div>
+      <div className="grid cols4">
+        <div className="stat blue">
+          <small>Eventos filtrados</small>
+          <b>{kpis.total}</b>
+        </div>
+        <div className="stat green">
+          <small>Criações</small>
+          <b>{kpis.criacoes}</b>
+        </div>
+        <div className="stat orange">
+          <small>Alterações</small>
+          <b>{kpis.alteracoes}</b>
+        </div>
+        <div className="stat red">
+          <small>Exclusões</small>
+          <b>{kpis.exclusoes}</b>
+        </div>
+      </div>
+      <section className="card compactAuditFilters">
+        <div className="toolbar">
+          <h3 style={{ margin: 0 }}>Filtros de auditoria</h3>
+          <div className="row">
+            <button className="secondary smallBtn" onClick={() => setShowAdvanced((v) => !v)}>
+              {showAdvanced ? 'Ocultar filtros' : 'Mostrar filtros'}
+            </button>
+            <button className="secondary smallBtn" onClick={clear}>
+              Limpar
+            </button>
+            <button className="smallBtn" onClick={exportCsv} disabled={!rows.length}>
+              Exportar CSV
+            </button>
+            <button className="smallBtn secondary" onClick={() => downloadJsonFile(`auditoria_${referencia || currentReferencia()}.json`, rows)} disabled={!rows.length}>
+              Exportar JSON
+            </button>
+          </div>
+        </div>
+        <div className="grid cols4 compactFilters">
+          <div className="field">
+            <label>Busca</label>
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Usuário, tabela, campo, valor..." />
+          </div>
+          <div className="field">
+            <label>Período</label>
+            <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
+              <option value="referencia">Referência global</option>
+              <option value="custom">Personalizado</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Ação</label>
+            <select value={acao} onChange={(e) => setAcao(e.target.value)}>
+              <option value="todos">Todas</option>
+              <option value="INSERT">Criação</option>
+              <option value="UPDATE">Alteração</option>
+              <option value="DELETE">Exclusão</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Tabela/Módulo</label>
+            <select value={tabela} onChange={(e) => setTabela(e.target.value)}>
+              <option value="todos">Todos</option>
+              {tabelas.map((t) => (
+                <option key={t} value={t}>
+                  {AUDIT_TABLE_LABELS[t] || t}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {showAdvanced && (
+          <div className="grid cols4 compactFilters">
+            <div className="field">
+              <label>Usuário</label>
+              <select value={usuario} onChange={(e) => setUsuario(e.target.value)}>
+                <option value="todos">Todos</option>
+                {usuarios.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Origem</label>
+              <select value={origem} onChange={(e) => setOrigem(e.target.value)}>
+                <option value="todos">Todas</option>
+                <option value="app">App</option>
+                <option value="importacao_ofx">Importação OFX</option>
+                <option value="trigger">Banco/Trigger</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Data inicial</label>
+              <input type="date" value={periodo === 'referencia' ? refIni : dataIni} disabled={periodo !== 'custom'} onChange={(e) => setDataIni(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Data final</label>
+              <input type="date" value={periodo === 'referencia' ? refFim : dataFim} disabled={periodo !== 'custom'} onChange={(e) => setDataFim(e.target.value)} />
+            </div>
+          </div>
+        )}
+      </section>
+      <div className="tablewrap auditTable">
+        <table>
+          <thead>
+            <tr>
+              <th>Data/Hora</th>
+              <th>Ação</th>
+              <th>Módulo/Tabela</th>
+              <th>Usuário</th>
+              <th>Resumo</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.loading && (
+              <tr>
+                <td colSpan="6" className="center">
+                  Carregando auditoria…
+                </td>
+              </tr>
+            )}
+            {!logs.loading && rows.length === 0 && (
+              <tr>
+                <td colSpan="6" className="center muted">
+                  Nenhum evento encontrado.
+                </td>
+              </tr>
+            )}
+            {rows.map((l) => {
+              const changes = auditChanges(l.dados_antes, l.dados_depois);
+              return (
+                <tr key={l.id}>
+                  <td>{new Date(l.created_at).toLocaleString('pt-BR')}</td>
+                  <td>
+                    <span className={`badge ${AUDIT_ACTION_CLASS[l.acao] || ''}`}>{AUDIT_ACTION_LABELS[l.acao] || l.acao}</span>
+                  </td>
+                  <td>
+                    <b>{AUDIT_TABLE_LABELS[l.tabela] || l.tabela}</b>
+                    <br />
+                    <span className="muted smallText">{l.registro_id || '—'}</span>
+                  </td>
+                  <td>
+                    {l.usuario_email || l.usuario_nome || '—'}
+                    <br />
+                    <span className="muted smallText">{l.origem || 'app'}</span>
+                  </td>
+                  <td>{l.descricao || (changes.length ? `${changes.length} campo(s) alterado(s)` : 'Registro capturado')}</td>
+                  <td>
+                    <button className="smallBtn secondary" onClick={() => setSelected(l)}>
+                      Ver detalhes
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <Modal title="Detalhes da auditoria" onClose={() => setSelected(null)} wide>
+          <div className="grid cols2">
+            <div className="card soft">
+              <h3>Evento</h3>
+              <p>
+                <b>Data:</b> {new Date(selected.created_at).toLocaleString('pt-BR')}
+              </p>
+              <p>
+                <b>Ação:</b> {AUDIT_ACTION_LABELS[selected.acao] || selected.acao}
+              </p>
+              <p>
+                <b>Tabela:</b> {AUDIT_TABLE_LABELS[selected.tabela] || selected.tabela}
+              </p>
+              <p>
+                <b>Registro:</b> {selected.registro_id || '—'}
+              </p>
+              <p>
+                <b>Usuário:</b> {selected.usuario_email || selected.usuario_nome || selected.usuario_id || '—'}
+              </p>
+            </div>
+            <div className="card soft">
+              <h3>Resumo</h3>
+              <p>{selected.descricao || 'Evento gerado automaticamente pelo banco de dados.'}</p>
+              <p>
+                <b>IP:</b> {selected.ip || '—'}
+              </p>
+              <p>
+                <b>User Agent:</b> {selected.user_agent || '—'}
+              </p>
+            </div>
+          </div>
+          <h3>Campos alterados</h3>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Campo</th>
+                  <th>Antes</th>
+                  <th>Depois</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditChanges(selected.dados_antes, selected.dados_depois).map((c) => (
+                  <tr key={c.campo}>
+                    <td>
+                      <b>{c.campo}</b>
+                    </td>
+                    <td>{formatAuditValue(c.antes)}</td>
+                    <td>{formatAuditValue(c.depois)}</td>
+                  </tr>
+                ))}
+                {auditChanges(selected.dados_antes, selected.dados_depois).length === 0 && (
+                  <tr>
+                    <td colSpan="3" className="center muted">
+                      Sem diferenças detalhadas para exibir.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <details style={{ marginTop: 16 }}>
+            <summary>JSON bruto</summary>
+            <pre className="codeBlock">{JSON.stringify({ antes: selected.dados_antes, depois: selected.dados_depois }, null, 2)}</pre>
+          </details>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function LtSvgIcon({ name, variant = 'classico' }) {
+  const iconVariant = normalizeIconStyle(variant);
+  const transportadoraEmoji = {
+    admin_master: '🛡️',
+    dashboard: '📊',
+    financeiro: '💰',
+    secretaria: '🗂️',
+    ebd: '📖',
+    patrimonio: '🏛️',
+    portal: '📱',
+    assinatura: '💳',
+    cadastros: '⚙️',
+    usuarios: '🔐',
+    configuracoes: '🛠️',
+    logs: '🔎',
+    auditoria: '🧾',
+    tutorial: '🚀',
+  };
+  const accentByName = {
+    admin_master: '#8b5cf6',
+    dashboard: '#38bdf8',
+    financeiro: '#34d399',
+    secretaria: '#60a5fa',
+    ebd: '#f59e0b',
+    patrimonio: '#a78bfa',
+    portal: '#22d3ee',
+    assinatura: '#38bdf8',
+    cadastros: '#94a3b8',
+    usuarios: '#f472b6',
+    configuracoes: '#2dd4bf',
+    logs: '#fb923c',
+    auditoria: '#c084fc',
+    tutorial: '#fb7185',
+  };
+
+  const outlineIcons = {
+    admin_master: <><path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z"/><path d="M9.5 12l1.7 1.7L15 10"/></>,
+    dashboard: <><rect x="3" y="3" width="7" height="8" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/></>,
+    financeiro: <><circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.7-.8-1.7-1.2-3-1.2-1.8 0-3 .8-3 2s1.1 1.7 3.2 2.1c2 .4 2.8 1.1 2.8 2.2s-1.1 2-3 2c-1.4 0-2.5-.4-3.4-1.3"/><path d="M12 6.5v11"/></>,
+    secretaria: <><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v7A2.5 2.5 0 0 1 17.5 18h-11A2.5 2.5 0 0 1 4 15.5z"/><path d="M8 12h8M8 15h5"/></>,
+    ebd: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 1 4 17.5z"/><path d="M8 3v17M8 8h8M8 12h7"/></>,
+    patrimonio: <><path d="M3 21h18M5 10h14M6 10v8M10 10v8M14 10v8M18 10v8"/><path d="M12 3l8 5H4z"/></>,
+    portal: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
+    assinatura: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></>,
+    cadastros: <><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3 1.1 0 2.2-.1 3.1-.3"/><path d="M18 15v6M15 18h6"/></>,
+    usuarios: <><path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.85M16 3.13a4 4 0 0 1 0 7.75"/></>,
+    configuracoes: <><path d="M4 6h7M15 6h5M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="13" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></>,
+    logs: <><circle cx="11" cy="11" r="7"/><path d="M11 7v4l3 2M16.5 16.5 21 21"/></>,
+    auditoria: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></>,
+    tutorial: <><path d="M4.5 16.5 3 21l4.5-1.5L19 8a3.5 3.5 0 0 0-5-5z"/><path d="M13 4l7 7"/></>,
+  };
+
+  /* Clássico moderno: pictogramas sólidos, monocromáticos e sem caixa. */
+  const classicIcons = {
+    admin_master: <path d="M12 2.5 20 7v5.1c0 5-3.5 8.3-8 9.8-4.5-1.5-8-4.8-8-9.8V7l8-4.5Zm-1.2 13.6 5.3-5.3-1.5-1.5-3.8 3.8-1.7-1.7-1.5 1.5 3.2 3.2Z"/>,
+    dashboard: <path d="M3 3h8v7H3V3Zm10 0h8v11h-8V3ZM3 12h8v9H3v-9Zm10 4h8v5h-8v-5Z"/>,
+    financeiro: <><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H18a2 2 0 0 1 2 2v2H8.5a4 4 0 0 0 0 8H20v1.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Z"/><path d="M8.5 10H21v4H8.5a2 2 0 1 1 0-4Zm8.5 1.25a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="var(--sidebar-bg,#0f2942)"/></>,
+    secretaria: <><path d="M3 7a3 3 0 0 1 3-3h4l2 2h6a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7Z"/><path d="M7 11h10v2H7zm0 4h6v2H7z" fill="var(--sidebar-bg,#0f2942)"/></>,
+    ebd: <path d="M3 4.5A3.5 3.5 0 0 1 6.5 1H12v19H6.5A3.5 3.5 0 0 1 3 16.5v-12ZM13 1h4.5A3.5 3.5 0 0 1 21 4.5v12a3.5 3.5 0 0 1-3.5 3.5H13V1Zm-7 5h4v1.8H6V6Zm0 4h4v1.8H6V10Zm9-4h4v1.8h-4V6Zm0 4h4v1.8h-4V10Z"/>,
+    patrimonio: <path d="m12 2 10 5.5V10H2V7.5L12 2ZM4 12h3v7H4v-7Zm5 0h3v7H9v-7Zm5 0h3v7h-3v-7Zm5 0h2v7h-2v-7ZM2 20h20v2H2v-2Z"/>,
+    portal: <path d="M3 3h8v8H3V3Zm10 0h8v8h-8V3ZM3 13h8v8H3v-8Zm10 0h8v8h-8v-8Z"/>,
+    assinatura: <path d="M5 2h14a2 2 0 0 1 2 2v18l-3-1.7-3 1.7-3-1.7L9 22l-3-1.7L3 22V4a2 2 0 0 1 2-2Zm3 5v2h8V7H8Zm0 4v2h8v-2H8Zm0 4v2h5v-2H8Z"/>,
+    cadastros: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5c0 1.7-3.6 3-8 3S4 6.7 4 5Zm0 8v5c0 1.7 3.6 3 8 3 1.2 0 2.4-.1 3.4-.3v-5c-1 .2-2.2.3-3.4.3-4.4 0-8-1.3-8-3Z"/><path d="M19 15v7m-3.5-3.5h7" stroke="currentColor" strokeWidth="2.4" fill="none" strokeLinecap="round"/></>,
+    usuarios: <path d="M9 3a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Zm-7 18v-2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v2H2Zm14.2-7.5A4.5 4.5 0 0 1 22 17.8V21h-4v-2a8 8 0 0 0-1.8-5.1v-.4ZM16.5 3a4 4 0 0 1 0 8c-.6 0-1.2-.1-1.7-.4A6.2 6.2 0 0 0 16.5 3Z"/>,
+    configuracoes: <path d="M3 5h8v3H3V5Zm12 0h6v3h-6V5ZM3 11h3v3H3v-3Zm7 0h11v3H10v-3ZM3 17h10v3H3v-3Zm14 0h4v3h-4v-3ZM12 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm-4 6a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm7 6a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z"/>,
+    logs: <path d="M10.5 3a7.5 7.5 0 1 1-4.7 13.3L1.5 20.6 3 22l4.3-4.3A7.5 7.5 0 0 1 10.5 3Zm-1 3v5.5l4.2 2.5 1-1.7-3.2-1.9V6h-2Z"/>,
+    auditoria: <path d="M5 2h9l5 5v15H5V2Zm8 1.5V8h4.5L13 3.5ZM8 12h8v2H8v-2Zm0 4h6v2H8v-2Z"/>,
+    tutorial: <path d="m3 21 1.8-5.4L15.7 4.7a4.2 4.2 0 1 1 5.9 5.9L10.7 21.5 3 21Zm3.2-4.5-.7 2.2 2.2-.7 10.9-10.9a1.8 1.8 0 0 0-2.5-2.5L5.2 15.5l1 1Z"/>,
+  };
+
+  /* Preenchido moderno: ícones duotone coloridos, sem quadrado externo. */
+  const filledIcons = {
+    admin_master: <><path fill="var(--lt-icon-soft)" d="M12 2.5 20 7v5c0 5-3.5 8.4-8 10-4.5-1.6-8-5-8-10V7l8-4.5Z"/><path fill="var(--lt-icon-accent)" d="m10.7 16.4-3.2-3.2 1.6-1.6 1.6 1.6 4.2-4.2 1.6 1.6-5.8 5.8Z"/></>,
+    dashboard: <><rect x="3" y="3" width="8" height="8" rx="2.2" fill="var(--lt-icon-accent)"/><rect x="13" y="3" width="8" height="5" rx="2.2" fill="var(--lt-icon-soft)"/><rect x="13" y="10" width="8" height="11" rx="2.2" fill="var(--lt-icon-accent)"/><rect x="3" y="13" width="8" height="8" rx="2.2" fill="var(--lt-icon-soft)"/></>,
+    financeiro: <><path fill="var(--lt-icon-soft)" d="M3 6.5A3.5 3.5 0 0 1 6.5 3H18a3 3 0 0 1 3 3v2H8.5a4.5 4.5 0 0 0 0 9H21v1a3 3 0 0 1-3 3H6.5A3.5 3.5 0 0 1 3 17.5v-11Z"/><path fill="var(--lt-icon-accent)" d="M8.5 10H22v5H8.5a2.5 2.5 0 1 1 0-5Zm8.5 1.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/></>,
+    secretaria: <><path fill="var(--lt-icon-soft)" d="M3 7a3 3 0 0 1 3-3h4l2 2h6a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7Z"/><path fill="var(--lt-icon-accent)" d="M7 11h10v2H7zm0 4h7v2H7z"/></>,
+    ebd: <><path fill="var(--lt-icon-accent)" d="M3 4.5A3.5 3.5 0 0 1 6.5 1H12v20H6.5A3.5 3.5 0 0 1 3 17.5v-13Z"/><path fill="var(--lt-icon-soft)" d="M13 1h4.5A3.5 3.5 0 0 1 21 4.5v13a3.5 3.5 0 0 1-3.5 3.5H13V1Z"/><path fill="#fff" opacity=".9" d="M6 7h4v1.6H6zm0 4h4v1.6H6zm9-4h4v1.6h-4zm0 4h4v1.6h-4z"/></>,
+    patrimonio: <><path fill="var(--lt-icon-accent)" d="m12 2 10 5.5V10H2V7.5L12 2Z"/><path fill="var(--lt-icon-soft)" d="M4 12h3v7H4zm5 0h3v7H9zm5 0h3v7h-3zm5 0h2v7h-2zM2 20h20v2H2z"/></>,
+    portal: <><rect x="3" y="3" width="8" height="8" rx="2" fill="var(--lt-icon-accent)"/><rect x="13" y="3" width="8" height="8" rx="2" fill="var(--lt-icon-soft)"/><rect x="3" y="13" width="8" height="8" rx="2" fill="var(--lt-icon-soft)"/><rect x="13" y="13" width="8" height="8" rx="2" fill="var(--lt-icon-accent)"/></>,
+    assinatura: <><path fill="var(--lt-icon-soft)" d="M5 2h14a2 2 0 0 1 2 2v18l-3-1.7-3 1.7-3-1.7L9 22l-3-1.7L3 22V4a2 2 0 0 1 2-2Z"/><path fill="var(--lt-icon-accent)" d="M8 7h8v2H8zm0 4h8v2H8zm0 4h5v2H8z"/></>,
+    cadastros: <><ellipse cx="11" cy="5" rx="8" ry="3" fill="var(--lt-icon-accent)"/><path fill="var(--lt-icon-soft)" d="M3 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5c0 1.7-3.6 3-8 3S3 6.7 3 5Zm0 8v5c0 1.7 3.6 3 8 3 1.2 0 2.4-.1 3.4-.3v-5c-1 .2-2.2.3-3.4.3-4.4 0-8-1.3-8-3Z"/><path d="M19 15v7m-3.5-3.5h7" stroke="var(--lt-icon-accent)" strokeWidth="2.5" fill="none" strokeLinecap="round"/></>,
+    usuarios: <><circle cx="9" cy="7" r="4.5" fill="var(--lt-icon-accent)"/><path fill="var(--lt-icon-accent)" d="M2 21v-2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v2H2Z"/><circle cx="17" cy="8" r="3.5" fill="var(--lt-icon-soft)"/><path fill="var(--lt-icon-soft)" d="M15.5 14a5 5 0 0 1 6.5 4.8V21h-4v-2a8 8 0 0 0-2.5-5Z"/></>,
+    configuracoes: <><path fill="var(--lt-icon-soft)" d="M3 5h8v3H3zm12 0h6v3h-6zM3 11h3v3H3zm7 0h11v3H10zM3 17h10v3H3zm14 0h4v3h-4z"/><circle cx="12" cy="6.5" r="2.7" fill="var(--lt-icon-accent)"/><circle cx="8" cy="12.5" r="2.7" fill="var(--lt-icon-accent)"/><circle cx="15" cy="18.5" r="2.7" fill="var(--lt-icon-accent)"/></>,
+    logs: <><circle cx="10.5" cy="10.5" r="7.5" fill="var(--lt-icon-soft)"/><path d="M10.5 6.5v4.5l3 2" stroke="var(--lt-icon-accent)" strokeWidth="2" fill="none" strokeLinecap="round"/><path d="m16 16 5 5" stroke="var(--lt-icon-accent)" strokeWidth="2.8" strokeLinecap="round"/></>,
+    auditoria: <><path fill="var(--lt-icon-soft)" d="M5 2h9l5 5v15H5V2Z"/><path fill="var(--lt-icon-accent)" d="M13 2v6h6v-1l-5-5h-1ZM8 12h8v2H8zm0 4h6v2H8z"/></>,
+    tutorial: <><path fill="var(--lt-icon-accent)" d="m3 21 1.8-5.4L15.7 4.7a4.2 4.2 0 1 1 5.9 5.9L10.7 21.5 3 21Z"/><path fill="var(--lt-icon-soft)" d="m6.2 16.5-.7 2.2 2.2-.7 10.9-10.9a1.8 1.8 0 0 0-2.5-2.5L5.2 15.5l1 1Z"/></>,
+  };
+
+  const common = {
+    width: 22,
+    height: 22,
+    viewBox: '0 0 24 24',
+    'aria-hidden': 'true',
+  };
+
+  if (iconVariant === 'minimalista') {
+    return (
+      <svg className={`ltIconSvg ltIconSvg--minimalista ltIconSvg--${name}`} {...common} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        {outlineIcons[name] || outlineIcons.dashboard}
+      </svg>
+    );
+  }
+
+  if (iconVariant === 'preenchido') {
+    return (
+      <span className={`ltEmojiIcon ltEmojiIcon--${name}`} aria-hidden="true">
+        {transportadoraEmoji[name] || transportadoraEmoji.dashboard}
+      </span>
+    );
+  }
+
+  return (
+    <svg className={`ltIconSvg ltIconSvg--classico ltIconSvg--${name}`} {...common} fill="currentColor">
+      {classicIcons[name] || classicIcons.dashboard}
+    </svg>
+  );
+}
+
+function Layout({ profile, onLogout, activeModule, setActiveModule, selectedEmpresaId, setSelectedEmpresaId, children }) {
+  const [collapsed, setCollapsed] = useState(() => storageGet('igreja:sidebarCollapsed', false) === true);
+  const [openSidebarGroups, setOpenSidebarGroups] = useState(() => storageGet('igreja:sidebarGroups', {}));
+  const [colorMode, setColorMode] = useState(() => storageGet('igreja:colorMode', 'light'));
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const subscriptionAccess = useSubscriptionAccess();
+  const empresas = useTable('empresas', { order: 'nome', ascending: true });
+  const assinaturas = useTable('assinaturas', {
+    order: 'created_at',
+    ascending: false,
+  });
+  const isMaster = isMasterProfile(profile);
+  const masterSemEmpresa = isMaster && !selectedEmpresaId;
+  const empresaAtual = empresas.rows.find((e) => e.id === selectedEmpresaId || e.id === profile?.empresa_id) || {};
+  const assinatura = assinaturas.rows.find((a) => a.empresa_id === empresaAtual.id) || null;
+  const nomeSistema = masterSemEmpresa ? 'Painel Master' : empresaAtual.nome_fantasia || empresaAtual.nome || 'Sistema Igreja Online';
+  const themeStyle = masterSemEmpresa ? empresaThemeStyle({ cor_menu: DEFAULT_THEME_COLOR }) : empresaThemeStyle(empresaAtual);
+  const activeIconStyle = masterSemEmpresa ? 'classico' : getEmpresaThemeValues(empresaAtual).iconStyle;
+  const logoEmpresa = !masterSemEmpresa && empresaAtual.logomarca ? empresaAtual.logomarca : '';
+  const perfilLabel = isMaster ? 'Admin Master' : ROLE_LABEL[profile?.role] || 'Usuário';
+  const assinaturaLabel = masterSemEmpresa ? 'Global' : assinatura?.status || 'Teste';
+  const modules = access.allowedModuleIds || [];
+  const { sideNav } = useMenuPersonalizado();
+  const labels = {
+    admin_master: { icon: '🛡️', label: 'Painel Master' },
+    dashboard: { icon: '📊', label: 'Dashboard' },
+    assinatura: { icon: '💳', label: 'Assinatura' },
+    financeiro: { icon: '💰', label: 'Financeiro' },
+    secretaria: { icon: '🗂️', label: 'Secretaria' },
+    ebd: { icon: '📖', label: 'EBD' },
+    patrimonio: { icon: '🏛️', label: 'Patrimônio' },
+    portal: { icon: '◉', label: 'Portal do Membro' },
+    cadastros: { icon: '⚙️', label: 'Cadastros' },
+    usuarios: { icon: '🔐', label: 'Usuários' },
+    configuracoes: { icon: '🛠️', label: 'Configurações' },
+    logs: { icon: '🔎', label: 'Logs / Auditoria' },
+    auditoria: { icon: '🧾', label: 'Auditoria' },
+    tutorial: { icon: '🚀', label: 'Tutorial' },
+  };
+  const grupos = masterSemEmpresa
+    ? [
+        {
+          title: 'Administração SaaS',
+          items: [
+            {
+              id: 'admin_master',
+              icon: '🛡️',
+              label: 'Painel Master',
+              visible: true,
+            },
+          ],
+        },
+      ]
+    : sideNav;
+  const visible = (id) => {
+    if (masterSemEmpresa) return id === 'admin_master';
+    if (isMaster) return id !== 'admin_master';
+    return access.canModule(id);
+  };
+
+  useEffect(() => {
+    if (masterSemEmpresa) {
+      if (activeModule !== 'admin_master') setActiveModule('admin_master');
+      return;
+    }
+    if (access.loading || isMaster) return;
+    if (!activeModule || activeModule === 'admin_master' || !access.canModule(activeModule)) {
+      setActiveModule(modules[0] || 'dashboard');
+    }
+  }, [masterSemEmpresa, activeModule, access.loading, modules.join('|'), isMaster, selectedEmpresaId]);
+  const goMaster = () => {
+    setSelectedEmpresaId('');
+    setActiveModule('admin_master');
+  };
+  const resetModuleHome = (id) => {
+    window.dispatchEvent(new CustomEvent('igreja:modulePageReset', { detail: { moduleKey: id } }));
+    storageSet(`igreja:${tenant?.empresaId || 'global'}:${id}:page`, 'home');
+  };
+  const handleNavClick = (id) => {
+    if (!subscriptionAccess.canAccessModule(id)) {
+      setActiveModule('assinatura');
+      window.dispatchEvent(new CustomEvent('igreja:subscriptionBlocked', { detail: { moduleId: id } }));
+      return;
+    }
+    if (activeModule === id) resetModuleHome(id);
+    setActiveModule(id);
+  };
+  const activeLabel = labels[activeModule]?.label || activeModule || 'Dashboard';
+  const toggleSidebar = () => {
+    setCollapsed((current) => {
+      const next = !current;
+      storageSet('igreja:sidebarCollapsed', next);
+      return next;
+    });
+  };
+  const toggleSidebarGroup = (groupKey) => {
+    if (collapsed) return;
+    setOpenSidebarGroups((current) => {
+      const next = { ...current, [groupKey]: current[groupKey] === false };
+      storageSet('igreja:sidebarGroups', next);
+      return next;
+    });
+  };
+  useEffect(() => {
+    const activeGroupIndex = grupos.findIndex((group) => group.items.some((item) => item.id === activeModule));
+    if (activeGroupIndex < 0) return;
+    const groupKey = `${activeGroupIndex}:${grupos[activeGroupIndex].title}`;
+    setOpenSidebarGroups((current) => {
+      if (current[groupKey] !== false) return current;
+      const next = { ...current, [groupKey]: true };
+      storageSet('igreja:sidebarGroups', next);
+      return next;
+    });
+  }, [activeModule, grupos.map((group) => group.title).join('|')]);
+  const userInitials = String(profile?.nome || profile?.email || 'U')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+  const toggleColorMode = () =>
+    setColorMode((current) => {
+      const next = current === 'dark' ? 'light' : 'dark';
+      storageSet('igreja:colorMode', next);
+      return next;
+    });
+  return (
+    <div className={`appShell iconStyle-${activeIconStyle} ${collapsed ? 'sidebarCollapsed' : ''} ${colorMode === 'dark' ? 'darkMode' : ''}`} style={themeStyle}>
+      <a className="skipLink" href="#conteudo-principal">Pular para o conteúdo</a>
+      <aside className="sidebar transportSidebar" aria-label="Menu lateral">
+        <div className="sidebarBrand">
+          <div className="sidebarLogo">{logoEmpresa ? <img src={logoEmpresa} alt={nomeSistema} /> : <img src="/logo-icon.svg" alt="Lábrea Tech" />}</div>
+          <div className="sidebarBrandText">
+            <b>{nomeSistema}</b>
+            <span>
+              {perfilLabel} · v{APP_VERSION}
+            </span>
+          </div>
+        </div>
+        <div className="sidebarAccount">
+          <span className="sidebarStatusDot"></span>
+          <div>
+            <b>{assinaturaLabel}</b>
+            <small>{masterSemEmpresa ? 'Administração global' : isMaster ? 'Visualização Master' : 'Empresa conectada'}</small>
+          </div>
+        </div>
+        <button type="button" className="sidebarToggle" onClick={toggleSidebar} title={collapsed ? 'Expandir menu' : 'Recolher menu'} aria-label={collapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'} aria-expanded={!collapsed}>
+          {collapsed ? '»' : '«'}
+        </button>
+        <nav className="sidebarNav transportSidebarNav" aria-label="Navegação principal">
+          {grupos.map((g, groupIndex) => {
+            const groupKey = `${groupIndex}:${g.title}`;
+            const groupItems = g.items.filter((item) => item.visible !== false && visible(item.id));
+            const groupOpen = collapsed || openSidebarGroups[groupKey] !== false;
+            if (groupItems.length === 0) return null;
+            return (
+              <section className="navGroup transportNavGroup" key={groupKey}>
+                <div className="navGroupTitle transportNavHeading" aria-hidden={collapsed ? 'true' : undefined}>
+                  <span>{g.title}</span>
+                </div>
+                <div className="navGroupItems transportNavItems" id={`sidebar-group-${groupIndex}`}>
+                  {groupItems.map((item) => {
+                    const base = labels[item.id] || {};
+                    const icon = item.icon || base.icon || '•';
+                    const label = item.label || base.label || item.id;
+                    const iconIsCustom = item.icon && item.icon !== base.icon;
+                    return (
+                      <div
+                        key={item.id}
+                        role="button"
+                        tabIndex={0}
+                        className={`ltSideNavItem transportNavItem ${activeModule === item.id ? 'isActive' : ''} ${!subscriptionAccess.canAccessModule(item.id) ? 'isLocked' : ''}`}
+                        onClick={() => handleNavClick(item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            handleNavClick(item.id);
+                          }
+                        }}
+                        title={collapsed ? label : undefined}
+                        aria-label={collapsed ? label : undefined}
+                        aria-current={activeModule === item.id ? 'page' : undefined}
+                      >
+                        <span className="ltSideNavIcon" aria-hidden="true">{iconIsCustom ? icon : <LtSvgIcon name={item.id} variant={activeIconStyle} />}</span>
+                        <span className="ltSideNavText">{label}</span>{!subscriptionAccess.canAccessModule(item.id) && <span className="subscriptionNavLock" aria-label="Módulo bloqueado">🔒</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </nav>
+        <div className="sidebarFooter">
+          <div className="sidebarUser" title={profile?.nome || profile?.email || 'Usuário'}>
+            <span className="sidebarAvatar" aria-hidden="true">{userInitials || 'U'}</span>
+            <span className="sidebarUserText">
+              <b>{profile?.nome || profile?.email || 'Usuário'}</b>
+              <small>{perfilLabel}</small>
+            </span>
+          </div>
+          <div className="sidebarFooterActions">
+            <button type="button" onClick={toggleColorMode} title={colorMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'} aria-label={colorMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}>
+              <span aria-hidden="true">{colorMode === 'dark' ? '☀' : '☾'}</span><span className="sidebarFooterActionText">Tema</span>
+            </button>
+            <button type="button" onClick={onLogout} title="Sair" aria-label="Sair do sistema">
+              <span aria-hidden="true">↪</span><span className="sidebarFooterActionText">Sair</span>
+            </button>
+          </div>
+          <div className="sidebarVersion">v{APP_VERSION}</div>
+        </div>
+      </aside>
+      <div className="shellMain">
+        <header className="appTopbar">
+          <div className="topbarTitleBlock">
+            {logoEmpresa && <img className="topbarEmpresaLogo" src={logoEmpresa} alt={nomeSistema} />}
+            <div>
+              <div className="crumb">{nomeSistema}</div>
+              <h1>{activeLabel}</h1>
+            </div>
+          </div>
+          <div className="topActions">
+            <button className="secondary colorModeToggle" type="button" onClick={toggleColorMode} aria-label={colorMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'} title={colorMode === 'dark' ? 'Modo claro' : 'Modo escuro'}>
+              {colorMode === 'dark' ? '☀' : '☾'}
+            </button>
+            {isMaster && selectedEmpresaId && (
+              <button className="masterTopBack" type="button" onClick={goMaster}>
+                🛡️ Voltar ao Painel Master
+              </button>
+            )}
+            <div className="userPill">
+              <span>👤</span>
+              <b>{profile?.nome || profile?.email || 'Usuário'}</b>
+              <small>{perfilLabel}</small>
+            </div>
+            <button className="secondary" onClick={onLogout}>
+              Sair
+            </button>
+          </div>
+        </header>
+        {isMaster && selectedEmpresaId && (
+          <div className="masterContextBanner">
+            <span className="masterContextIcon">🛡️</span>
+            <div>
+              <b>Modo Master ativo</b>
+              <span>Você está administrando a igreja selecionada.</span>
+            </div>
+          </div>
+        )}
+        {!masterSemEmpresa && subscriptionAccess.grace && (
+          <div className="subscriptionAccessBanner grace" role="status">
+            <div><b>Assinatura vencida há {subscriptionAccess.daysOverdue} dia(s).</b><span>Regularize dentro do período de tolerância para evitar restrições.</span></div>
+            <button type="button" onClick={() => setActiveModule('assinatura')}>Regularizar assinatura</button>
+          </div>
+        )}
+        {!masterSemEmpresa && subscriptionAccess.restricted && (
+          <div className="subscriptionAccessBanner restricted" role="alert">
+            <div><b>Acesso restrito por assinatura vencida.</b><span>Seus dados estão preservados. Secretaria, Usuários e Configurações permanecem disponíveis somente para consulta.</span></div>
+            <button type="button" onClick={() => setActiveModule('assinatura')}>Regularizar assinatura</button>
+          </div>
+        )}
+        <GlobalFilterBar activeModule={activeModule} />
+        <main id="conteudo-principal" className="page shellPage" tabIndex={-1}>{children}</main>
+      </div>
+    </div>
+  );
+}
+
+function PendingScreen({ onLogout, email }) {
+  return (
+    <div className="login">
+      <div className="loginBox card">
+        <h2>Acesso aguardando liberação</h2>
+        <p>
+          Olá! Seu cadastro (<b>{email}</b>) foi criado, mas ainda não foi liberado por um administrador.
+        </p>
+        <p className="muted">Peça para um administrador acessar o módulo de Usuários e liberar seu acesso, definindo o perfil correto (Financeiro, Secretaria ou EBD).</p>
+        <button onClick={onLogout}>Sair</button>
+      </div>
+    </div>
+  );
+}
+
+function AccessDenied({ moduleKey }) {
+  const labels = {
+    dashboard: 'Dashboard',
+    assinatura: 'Assinatura',
+    financeiro: 'Financeiro',
+    secretaria: 'Comunidade',
+    ebd: 'Ensino / EBD',
+    patrimonio: 'Patrimônio',
+    portal: 'Portal do Membro',
+    cadastros: 'Cadastros',
+    usuarios: 'Usuários',
+    configuracoes: 'Configurações',
+    logs: 'Logs / Auditoria',
+    auditoria: 'Auditoria',
+    tutorial: 'Tutorial',
+  };
+  return (
+    <div className="card accessDeniedBox">
+      <h2>Acesso não liberado</h2>
+      <p>
+        Seu perfil não possui permissão para visualizar o módulo <b>{labels[moduleKey] || moduleKey}</b>.
+      </p>
+      <p className="muted">
+        Peça para um administrador revisar as permissões em <b>Usuários › Perfis e permissões</b>.
+      </p>
+    </div>
+  );
+}
+
+function SubscriptionBlocked({ moduleKey, onRegularize }) {
+  return (
+    <div className="card subscriptionBlockedCard" role="alert">
+      <div className="subscriptionBlockedIcon" aria-hidden="true">🔒</div>
+      <h2>Módulo temporariamente bloqueado</h2>
+      <p>Este módulo está restrito porque o período de tolerância da assinatura terminou.</p>
+      <p className="muted">Os dados permanecem preservados e voltarão a ficar disponíveis após a confirmação do pagamento.</p>
+      <button type="button" onClick={onRegularize}>Regularizar assinatura</button>
+    </div>
+  );
+}
+
+function RestrictedReadOnly({ children, moduleLabel = 'Módulo', onRegularize }) {
+  const mutationPattern = /(salvar|cadastrar|cadastro|novo|nova|editar|excluir|remover|adicionar|alterar|inativar|ativar|importar|transferir|lançar|registrar|redefinir|resetar|vincular|desvincular|criar|gerenciar)/i;
+  const allowPattern = /(visualizar|ver|consultar|buscar|pesquisar|filtrar|imprimir|exportar|baixar|fechar|voltar|limpar|detalhes|próximo|anterior)/i;
+  const blockMutation = (event) => {
+    const target = event.target?.closest?.('button,a,[role="button"]');
+    if (!target) return;
+    const label = String(target.innerText || target.getAttribute('aria-label') || target.title || '').trim();
+    if (allowPattern.test(label)) return;
+    if (mutationPattern.test(label) || target.closest('form')) {
+      event.preventDefault();
+      event.stopPropagation();
+      onRegularize?.();
+    }
+  };
+  const blockSubmit = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onRegularize?.();
+  };
+  return (
+    <div className="subscriptionReadOnly" data-restricted-read-only="true" onClickCapture={blockMutation} onSubmitCapture={blockSubmit}>
+      <div className="subscriptionReadOnlyNotice"><b>{moduleLabel} em modo consulta.</b> Cadastros, alterações e exclusões ficam disponíveis novamente após a regularização.</div>
+      {children}
+    </div>
+  );
+}
+
+function ModuleRouter({ activeModule, profile, selectedEmpresaId, setSelectedEmpresaId, setActiveModule }) {
+  const access = usePermissions();
+  const subscriptionAccess = useSubscriptionAccess();
+  if (activeModule === 'admin_master' && isMasterProfile(profile)) {
+    return <MasterPanel selectedEmpresaId={selectedEmpresaId} setSelectedEmpresaId={setSelectedEmpresaId} setActiveModule={setActiveModule} />;
+  }
+  if (activeModule !== 'admin_master' && !access.canModule(activeModule)) {
+    return <AccessDenied moduleKey={activeModule || 'dashboard'} />;
+  }
+  if (activeModule !== 'admin_master' && !subscriptionAccess.canAccessModule(activeModule)) {
+    return <SubscriptionBlocked moduleKey={activeModule} onRegularize={() => setActiveModule('assinatura')} />;
+  }
+  return (
+    <>
+      {activeModule === 'assinatura' && <ClienteAssinaturaPage profile={profile} />}
+      {activeModule === 'dashboard' && (
+        <DashboardModule
+          onNavigate={(module, page = 'home') => {
+            if (page !== 'home') storageSet(`igreja:${selectedEmpresaId || profile?.empresa_id || 'global'}:${module}:page`, page);
+            setActiveModule(module);
+          }}
+        />
+      )}
+      {activeModule === 'financeiro' && <FinanceiroModule />}
+      {activeModule === 'secretaria' && (subscriptionAccess.readOnlyRestrictedModules ? <RestrictedReadOnly moduleLabel="Secretaria" onRegularize={() => setActiveModule('assinatura')}><SecretariaModule /></RestrictedReadOnly> : <SecretariaModule />)}
+      {activeModule === 'ebd' && <EbdModule />}
+      {activeModule === 'patrimonio' && <PatrimonioModule />}
+      {activeModule === 'portal' && <PortalMembroModule profile={profile} />}
+      {activeModule === 'cadastros' && <CadastrosModule />}
+      {activeModule === 'usuarios' && (subscriptionAccess.readOnlyRestrictedModules ? <RestrictedReadOnly moduleLabel="Usuários" onRegularize={() => setActiveModule('assinatura')}><UsuariosPermissoesPage /></RestrictedReadOnly> : <UsuariosPermissoesPage />)}
+      {activeModule === 'configuracoes' && (subscriptionAccess.readOnlyRestrictedModules ? <RestrictedReadOnly moduleLabel="Configurações" onRegularize={() => setActiveModule('assinatura')}><ConfiguracoesModule /></RestrictedReadOnly> : <ConfiguracoesModule />)}
+      {(activeModule === 'auditoria' || activeModule === 'logs') && <AuditoriaModule />}
+      {activeModule === 'tutorial' && <TutorialModule />}
+    </>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileError, setProfileError] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [mustSetPassword, setMustSetPassword] = useState(() => isPasswordSetupUrl());
+  const [activeModule, setActiveModuleState] = useState(() => storageGet('igreja:activeModule', ''));
+  const [selectedEmpresaId, setSelectedEmpresaIdState] = useState(() => storageGet('igreja:selectedEmpresaId', ''));
+  const profileUserIdRef = useRef('');
+  const setActiveModule = useCallback((value) => {
+    setActiveModuleState(value);
+    storageSet('igreja:activeModule', value);
+  }, []);
+  const setSelectedEmpresaId = useCallback((value) => {
+    setSelectedEmpresaIdState(value);
+    storageSet('igreja:selectedEmpresaId', value);
+  }, []);
+
+  const ensurePendingProfile = useCallback(async (user) => {
+    if (!user?.id) return null;
+    const fallback = {
+      id: user.id,
+      nome: user.user_metadata?.nome || user.user_metadata?.name || '',
+      email: user.email || '',
+      role: isMasterEmail(user.email) ? 'master' : 'consulta',
+      ativo: isMasterEmail(user.email),
+    };
+    const { data, error } = await supabase.from('profiles').upsert(fallback, { onConflict: 'id' }).select('*').maybeSingle();
+    if (error) throw error;
+    return data || fallback;
+  }, []);
+
+  const loadProfile = useCallback(
+    async (user) => {
+      const userId = typeof user === 'string' ? user : user?.id;
+      if (!userId) {
+        profileUserIdRef.current = '';
+        setProfile(null);
+        setProfileLoaded(true);
+        return;
+      }
+      const isSameLoadedUser = profileUserIdRef.current === userId;
+      profileUserIdRef.current = userId;
+      if (!isSameLoadedUser) setProfileLoaded(false);
+      setProfileError(null);
+      try {
+        const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+        if (error) throw error;
+        const resolved = data || (await ensurePendingProfile(user));
+        setProfile(resolved || null);
+      } catch (err) {
+        setProfile(null);
+        setProfileError(err?.message || 'Não foi possível carregar/criar o perfil do usuário.');
+      } finally {
+        setProfileLoaded(true);
+      }
+    },
+    [ensurePendingProfile],
+  );
+
+  useEffect(() => {
+    if (!supabase) {
+      setLoadingSession(false);
+      return;
+    }
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session && isPasswordSetupUrl()) setMustSetPassword(true);
+      if (data.session) loadProfile(data.session.user);
+      setLoadingSession(false);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s);
+      if (event === 'PASSWORD_RECOVERY' || isPasswordSetupUrl()) setMustSetPassword(true);
+      if (s && (profileUserIdRef.current !== s.user.id || event === 'USER_UPDATED')) loadProfile(s.user);
+      else {
+        if (!s) {
+          profileUserIdRef.current = '';
+          setProfile(null);
+          setProfileLoaded(true);
+          setMustSetPassword(false);
+        }
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [loadProfile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const master = isMasterProfile(profile);
+    if (master && !selectedEmpresaId) {
+      if (activeModule !== 'admin_master') setActiveModule('admin_master');
+      return;
+    }
+    if (!activeModule || activeModule === 'admin_master') {
+      setActiveModule('dashboard');
+    }
+  }, [profile, selectedEmpresaId, activeModule, setActiveModule]);
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="page">
+        <div className="alert" role="alert">
+          <b>Configuração pendente:</b> defina <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> no arquivo <code>.env</code> (veja <code>.env.example</code>) e rode o script <code>supabase/schema.sql</code> no seu projeto Supabase.
+        </div>
+      </div>
+    );
+  }
+
+  if (loadingSession) return <div className="page center" role="status" aria-live="polite">Carregando…</div>;
+  if (!session) return <LoginScreen onLogged={() => {}} />;
+  if (mustSetPassword)
+    return (
+      <FirstAccessPasswordScreen
+        email={session?.user?.email}
+        onDone={() => {
+          setMustSetPassword(false);
+          clearAuthHashFromUrl();
+          loadProfile(session.user);
+        }}
+      />
+    );
+  if (!profileLoaded) return <div className="page center" role="status" aria-live="polite">Carregando perfil…</div>;
+  if (profileError) {
+    return (
+      <div className="page">
+        <div className="alert" role="alert">
+          <b>Erro ao carregar perfil:</b> {profileError}
+          <br />
+          Execute/atualize o arquivo <code>supabase/schema.sql</code> no SQL Editor do Supabase e confira se a tabela <code>profiles</code> possui uma linha para este usuário.
+        </div>
+        <button onClick={() => supabase.auth.signOut()}>Sair</button>
+      </div>
+    );
+  }
+  if (!profile) return <PendingScreen email={session?.user?.email} onLogout={() => supabase.auth.signOut()} />;
+  if (!profile.ativo) return <PendingScreen email={profile.email} onLogout={() => supabase.auth.signOut()} />;
+
+  const empresaIdAtual = selectedEmpresaId || profile.empresa_id || null;
+
+  return (
+    <AppErrorBoundary key={`app:${session?.user?.id || 'sem-usuario'}:${selectedEmpresaId || 'master'}`}>
+      <TenantContext.Provider value={{ empresaId: empresaIdAtual, isMaster: isMasterProfile(profile) }}>
+        <GlobalFiltersProvider empresaId={empresaIdAtual}>
+          <SubscriptionAccessProvider profile={profile} empresaId={empresaIdAtual}>
+            <PermissionsProvider profile={profile} empresaId={empresaIdAtual}>
+            <Layout
+            profile={profile}
+            onLogout={() => {
+              storageRemove('igreja:activeModule');
+              storageRemove('igreja:selectedEmpresaId');
+              supabase.auth.signOut();
+            }}
+            activeModule={activeModule}
+            setActiveModule={setActiveModule}
+            selectedEmpresaId={selectedEmpresaId}
+            setSelectedEmpresaId={setSelectedEmpresaId}
+          >
+            <AppErrorBoundary key={`${selectedEmpresaId || 'master'}:${activeModule || 'inicio'}`}>
+              <ModuleRouter activeModule={activeModule} profile={profile} selectedEmpresaId={selectedEmpresaId} setSelectedEmpresaId={setSelectedEmpresaId} setActiveModule={setActiveModule} />
+            </AppErrorBoundary>
+          </Layout>
+            </PermissionsProvider>
+          </SubscriptionAccessProvider>
+        </GlobalFiltersProvider>
+      </TenantContext.Provider>
+    </AppErrorBoundary>
+  );
+}

@@ -1,0 +1,7 @@
+[functions.mercado-pago-criar-pix]
+verify_jwt = true
+
+# O Mercado Pago não envia JWT do Supabase. A função consulta o pagamento
+# diretamente na API do Mercado Pago antes de alterar qualquer assinatura.
+[functions.mercado-pago-webhook]
+verify_jwt = false

@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1B2A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1A2F4A;stop-opacity:1" />
+    </linearGradient>
+    <!-- Accent blue gradient -->
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2D8EFF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00C6FF;stop-opacity:1" />
+    </linearGradient>
+    <!-- Arrow gradient -->
+    <linearGradient id="arrowGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#2D8EFF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00E5FF;stop-opacity:1" />
+    </linearGradient>
+    <!-- Screen glow -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Subtle drop shadow -->
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#00C6FF" flood-opacity="0.2"/>
+    </filter>
+    <!-- Clip path for monitor screen -->
+    <clipPath id="screenClip">
+      <rect x="118" y="80" width="234" height="155" rx="4"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="500" height="500" rx="32" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid lines -->
+  <g opacity="0.04" stroke="#2D8EFF" stroke-width="1">
+    <line x1="0" y1="100" x2="500" y2="100"/>
+    <line x1="0" y1="200" x2="500" y2="200"/>
+    <line x1="0" y1="300" x2="500" y2="300"/>
+    <line x1="0" y1="400" x2="500" y2="400"/>
+    <line x1="100" y1="0" x2="100" y2="500"/>
+    <line x1="200" y1="0" x2="200" y2="500"/>
+    <line x1="300" y1="0" x2="300" y2="500"/>
+    <line x1="400" y1="0" x2="400" y2="500"/>
+  </g>
+
+  <!-- ===================== MONITOR ===================== -->
+  <!-- Monitor outer frame -->
+  <rect x="106" y="68" width="258" height="175" rx="12" fill="#1E3A5F" filter="url(#shadow)"/>
+  <!-- Monitor bezel -->
+  <rect x="110" y="72" width="250" height="167" rx="10" fill="#162D4A"/>
+  <!-- Screen area -->
+  <rect x="118" y="80" width="234" height="151" rx="6" fill="#0A1628"/>
+
+  <!-- Screen content glow background -->
+  <rect x="118" y="80" width="234" height="151" rx="6" fill="url(#accentGrad)" opacity="0.04"/>
+
+  <!-- Monitor stand neck -->
+  <rect x="228" y="243" width="14" height="28" rx="3" fill="#1E3A5F"/>
+  <!-- Monitor base -->
+  <rect x="194" y="268" width="82" height="10" rx="5" fill="#1E3A5F"/>
+
+  <!-- ===================== SCREEN CONTENT ===================== -->
+  <g clip-path="url(#screenClip)">
+
+    <!-- Bar chart bars -->
+    <rect x="130" y="188" width="18" height="34" rx="2" fill="#1E5FA0" opacity="0.8"/>
+    <rect x="153" y="175" width="18" height="47" rx="2" fill="#2472B8" opacity="0.9"/>
+    <rect x="176" y="158" width="18" height="64" rx="2" fill="url(#accentGrad)" filter="url(#glow)"/>
+
+    <!-- Trend arrow line -->
+    <line x1="128" y1="215" x2="338" y2="88" stroke="url(#arrowGrad)" stroke-width="3" stroke-linecap="round"/>
+    <!-- Arrowhead -->
+    <polygon points="338,88 320,90 330,104" fill="url(#arrowGrad)" filter="url(#glow)"/>
+
+    <!-- Circuit / wrench hybrid icon (simplified) -->
+    <!-- Wrench simplified as circuit path -->
+    <g opacity="0.9" filter="url(#glow)">
+      <!-- Circuit nodes -->
+      <circle cx="290" cy="100" r="5" fill="none" stroke="#2D8EFF" stroke-width="2"/>
+      <circle cx="316" cy="115" r="4" fill="none" stroke="#00C6FF" stroke-width="2"/>
+      <circle cx="302" cy="135" r="5" fill="none" stroke="#2D8EFF" stroke-width="2"/>
+      <!-- Circuit lines -->
+      <polyline points="290,105 290,120 302,130" fill="none" stroke="#2D8EFF" stroke-width="1.5" stroke-linecap="round"/>
+      <polyline points="295,100 316,100 316,111" fill="none" stroke="#00C6FF" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="307" y1="135" x2="328" y2="135" stroke="#2D8EFF" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="328" cy="135" r="3" fill="#00C6FF"/>
+
+      <!-- Wrench shape (minimal) -->
+      <path d="M272 155 Q268 148 275 142 L295 122 L300 127 L280 147 Q278 154 272 155Z" 
+            fill="url(#accentGrad)" opacity="0.85"/>
+      <circle cx="304" cy="121" r="7" fill="none" stroke="url(#accentGrad)" stroke-width="2.5"/>
+    </g>
+
+    <!-- Small folder icon (bottom right) -->
+    <g opacity="0.7">
+      <path d="M308 192 L308 218 L340 218 L340 192 Z" fill="#1E5FA0" rx="2"/>
+      <path d="M308 192 L319 192 L322 188 L340 188 L340 192 Z" fill="#2472B8"/>
+    </g>
+
+    <!-- Scan line overlay for tech feel -->
+    <rect x="118" y="80" width="234" height="151" rx="6" 
+          fill="none" stroke="#2D8EFF" stroke-width="0.5" opacity="0.3"/>
+  </g>
+
+  <!-- Monitor power dot -->
+  <circle cx="235" cy="246" r="3" fill="#2D8EFF" opacity="0.6"/>
+
+  <!-- ===================== TYPOGRAPHY ===================== -->
+
+  <!-- Circuit accent line under icon, above text -->
+  <g opacity="0.5">
+    <line x1="80" y1="308" x2="180" y2="308" stroke="#1E5FA0" stroke-width="1"/>
+    <circle cx="180" cy="308" r="2.5" fill="#2D8EFF"/>
+    <line x1="180" y1="308" x2="200" y2="308" stroke="#2D8EFF" stroke-width="1"/>
+    <circle cx="200" cy="308" r="2" fill="#00C6FF"/>
+    <line x1="200" y1="308" x2="420" y2="308" stroke="#1E5FA0" stroke-width="1"/>
+  </g>
+
+  <!-- LÁBREA TECH — bold, tight, modern -->
+  <text x="250" y="358"
+        font-family="'Arial Black', 'Impact', sans-serif"
+        font-size="58"
+        font-weight="900"
+        letter-spacing="2"
+        text-anchor="middle"
+        fill="white">LÁBREA</text>
+
+  <!-- TECH with accent gradient -->
+  <text x="250" y="358"
+        font-family="'Arial Black', 'Impact', sans-serif"
+        font-size="58"
+        font-weight="900"
+        letter-spacing="2"
+        text-anchor="middle"
+        fill="url(#accentGrad)"
+        opacity="0">TECH</text>
+
+  <!-- Second line: TECH SOLUTIONS split color -->
+  <text x="250" y="410"
+        font-family="'Arial Black', 'Impact', sans-serif"
+        font-size="52"
+        font-weight="900"
+        letter-spacing="6"
+        text-anchor="middle"
+        fill="url(#accentGrad)"
+        filter="url(#glow)">TECH</text>
+
+  <!-- SOLUTIONS in lighter weight -->
+  <text x="250" y="456"
+        font-family="'Arial', 'Helvetica Neue', sans-serif"
+        font-size="22"
+        font-weight="300"
+        letter-spacing="12"
+        text-anchor="middle"
+        fill="#8AAFD4">SOLUTIONS</text>
+
+  <!-- Thin accent line under SOLUTIONS -->
+  <line x1="148" y1="468" x2="352" y2="468" stroke="url(#accentGrad)" stroke-width="1" opacity="0.5"/>
+
+  <!-- Corner circuit nodes (decorative, minimal) -->
+  <circle cx="42" cy="42" r="3" fill="#2D8EFF" opacity="0.3"/>
+  <circle cx="458" cy="42" r="3" fill="#2D8EFF" opacity="0.3"/>
+  <circle cx="42" cy="458" r="3" fill="#2D8EFF" opacity="0.3"/>
+  <circle cx="458" cy="458" r="3" fill="#2D8EFF" opacity="0.3"/>
+  <line x1="42" y1="42" x2="80" y2="42" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="42" y1="42" x2="42" y2="80" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="458" y1="42" x2="420" y2="42" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="458" y1="42" x2="458" y2="80" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="42" y1="458" x2="80" y2="458" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="42" y1="458" x2="42" y2="420" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="458" y1="458" x2="420" y2="458" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+  <line x1="458" y1="458" x2="458" y2="420" stroke="#2D8EFF" stroke-width="1" opacity="0.25"/>
+
+</svg>
