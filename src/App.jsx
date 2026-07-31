@@ -2427,14 +2427,12 @@ function LoginScreen({ onLogged }) {
         }}
       >
         <section className="loginHeroPanel igrejaHeroPanel">
-          <div className="loginBrandBlock igrejaBrandBlock">
-            <div className="labreaLogoFake">
-              {portal.usar_logo && portal.logo_base64 ? <img className="portalLoginLogo" src={portal.logo_base64} alt="Logo" /> : <img className="portalLoginLogo defaultSystemLogo" src="/logo-icon.svg" alt="Lábrea Tech" />}
-              <div>
-                <b>LÁBREA</b>
-                <span>TECH SOLUTIONS</span>
-              </div>
-            </div>
+          <div className="loginBrandBlock igrejaBrandBlock officialBrandBlock">
+            <img
+              className="officialLoginLogo"
+              src="/labrea-tech-solutions-horizontal.png"
+              alt="Lábrea Tech Solutions"
+            />
           </div>
           <p className="loginEyebrow">{portal.login_chamada}</p>
           <h1>{portal.login_titulo}</h1>
@@ -2447,7 +2445,7 @@ function LoginScreen({ onLogged }) {
 
         <section className="loginCard card igrejaLoginCard">
           <div className="loginCardHeader">
-            {portal.usar_logo && portal.logo_base64 ? <img className="portalMiniLogo" src={portal.logo_base64} alt="Logo" /> : <img className="portalMiniLogo defaultSystemLogo" src="/logo-icon.svg" alt="Lábrea Tech" />}
+            <img className="portalMiniLogo officialMiniLogo" src="/labrea-tech-solutions-icon.png" alt="Lábrea Tech Solutions" />
             <div>
               <h2>{mode === 'login' ? portal.login_card_titulo : mode === 'recovery' ? 'Recuperar acesso' : portal.login_botao_cadastro || 'Criar conta grátis'}</h2>
               <p className="muted">{mode === 'login' ? portal.login_card_subtitulo : mode === 'recovery' ? 'Enviaremos um link seguro para você criar uma nova senha.' : 'Cadastre a igreja e inicie o teste grátis.'}</p>
@@ -2489,20 +2487,22 @@ function LoginScreen({ onLogged }) {
           )}
 
           {mode === 'login' && (
-            <button
-              type="button"
-              className="forgotPasswordLink"
-              onClick={() => {
-                setMode('recovery');
-                setMsg(null);
-                setSenha('');
-              }}
-            >
-              Esqueci minha senha
-            </button>
+            <div className="forgotPasswordRow">
+              <button
+                type="button"
+                className="forgotPasswordLink"
+                onClick={() => {
+                  setMode('recovery');
+                  setMsg(null);
+                  setSenha('');
+                }}
+              >
+                Esqueci minha senha?
+              </button>
+            </div>
           )}
 
-          <div className="loginActions">
+          <div className="loginActions loginActionsStacked">
             {mode === 'recovery' ? (
               <button disabled={busy || !email} onClick={solicitarRecuperacao}>
                 {busy ? 'Enviando…' : 'Enviar link de recuperação'}
@@ -18762,6 +18762,7 @@ function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule 
             }}
           >
             <div className="loginPreviewHero">
+              <img className="loginPreviewOfficialLogo" src="/labrea-tech-solutions-horizontal.png" alt="Lábrea Tech Solutions" />
               <p className="loginEyebrow">{landingForm.login_chamada}</p>
               <h2>{landingForm.login_titulo}</h2>
               <p>{landingForm.login_subtitulo}</p>
