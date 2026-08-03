@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from './lib/supabase.js';
-import { isValidCpf, onlyDigits } from './shared/lib/cpf.js';
+import { formatCep, formatCnpj, formatCpf, formatCpfCnpj, formatPhone, isValidCpf, onlyDigits } from './shared/lib/cpf.js';
 import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
 import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
 
@@ -8,7 +8,92 @@ import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSald
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.23.8';
+const APP_VERSION = '2.25.3';
+const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const LOGO_TARGET_MAX_BYTES = 600 * 1024;
+const LOGO_MAX_DIMENSION = 1200;
+const LOGO_MIN_DIMENSION = 420;
+const LOGO_QUALITY_STEPS = [0.92, 0.86, 0.8, 0.74, 0.68, 0.62, 0.56];
+
+function fileSizeLabel(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+  return `${Math.max(1, Math.round(value / 1024)).toLocaleString('pt-BR')} KB`;
+}
+function dataUrlFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Não foi possível ler a logo otimizada.'));
+    reader.readAsDataURL(blob);
+  });
+}
+function loadImageForOptimization(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => resolve({ image, url });
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Não foi possível carregar a imagem enviada.'));
+    };
+    image.src = url;
+  });
+}
+function canvasToLogoBlob(canvas, quality) {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/webp', quality);
+  });
+}
+async function optimizeLogoFile(file) {
+  if (!file) return null;
+  if (!LOGO_ALLOWED_MIMES.has(file.type)) throw new Error('Use uma imagem PNG, JPG ou WEBP.');
+  if (file.size > LOGO_UPLOAD_MAX_BYTES) throw new Error(`A logo enviada tem ${fileSizeLabel(file.size)}. Envie uma imagem de até ${fileSizeLabel(LOGO_UPLOAD_MAX_BYTES)}.`);
+  const { image, url } = await loadImageForOptimization(file);
+  try {
+    const sourceWidth = image.naturalWidth || image.width || 1;
+    const sourceHeight = image.naturalHeight || image.height || 1;
+    let bestBlob = null;
+    let maxDimension = LOGO_MAX_DIMENSION;
+    while (maxDimension >= LOGO_MIN_DIMENSION) {
+      const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const ctx = canvas.getContext('2d', { alpha: true });
+      if (!ctx) throw new Error('Seu navegador não conseguiu preparar a otimização da logo.');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      for (const quality of LOGO_QUALITY_STEPS) {
+        const blob = await canvasToLogoBlob(canvas, quality);
+        if (!blob) continue;
+        if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob;
+        if (blob.size <= LOGO_TARGET_MAX_BYTES) {
+          return {
+            dataUrl: await dataUrlFromBlob(blob),
+            originalBytes: file.size,
+            optimizedBytes: blob.size,
+            width: canvas.width,
+            height: canvas.height,
+          };
+        }
+      }
+      if (maxDimension === LOGO_MIN_DIMENSION) break;
+      maxDimension = Math.max(LOGO_MIN_DIMENSION, Math.floor(maxDimension * 0.82));
+    }
+    if (!bestBlob) throw new Error('Não foi possível otimizar a logo enviada.');
+    return {
+      dataUrl: await dataUrlFromBlob(bestBlob),
+      originalBytes: file.size,
+      optimizedBytes: bestBlob.size,
+      width: image.naturalWidth || image.width || 1,
+      height: image.naturalHeight || image.height || 1,
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 const ROLE_LABEL = {
   master: 'Admin Master',
   admin: 'Administrador',
@@ -22,6 +107,8 @@ const ROLE_LABEL = {
 const DEFAULT_ROLE_LABELS = {
   admin: 'Administrador',
   gerente: 'Gerente',
+  secretario: 'Secretário',
+  tesoureiro: 'Tesoureiro',
   operador: 'Operador',
   consulta: 'Consulta',
   membro: 'Membro',
@@ -50,6 +137,8 @@ function normalizeProfileRole(value, labels = {}) {
 const DEFAULT_ROLE_DESCRIPTIONS = {
   admin: 'Acesso total ao sistema, configurações e auditoria da igreja.',
   gerente: 'Acompanha operação, relatórios, financeiro e fechamento.',
+  secretario: 'Gerencia secretaria, EBD, patrimônio e cadastros administrativos.',
+  tesoureiro: 'Gerencia financeiro, caixas, lançamentos, importações e fechamento.',
   operador: 'Executa lançamentos diários e cadastros permitidos.',
   consulta: 'Somente visualização, sem alterar dados operacionais.',
   membro: 'Acesso pessoal ao portal, agenda, jornadas e contribuições.',
@@ -59,6 +148,8 @@ const ROLE_MODULES = {
   master: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
   admin: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
   gerente: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'cadastros'],
+  secretario: ['dashboard', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros'],
+  tesoureiro: ['dashboard', 'financeiro', 'cadastros'],
   operador: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio'],
   consulta: ['dashboard'],
   membro: ['portal'],
@@ -134,7 +225,37 @@ const normalizeText = (value = '') =>
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
-const defaultFinancialPermissions = Object.fromEntries(USER_ROLE_ENTRIES.map(([role]) => [role, Object.fromEntries(PAYMENT_FORMS.flatMap((forma) => FINANCIAL_PERMISSION_ACTIONS.map((a) => [`${a.id}_${normalizeKey(forma)}`, role === 'admin' || role === 'gerente'])))]));
+const defaultPaymentPermissions = Object.fromEntries(USER_ROLE_ENTRIES.map(([role]) => [role, Object.fromEntries(PAYMENT_FORMS.map((forma) => [forma, ['admin', 'gerente', 'tesoureiro'].includes(role)]))]));
+const defaultFinancialPermissions = Object.fromEntries(USER_ROLE_ENTRIES.map(([role]) => [role, Object.fromEntries(PAYMENT_FORMS.flatMap((forma) => FINANCIAL_PERMISSION_ACTIONS.map((a) => [`${a.id}_${normalizeKey(forma)}`, ['admin', 'gerente', 'tesoureiro'].includes(role)])))]));
+
+function normalizePaymentPermissionsConfig(rawPayments = {}) {
+  const pagamentos = {};
+  USER_ROLE_ENTRIES.forEach(([role]) => {
+    pagamentos[role] = {};
+    PAYMENT_FORMS.forEach((forma) => {
+      const value = rawPayments?.[role]?.[forma];
+      const fallback = defaultPaymentPermissions?.[role]?.[forma];
+      pagamentos[role][forma] = role === 'admin' ? true : Boolean(value ?? fallback ?? false);
+    });
+  });
+  return pagamentos;
+}
+
+function normalizeFinancialPermissionsConfig(rawFinancial = {}) {
+  const financeiro = {};
+  USER_ROLE_ENTRIES.forEach(([role]) => {
+    financeiro[role] = {};
+    PAYMENT_FORMS.forEach((forma) => {
+      FINANCIAL_PERMISSION_ACTIONS.forEach((action) => {
+        const key = `${action.id}_${normalizeKey(forma)}`;
+        const value = rawFinancial?.[role]?.[key];
+        const fallback = defaultFinancialPermissions?.[role]?.[key];
+        financeiro[role][key] = role === 'admin' ? true : Boolean(value ?? fallback ?? false);
+      });
+    });
+  });
+  return financeiro;
+}
 const DEFAULT_PERMISSIONS = {
   admin: Object.fromEntries(PERMISSION_MENUS.map((m) => [m.id, Object.fromEntries(PERMISSION_ACTIONS.map((a) => [a.id, true]))])),
   gerente: {
@@ -143,6 +264,25 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: true, update: true, delete: false },
     ebd: { view: true, create: true, update: true, delete: false },
     patrimonio: { view: true, create: true, update: true, delete: false },
+    configuracoes: { view: false, create: false, update: false, delete: false },
+  },
+  secretario: {
+    dashboard: { view: true },
+    financeiro: { view: false, create: false, update: false, delete: false },
+    secretaria: { view: true, create: true, update: true, delete: false },
+    ebd: { view: true, create: true, update: true, delete: false },
+    patrimonio: { view: true, create: true, update: true, delete: false },
+    portal: { view: true, create: true, update: true, delete: false },
+    cadastros: { view: true, create: true, update: true, delete: false },
+    configuracoes: { view: false, create: false, update: false, delete: false },
+  },
+  tesoureiro: {
+    dashboard: { view: true },
+    financeiro: { view: true, create: true, update: true, delete: false },
+    secretaria: { view: false, create: false, update: false, delete: false },
+    ebd: { view: false, create: false, update: false, delete: false },
+    patrimonio: { view: false, create: false, update: false, delete: false },
+    cadastros: { view: true, create: true, update: true, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   operador: {
@@ -182,6 +322,22 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
     ebd_resumo: false,
     patrimonio_resumo: false,
   },
+  secretario: {
+    financeiro_resumo: false,
+    saldo_caixa: false,
+    secretaria_membros: true,
+    secretaria_aniversariantes: true,
+    ebd_resumo: true,
+    patrimonio_resumo: true,
+  },
+  tesoureiro: {
+    financeiro_resumo: true,
+    saldo_caixa: true,
+    secretaria_membros: false,
+    secretaria_aniversariantes: false,
+    ebd_resumo: false,
+    patrimonio_resumo: false,
+  },
   // Operador costuma ser Secretaria/Liderança.
   operador: {
     financeiro_resumo: false,
@@ -200,6 +356,7 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
     ebd_resumo: true,
     patrimonio_resumo: false,
   },
+  membro: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, false])),
 };
 const TENANT_TABLES = new Set(['membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
 TENANT_TABLES.add('transferencias_agendadas');
@@ -358,6 +515,8 @@ function normalizePermissionsConfig(raw = {}) {
     ...raw,
     menus: normalizeMenusConfig(raw?.menus || {}),
     dashboard: normalizeDashboardPermissionsConfig(raw?.dashboard || {}),
+    pagamentos: normalizePaymentPermissionsConfig(raw?.pagamentos || {}),
+    financeiro: normalizeFinancialPermissionsConfig(raw?.financeiro || {}),
     nomenclaturas: { ...DEFAULT_ROLE_LABELS, ...(raw?.nomenclaturas || {}) },
     descricoes: { ...DEFAULT_ROLE_DESCRIPTIONS, ...(raw?.descricoes || {}) },
   };
@@ -1374,6 +1533,41 @@ const normalizeHeader = (value = '') => {
 const truthyFromSheet = (value) => ['sim', 's', 'true', '1', 'yes'].includes(normalizeKey(value));
 
 const toOptionLabel = (row, labelKey = 'nome') => row?.[labelKey] || row?.nome || row?.descricao || '—';
+const documentFieldKind = (field = {}) => {
+  const name = normalizeKey(field.name || field.key || '');
+  if (field.type === 'cep' || name === 'cep') return 'cep';
+  if (name === 'cpf') return 'cpf';
+  if (name === 'cnpj') return 'cnpj';
+  if (name === 'documento' || name === 'cpf_cnpj') return 'cpfCnpj';
+  if (name === 'telefone' || name === 'telefone_celular' || name === 'telefone_residencial' || name === 'celular' || name === 'whatsapp') return 'phone';
+  return '';
+};
+const formatDocumentValue = (field = {}, value = '', { preserveFreeText = true } = {}) => {
+  const kind = documentFieldKind(field);
+  if (!kind) return value ?? '';
+  const raw = String(value ?? '');
+  const digits = onlyDigits(raw);
+  if (!digits && raw.trim() && preserveFreeText) return raw;
+  if (kind === 'cpf') return formatCpf(raw);
+  if (kind === 'cnpj') return formatCnpj(raw);
+  if (kind === 'cpfCnpj') return formatCpfCnpj(raw);
+  if (kind === 'cep') return formatCep(raw);
+  return formatPhone(raw);
+};
+const documentFieldMaxLength = (field = {}) => {
+  const kind = documentFieldKind(field);
+  if (kind === 'cpf') return 14;
+  if (kind === 'cnpj') return 18;
+  if (kind === 'cpfCnpj') return 18;
+  if (kind === 'cep') return 9;
+  if (kind === 'phone') return 15;
+  return field.maxLength;
+};
+const normalizeDocumentPayload = (field = {}, value = '') => {
+  const kind = documentFieldKind(field);
+  if (!kind) return value;
+  return formatDocumentValue(field, value, { preserveFreeText: false });
+};
 const cepLookup = async (cep) => {
   const digits = onlyDigits(cep);
   if (digits.length !== 8) return null;
@@ -1556,6 +1750,7 @@ function useTable(table, { order = 'created_at', ascending = false, enabled = tr
   const [loading, setLoading] = useState(Boolean(enabled));
   const [error, setError] = useState(null);
   const requestSequence = useRef(0);
+  const reloadTimerRef = useRef(null);
   const filtersKey = JSON.stringify(filters || []);
 
   const reload = useCallback(async () => {
@@ -1604,19 +1799,31 @@ function useTable(table, { order = 'created_at', ascending = false, enabled = tr
     }
   }, [table, order, ascending, enabled, select, filtersKey, limit, tenant?.empresaId]);
 
+  const scheduleReload = useCallback(() => {
+    if (reloadTimerRef.current) return;
+    reloadTimerRef.current = window.setTimeout(() => {
+      reloadTimerRef.current = null;
+      reload();
+    }, 0);
+  }, [reload]);
+
   useEffect(() => {
     reload();
     return () => {
+      if (reloadTimerRef.current) {
+        window.clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
       requestSequence.current += 1;
     };
   }, [reload]);
   useEffect(() => {
     const handler = (event) => {
-      if (!event?.detail?.table || event.detail.table === table) reload();
+      if (!event?.detail?.table || event.detail.table === table) scheduleReload();
     };
     window.addEventListener('igreja:tableRefresh', handler);
     return () => window.removeEventListener('igreja:tableRefresh', handler);
-  }, [table, reload]);
+  }, [table, scheduleReload]);
 
   return { rows, loading, error, reload };
 }
@@ -1862,11 +2069,13 @@ function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, se
     return typeof field.render === 'function' ? field.render({ value, onChange, form, setForm, initial }) : null;
   }
   if (field.type === 'money') return <MoneyInput value={value ?? '0.00'} onChange={onChange} readOnly={field.readOnly} className={field.className || ''} />;
+  const hasDocumentMask = !!documentFieldKind(field);
   const common = {
-    value: value ?? '',
-    onChange: (e) => onChange(field.type === 'checkbox' ? e.target.checked : e.target.value),
+    value: hasDocumentMask ? formatDocumentValue(field, value, { preserveFreeText: false }) : value ?? '',
+    onChange: (e) => onChange(field.type === 'checkbox' ? e.target.checked : hasDocumentMask ? formatDocumentValue(field, e.target.value, { preserveFreeText: false }) : e.target.value),
     readOnly: !!field.readOnly,
-    maxLength: field.maxLength,
+    maxLength: documentFieldMaxLength(field),
+    inputMode: hasDocumentMask ? 'numeric' : undefined,
   };
   if (field.type === 'select' || field.type === 'quickselect') {
     const input = <SearchableSelect value={value ?? ''} onChange={onChange} options={field.options || []} placeholder={field.placeholder || 'Selecione…'} disabled={!!field.readOnly} />;
@@ -2018,7 +2227,7 @@ function EntityForm({ fields, initial, onCancel, onSave, saving, gridClass = 'co
 /* =========================================================
    PÁGINA CRUD GENÉRICA (lista + modal de novo/editar)
 ========================================================= */
-function CrudPage({ table, title, fields, columns, order = 'created_at', ascending = false, onAfterSave, searchKeys = [], extraRows, moduleKey, createLabel, topContent = null, summaryRender = null, rowActions = null, compact = false, softDeleteOnly = false }) {
+function CrudPage({ table, title, fields, columns, order = 'created_at', ascending = false, onAfterSave, searchKeys = [], extraRows, moduleKey, createLabel, topContent = null, summaryRender = null, rowActions = null, compact = false, softDeleteOnly = false, preparePayload = null }) {
   const tenant = React.useContext(TenantContext);
   const access = usePermissions();
   const subscriptionAccess = useSubscriptionAccess();
@@ -2066,13 +2275,27 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
       return;
     }
     setSaving(true);
-    const payload = { ...form };
+    let payload = { ...form };
     delete payload.__secureConfirmed;
     fields.forEach((f) => {
       if (f.type === 'money' || f.type === 'number') payload[f.name] = form[f.name] === '' ? null : Number(form[f.name]);
     });
     fields.forEach((f) => {
+      if (f.name && documentFieldKind(f)) payload[f.name] = normalizeDocumentPayload(f, payload[f.name]);
+    });
+    fields.forEach((f) => {
       if ((f.type === 'quickselect' || f.type === 'select') && (form[f.name] === '' || form[f.name] === undefined)) payload[f.name] = null;
+    });
+    if (typeof preparePayload === 'function') {
+      payload = preparePayload({
+        payload,
+        form,
+        editing,
+        row: modal && modal !== 'new' ? modal : null,
+      });
+    }
+    fields.forEach((f) => {
+      if (f.transient && f.name) delete payload[f.name];
     });
     if (table === 'lancamentos_financeiros' || table === 'despesas') {
       try {
@@ -2230,7 +2453,7 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
             {filtered.map((r) => (
               <tr key={r.id}>
                 {columns.map((c) => (
-                  <td key={c.key}>{c.render ? c.render(r) : r[c.key]}</td>
+                  <td key={c.key}>{c.render ? c.render(r) : formatDocumentValue(c, r[c.key])}</td>
                 ))}
                 <td className="center actionsCell">
                   <div className="actionsInline">
@@ -2353,6 +2576,11 @@ function LoginScreen({ onLogged }) {
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const { portal } = usePortalPublicConfig();
+  const formTitleId = `login-title-${mode}`;
+  const formSubtitleId = `login-subtitle-${mode}`;
+  const emailHelpId = 'login-email-help';
+  const passwordHelpId = mode === 'signup' ? 'login-password-help' : undefined;
+  const messageId = msg ? 'login-feedback' : undefined;
 
   const solicitarRecuperacao = async () => {
     const normalizedEmail = email.trim().toLowerCase();
@@ -2417,6 +2645,17 @@ function LoginScreen({ onLogged }) {
     setBusy(false);
   };
 
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    if (mode === 'recovery') {
+      await solicitarRecuperacao();
+      return;
+    }
+    if (!email || !senha) return;
+    await submit();
+  };
+
   return (
     <div className={`login loginModern ${mode === 'signup' ? 'signupScreen' : ''}`}>
       <div
@@ -2426,7 +2665,7 @@ function LoginScreen({ onLogged }) {
           '--login-secondary': portal.cor_secundaria,
         }}
       >
-        <section className="loginHeroPanel igrejaHeroPanel">
+        <section className="loginHeroPanel igrejaHeroPanel" aria-labelledby="public-login-title">
           <div className="loginBrandBlock igrejaBrandBlock officialBrandBlock">
             <img
               className="officialLoginLogo"
@@ -2435,54 +2674,61 @@ function LoginScreen({ onLogged }) {
             />
           </div>
           <p className="loginEyebrow">{portal.login_chamada}</p>
-          <h1>{portal.login_titulo}</h1>
+          <h1 id="public-login-title">{portal.login_titulo}</h1>
           <p>{portal.login_subtitulo}</p>
-          <div className="loginFeatureList">
-            {portal.teste_gratis_ativo && portal.login_beneficio_1 && <span>✅ {portal.login_beneficio_1}</span>}
-            {portal.login_beneficio_2 && <span>⛪ {portal.login_beneficio_2}</span>}
+          <div className="loginFeatureList" aria-label="Benefícios do sistema">
+            {portal.teste_gratis_ativo && portal.login_beneficio_1 && <span>{portal.login_beneficio_1}</span>}
+            {portal.login_beneficio_2 && <span>{portal.login_beneficio_2}</span>}
           </div>
         </section>
 
-        <section className="loginCard card igrejaLoginCard">
+        <form className="loginCard card igrejaLoginCard" onSubmit={handleSubmit} aria-labelledby={formTitleId} aria-describedby={`${formSubtitleId}${messageId ? ` ${messageId}` : ''}`} noValidate>
           <div className="loginCardHeader">
             <img className="portalMiniLogo officialMiniLogo" src="/labrea-tech-solutions-icon.png" alt="Lábrea Tech Solutions" />
             <div>
-              <h2>{mode === 'login' ? portal.login_card_titulo : mode === 'recovery' ? 'Recuperar acesso' : portal.login_botao_cadastro || 'Criar conta grátis'}</h2>
-              <p className="muted">{mode === 'login' ? portal.login_card_subtitulo : mode === 'recovery' ? 'Enviaremos um link seguro para você criar uma nova senha.' : 'Cadastre a igreja e inicie o teste grátis.'}</p>
+              <h2 id={formTitleId}>{mode === 'login' ? portal.login_card_titulo : mode === 'recovery' ? 'Recuperar acesso' : portal.login_botao_cadastro || 'Criar conta grátis'}</h2>
+              <p id={formSubtitleId} className="muted">{mode === 'login' ? portal.login_card_subtitulo : mode === 'recovery' ? 'Enviaremos um link seguro para você criar uma nova senha.' : 'Cadastre a igreja e inicie o teste grátis.'}</p>
             </div>
           </div>
 
-          {msg && <div className={`alert ${msg.kind === 'ok' ? 'ok' : ''}`}>{msg.text}</div>}
+          {msg && (
+            <div id="login-feedback" className={`alert ${msg.kind === 'ok' ? 'ok' : ''}`} role={msg.kind === 'ok' ? 'status' : 'alert'} aria-live={msg.kind === 'ok' ? 'polite' : 'assertive'}>
+              {msg.text}
+            </div>
+          )}
 
           {mode === 'signup' && (
             <>
               <div className="field">
-                <label>Nome completo</label>
-                <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Seu nome" />
+                <label htmlFor="login-nome">Nome completo</label>
+                <input id="login-nome" value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Seu nome" autoComplete="name" />
               </div>
               <div className="field">
-                <label>Nome da igreja/empresa</label>
-                <input value={empresaNome} onChange={(e) => setEmpresaNome(e.target.value)} placeholder="Ex: Igreja Assembleia Central" />
+                <label htmlFor="login-empresa">Nome da igreja/empresa</label>
+                <input id="login-empresa" value={empresaNome} onChange={(e) => setEmpresaNome(e.target.value)} placeholder="Ex: Igreja Assembleia Central" autoComplete="organization" />
               </div>
             </>
           )}
 
           <div className="field">
-            <label>E-mail</label>
+            <label htmlFor="login-email">E-mail</label>
             <input
+              id="login-email"
               type="email"
               autoComplete="email"
+              inputMode="email"
+              aria-describedby={emailHelpId}
+              aria-invalid={msg?.kind === 'error' && String(msg.text || '').toLowerCase().includes('e-mail') ? 'true' : undefined}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && mode === 'recovery') solicitarRecuperacao();
-              }}
             />
+            <small id={emailHelpId} className="fieldHint">{mode === 'recovery' ? 'Use o mesmo e-mail cadastrado no sistema.' : 'Digite o e-mail de acesso informado no cadastro.'}</small>
           </div>
           {mode !== 'recovery' && (
             <div className="field">
-              <label>Senha</label>
-              <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={senha} onChange={(e) => setSenha(e.target.value)} />
+              <label htmlFor="login-senha">Senha</label>
+              <input id="login-senha" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} aria-describedby={passwordHelpId} value={senha} onChange={(e) => setSenha(e.target.value)} />
+              {mode === 'signup' && <small id="login-password-help" className="fieldHint">Use uma senha forte para reduzir falhas no primeiro acesso.</small>}
             </div>
           )}
 
@@ -2504,11 +2750,11 @@ function LoginScreen({ onLogged }) {
 
           <div className="loginActions loginActionsStacked">
             {mode === 'recovery' ? (
-              <button disabled={busy || !email} onClick={solicitarRecuperacao}>
+              <button type="submit" disabled={busy || !email}>
                 {busy ? 'Enviando…' : 'Enviar link de recuperação'}
               </button>
             ) : (
-              <button disabled={busy || !email || !senha} onClick={submit}>
+              <button type="submit" disabled={busy || !email || !senha}>
                 {busy ? 'Aguarde…' : mode === 'login' ? portal.login_botao_entrar || 'Entrar' : portal.login_botao_cadastro || 'Criar conta grátis'}
               </button>
             )}
@@ -2535,7 +2781,7 @@ function LoginScreen({ onLogged }) {
               </button>
             )}
           </div>
-        </section>
+        </form>
       </div>
     </div>
   );
@@ -3025,6 +3271,34 @@ function useLookupLabels(table, labelKey = 'nome') {
   return { rows, options, reload };
 }
 const quickCreate = (table, reload, valueMode = 'label', fields = defaultQuickFields) => ({ table, afterCreate: reload, valueMode, fields });
+const DEPENDENTE_CONTRIBUICAO_PREFIX = 'Filho/dependente:';
+const CONGREGADO_CONTRIBUICAO_PREFIX = 'Congregado:';
+const dependenteContributionLabelFromText = (value = '') => {
+  const match = String(value || '').match(/Filho\/dependente:\s*([^\n]+)/i);
+  return match?.[1]?.trim() || '';
+};
+const congregadoContributionLabelFromText = (value = '') => {
+  const match = String(value || '').match(/Congregado:\s*([^\n]+)/i);
+  return match?.[1]?.trim() || '';
+};
+const contribuinteAvulsoLabelFromText = (value = '') => dependenteContributionLabelFromText(value) || congregadoContributionLabelFromText(value);
+const cleanContributionNotes = (observacoes = '') =>
+  String(observacoes || '')
+    .replace(/(^|\n)Filho\/dependente:\s*[^\n]+/gi, '')
+    .replace(/(^|\n)Congregado:\s*[^\n]+/gi, '')
+    .trim();
+const appendDependenteContributionNote = (observacoes = '', dependenteLabel = '') => {
+  const label = String(dependenteLabel || '').trim();
+  if (!label) return observacoes || null;
+  const cleaned = cleanContributionNotes(observacoes);
+  return [DEPENDENTE_CONTRIBUICAO_PREFIX, label].join(' ') + (cleaned ? `\n${cleaned}` : '');
+};
+const appendCongregadoContributionNote = (observacoes = '', congregadoLabel = '') => {
+  const label = String(congregadoLabel || '').trim();
+  if (!label) return observacoes || null;
+  const cleaned = cleanContributionNotes(observacoes);
+  return [CONGREGADO_CONTRIBUICAO_PREFIX, label].join(' ') + (cleaned ? `\n${cleaned}` : '');
+};
 
 const professorEbdLabel = (p = {}) => [p.nome, p.email].filter(Boolean).join(' — ') || 'Professor';
 const linkedProfessoresDaTurma = (turmaId, professoresRows = [], vinculosRows = [], { onlyActive = true } = {}) => {
@@ -3726,7 +4000,7 @@ const expenseReceiptNumber = (row = {}) => formatReceiptNumber('DES', row);
 const reciboHtml = ({ igreja = {}, empresaNome = 'Igreja', modo = 'recebimento', numero = '000001', nome = '—', credor = null, valor = 0, referencia = '—', tipo = 'Dízimo/Oferta', data = '', caixa = '', historico = '', formaPagamento = '', vias = 2, cancelado = false }) => {
   const identidade = {
     nome: igreja.nome || empresaNome || 'Igreja',
-    cnpj: igreja.cnpj || '',
+    cnpj: formatCnpj(igreja.cnpj),
     endereco: igreja.endereco || '',
     contato: igreja.contato || '',
     logo: igreja.logo || '',
@@ -3741,16 +4015,16 @@ const reciboHtml = ({ igreja = {}, empresaNome = 'Igreja', modo = 'recebimento',
         credor.complemento,
         credor.bairro,
         [credor.cidade, credor.uf].filter(Boolean).join('/'),
-        credor.cep ? `CEP ${credor.cep}` : '',
+        credor.cep ? `CEP ${formatCep(credor.cep)}` : '',
       ]
         .filter(Boolean)
         .join(' · ')
     : '';
   const credorDados = pagamento && credor
     ? [
-        credor.documento ? ['CPF/CNPJ', credor.documento] : null,
+        credor.documento ? ['CPF/CNPJ', formatCpfCnpj(credor.documento)] : null,
         credor.inscricao_estadual ? ['Inscrição', credor.inscricao_estadual] : null,
-        credor.telefone ? ['Telefone', credor.telefone] : null,
+        credor.telefone ? ['Telefone', formatPhone(credor.telefone)] : null,
         credor.email ? ['E-mail', credor.email] : null,
         credorEndereco ? ['Endereço', credorEndereco] : null,
         credor.chave_pix ? ['Chave PIX', credor.chave_pix] : null,
@@ -4012,10 +4286,54 @@ function LancamentosPage({ financeFilter: externalFilter = null, hideFinanceCont
   const setActiveFilter = externalFilter ? null : setLocalFilter;
   const caixas = useLookup('tipos_caixa');
   const membros = useLookup('membros');
+  const dependentes = useLookup('filhos_dependentes');
   const tiposReceita = useLookupLabels('tipos_receita');
   const formasPagto = useLookupLabels('formas_pagamento');
   const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
   const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m.nome])), [membros.rows]);
+  const dependenteMap = useMemo(() => Object.fromEntries(dependentes.rows.map((d) => [d.id, d])), [dependentes.rows]);
+  const dependenteOptions = useMemo(
+    () =>
+      dependentes.rows
+        .filter((d) => d.ativo !== false)
+        .filter((d) => normalizeKey(d.parentesco) !== 'congregado')
+        .map((d) => ({
+          value: d.id,
+          label: [dependenteNome(d, membroMap), d.parentesco].filter(Boolean).join(' — '),
+        })),
+    [dependentes.rows, membroMap],
+  );
+  const congregadoOptions = useMemo(
+    () =>
+      dependentes.rows
+        .filter((d) => d.ativo !== false)
+        .filter((d) => normalizeKey(d.parentesco) === 'congregado')
+        .map((d) => ({
+          value: d.id,
+          label: dependenteNome(d, membroMap),
+        })),
+    [dependentes.rows, membroMap],
+  );
+  const contribuinteReceitaLabel = (row = {}) => membroMap[row.membro_id] || contribuinteAvulsoLabelFromText(row.observacoes) || '—';
+  const prepararReceitaPayload = ({ payload }) => {
+    const congregado = dependenteMap[payload.congregado_id];
+    if (congregado) {
+      const label = dependenteNome(congregado, membroMap);
+      return {
+        ...payload,
+        membro_id: payload.membro_id || congregado.membro_id || null,
+        observacoes: appendCongregadoContributionNote(payload.observacoes, label),
+      };
+    }
+    const dependente = dependenteMap[payload.dependente_id];
+    if (!dependente) return payload;
+    const label = [dependenteNome(dependente, membroMap), dependente.parentesco].filter(Boolean).join(' — ');
+    return {
+      ...payload,
+      membro_id: payload.membro_id || dependente.membro_id || null,
+      observacoes: appendDependenteContributionNote(payload.observacoes, label),
+    };
+  };
   const baixarMembrosComIds = () => {
     const rows = membros.rows
       .slice()
@@ -4108,8 +4426,8 @@ function LancamentosPage({ financeFilter: externalFilter = null, hideFinanceCont
         },
         {
           key: 'membro_id',
-          label: 'Membro',
-          render: (r) => membroMap[r.membro_id] || '—',
+          label: 'Contribuinte',
+          render: (r) => contribuinteReceitaLabel(r),
         },
         {
           key: 'tipo_caixa_id',
@@ -4162,11 +4480,27 @@ function LancamentosPage({ financeFilter: externalFilter = null, hideFinanceCont
           quickCreate: quickCreate('tipos_caixa', caixas.reload, 'id'),
         },
         {
+          name: 'dependente_id',
+          label: 'Filho ou dependente (opcional)',
+          type: 'quickselect',
+          transient: true,
+          options: dependenteOptions,
+          help: 'Use quando a contribuição for de um filho/dependente que ainda não é membro formal. O nome será registrado nas observações da receita.',
+        },
+        {
           name: 'valor',
           label: 'Valor (R$)',
           type: 'money',
           required: true,
           className: 'incomeMoney',
+        },
+        {
+          name: 'congregado_id',
+          label: 'Congregado (opcional)',
+          type: 'quickselect',
+          transient: true,
+          options: congregadoOptions,
+          help: 'Use quando a contribuição for de uma pessoa congregada que ainda não é membro formal. O nome será registrado nas observações da receita.',
         },
         {
           name: 'forma_pagamento',
@@ -4184,6 +4518,7 @@ function LancamentosPage({ financeFilter: externalFilter = null, hideFinanceCont
           full: true,
         },
       ]}
+      preparePayload={prepararReceitaPayload}
     />
   );
 }
@@ -5008,15 +5343,16 @@ function PlanilhaFinanceiraImportPage({ kind, onBack }) {
   );
 }
 
-function FinanceiroLivroCaixaPage() {
+function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null } = {}) {
   const tenant = React.useContext(TenantContext);
   const igrejaRecibo = useChurchReceiptIdentity();
-  const { referencia, caixaIds } = useGlobalFilters();
+  const { referencia, caixaId, caixaIds } = useGlobalFilters();
   const access = usePermissions();
   const { toasts, push, close } = useToasts();
   const [filter, setFilter] = useFinancialPeriodFilter(referencia);
   const [detalhe, setDetalhe] = useState(null);
   const [editando, setEditando] = useState(null);
+  const [novoLancamento, setNovoLancamento] = useState(null);
   const [saving, setSaving] = useState(false);
   const globalFilters = useMemo(() => ({ referencia, caixaIds }), [referencia, caixaIds]);
   const receitasTable = useTable('lancamentos_financeiros', {
@@ -5038,14 +5374,39 @@ function FinanceiroLivroCaixaPage() {
   const caixas = useLookup('tipos_caixa');
   const categorias = useLookup('categorias_despesas');
   const membros = useLookup('membros');
+  const dependentes = useLookup('filhos_dependentes');
   const credores = useLookup('credores');
   const tiposReceita = useLookupLabels('tipos_receita');
   const formasPagamento = useLookupLabels('formas_pagamento');
   const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((item) => [item.id, item.nome])), [caixas.rows]);
   const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((item) => [item.id, item.nome])), [categorias.rows]);
   const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((item) => [item.id, item.nome])), [membros.rows]);
+  const dependenteMap = useMemo(() => Object.fromEntries(dependentes.rows.map((d) => [d.id, d])), [dependentes.rows]);
+  const dependenteOptions = useMemo(
+    () =>
+      dependentes.rows
+        .filter((d) => d.ativo !== false)
+        .filter((d) => normalizeKey(d.parentesco) !== 'congregado')
+        .map((d) => ({
+          value: d.id,
+          label: [dependenteNome(d, membroMap), d.parentesco].filter(Boolean).join(' — '),
+        })),
+    [dependentes.rows, membroMap],
+  );
+  const congregadoOptions = useMemo(
+    () =>
+      dependentes.rows
+        .filter((d) => d.ativo !== false)
+        .filter((d) => normalizeKey(d.parentesco) === 'congregado')
+        .map((d) => ({
+          value: d.id,
+          label: dependenteNome(d, membroMap),
+        })),
+    [dependentes.rows, membroMap],
+  );
   const credorMap = useMemo(() => Object.fromEntries(credores.rows.map((item) => [item.id, item.nome])), [credores.rows]);
   const credorById = useMemo(() => Object.fromEntries(credores.rows.map((item) => [item.id, item])), [credores.rows]);
+  const receitaContribuinteLabel = (row = {}) => membroMap[row.membro_id] || contribuinteAvulsoLabelFromText(row.observacoes) || 'Contribuinte';
   const receitasFiltradas = useMemo(() => (receitasTable.rows || []).filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [receitasTable.rows, filter, globalFilters]);
   const despesasFiltradas = useMemo(() => (despesasTable.rows || []).filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters)), [despesasTable.rows, filter, globalFilters]);
   const transferenciasFiltradas = useMemo(() => (transferenciasTable.rows || []).filter((r) => r.status !== 'estornada' && (rowMatchesFinanceFilter({ ...r, tipo_caixa_id: r.caixa_origem_id }, filter, globalFilters) || rowMatchesFinanceFilter({ ...r, tipo_caixa_id: r.caixa_destino_id }, filter, globalFilters))), [transferenciasTable.rows, filter, globalFilters]);
@@ -5107,6 +5468,29 @@ function FinanceiroLivroCaixaPage() {
     return fechamentos.rows.some((f) => Number(f.ano) === ano && Number(f.mes) === mes && f.tipo_caixa_id === r.tipo_caixa_id && f.status === 'fechado');
   };
   const origemLabel = (r) => (r.importacao_id || r.hash_importacao ? 'Importação bancária (OFX)' : String(r.observacoes || '').startsWith('Importação ') ? 'Importação por planilha' : 'Lançamento manual');
+  const referenciaPadraoLancamento = () => ensureReferencia(filter?.referencia || referencia || currentReferencia());
+  const dataPadraoLancamento = () => {
+    const ref = referenciaPadraoLancamento();
+    const hoje = todayISO();
+    return hoje.startsWith(ref) ? hoje : `${ref}-01`;
+  };
+  const caixaPadraoLancamento = () => (caixaIds?.length === 1 ? caixaIds[0] : caixaId || '');
+  const abrirNovoLancamento = (origemRegistro) => {
+    if (!access.can('financeiro', 'create')) {
+      push('Seu perfil não tem permissão para criar lançamentos.', 'error');
+      return;
+    }
+    setDetalhe(null);
+    setEditando(null);
+    setNovoLancamento({
+      origemRegistro,
+      data: dataPadraoLancamento(),
+      referencia: referenciaPadraoLancamento(),
+      tipo_caixa_id: caixaPadraoLancamento(),
+      valor: '0.00',
+      forma_pagamento: '',
+    });
+  };
   const abrirEdicao = (r) => {
     if (!access.can('financeiro', 'update')) {
       push('Seu perfil não tem permissão para editar lançamentos.', 'error');
@@ -5173,6 +5557,74 @@ function FinanceiroLivroCaixaPage() {
     setEditando(null);
     push('Movimentação atualizada. Totais do Livro Caixa recalculados.');
   };
+  const salvarNovoLancamento = async (event) => {
+    event.preventDefault();
+    if (!novoLancamento || saving) return;
+    if (!novoLancamento.data || !novoLancamento.referencia || !novoLancamento.tipo_caixa_id || Number(novoLancamento.valor) <= 0) {
+      push('Preencha data, referência, caixa e um valor maior que zero.', 'error');
+      return;
+    }
+    const receita = novoLancamento.origemRegistro === 'receita';
+    if (receita && !novoLancamento.tipo) {
+      push('Selecione o tipo de entrada.', 'error');
+      return;
+    }
+    if (!receita && (!novoLancamento.descricao || !novoLancamento.categoria_id)) {
+      push('Preencha a descrição e a categoria da despesa.', 'error');
+      return;
+    }
+    const { data: userData } = await supabase.auth.getUser();
+    const basePayload = {
+      empresa_id: tenant?.empresaId || null,
+      created_by: userData?.user?.id ?? null,
+      data: novoLancamento.data,
+      referencia: ensureReferencia(novoLancamento.referencia || referenciaFromDate(novoLancamento.data), novoLancamento.data),
+      tipo_caixa_id: novoLancamento.tipo_caixa_id,
+      valor: Number(novoLancamento.valor),
+      forma_pagamento: novoLancamento.forma_pagamento || null,
+      observacoes: novoLancamento.observacoes || null,
+    };
+    let payload;
+    if (receita) {
+      const congregado = dependenteMap[novoLancamento.congregado_id];
+      const dependente = dependenteMap[novoLancamento.dependente_id];
+      let observacoes = novoLancamento.observacoes || null;
+      let membroId = novoLancamento.membro_id || null;
+      if (congregado) {
+        observacoes = appendCongregadoContributionNote(observacoes, dependenteNome(congregado, membroMap));
+        membroId = membroId || congregado.membro_id || null;
+      } else if (dependente) {
+        const label = [dependenteNome(dependente, membroMap), dependente.parentesco].filter(Boolean).join(' — ');
+        observacoes = appendDependenteContributionNote(observacoes, label);
+        membroId = membroId || dependente.membro_id || null;
+      }
+      payload = {
+        ...basePayload,
+        tipo: novoLancamento.tipo,
+        membro_id: membroId,
+        culto: novoLancamento.culto || null,
+        observacoes,
+      };
+    } else {
+      payload = {
+        ...basePayload,
+        descricao: novoLancamento.descricao,
+        categoria_id: novoLancamento.categoria_id,
+        credor_id: novoLancamento.credor_id || null,
+      };
+    }
+    setSaving(true);
+    const table = receita ? 'lancamentos_financeiros' : 'despesas';
+    const { error } = await supabase.from(table).insert(payload);
+    setSaving(false);
+    if (error) {
+      push(error.message, 'error');
+      return;
+    }
+    await (receita ? receitasTable.reload() : despesasTable.reload());
+    setNovoLancamento(null);
+    push(`${receita ? 'Receita' : 'Despesa'} lançada no Livro Caixa.`);
+  };
   const registrarEmissaoReciboDespesa = async (r, numero) => {
     if (!supabase || r.origemRegistro !== 'despesa') return;
     try {
@@ -5206,7 +5658,7 @@ function FinanceiroLivroCaixaPage() {
       igreja: igrejaRecibo,
       modo: despesa ? 'pagamento' : 'recebimento',
       numero,
-      nome: despesa ? credorMap[r.credor_id] || r.descricao || 'Credor / prestador' : membroMap[r.membro_id] || 'Contribuinte',
+      nome: despesa ? credorMap[r.credor_id] || r.descricao || 'Credor / prestador' : receitaContribuinteLabel(r),
       credor: despesa ? credorById[r.credor_id] || null : null,
       valor: r.valor,
       referencia: r.referencia || referenciaFromDate(r.data),
@@ -5233,7 +5685,19 @@ function FinanceiroLivroCaixaPage() {
             <span className="eyebrow">Livro caixa</span>
             <h2>Movimentações</h2>
           </div>
-          <span className="badge">{movimentos.length} registros</span>
+          <div className="row">
+            {access.can('financeiro', 'create') && (
+              <button className="smallBtn green" type="button" onClick={() => abrirNovoLancamento('receita')}>
+                + Nova receita
+              </button>
+            )}
+            {access.can('financeiro', 'create') && (
+              <button className="smallBtn red" type="button" onClick={() => abrirNovoLancamento('despesa')}>
+                + Nova despesa
+              </button>
+            )}
+            <span className="badge">{movimentos.length} registros</span>
+          </div>
         </div>
         <div className="tablewrap">
           <table>
@@ -5254,7 +5718,7 @@ function FinanceiroLivroCaixaPage() {
                   <td>{fmtDate(r.data)}</td>
                   <td>
                     <b>{r.descricao || r.tipo || r.historico || r.nome || 'Movimentação'}</b>
-                    <small className="muted blockText">{r.origemRegistro === 'transferencia' ? `${caixaMap[r.caixa_origem_id] || '—'} → ${caixaMap[r.caixa_destino_id] || '—'}` : r.origemRegistro === 'receita' ? membroMap[r.membro_id] || r.forma_pagamento || 'Registro financeiro' : credorMap[r.credor_id] || r.forma_pagamento || 'Registro financeiro'}</small>
+                    <small className="muted blockText">{r.origemRegistro === 'transferencia' ? `${caixaMap[r.caixa_origem_id] || '—'} → ${caixaMap[r.caixa_destino_id] || '—'}` : r.origemRegistro === 'receita' ? receitaContribuinteLabel(r) || r.forma_pagamento || 'Registro financeiro' : credorMap[r.credor_id] || r.forma_pagamento || 'Registro financeiro'}</small>
                   </td>
                   <td>
                     <span className="ledgerTag">{r.categoria}</span>
@@ -5274,8 +5738,8 @@ function FinanceiroLivroCaixaPage() {
                       <button className="smallBtn secondary" onClick={() => setDetalhe(r)}>
                         Detalhes
                       </button>
-                      {r.origemRegistro === 'despesa' && (
-                        <button className="smallBtn" title="Imprimir recibo de pagamento" onClick={() => emitirRecibo(r)}>
+                      {r.origemRegistro !== 'transferencia' && (
+                        <button className="smallBtn" title={r.origemRegistro === 'despesa' ? 'Imprimir recibo de pagamento' : 'Imprimir recibo da receita'} onClick={() => emitirRecibo(r)}>
                           Recibo
                         </button>
                       )}
@@ -5332,8 +5796,8 @@ function FinanceiroLivroCaixaPage() {
               <b>{caixaMap[detalhe.tipo_caixa_id] || '—'}</b>
             </div>
             <div>
-              <span>{detalhe.origemRegistro === 'receita' ? 'Membro' : 'Credor'}</span>
-              <b>{detalhe.origemRegistro === 'receita' ? membroMap[detalhe.membro_id] || 'Não vinculado' : credorMap[detalhe.credor_id] || 'Não vinculado'}</b>
+              <span>{detalhe.origemRegistro === 'receita' ? 'Contribuinte' : 'Credor'}</span>
+              <b>{detalhe.origemRegistro === 'receita' ? receitaContribuinteLabel(detalhe) || 'Não vinculado' : credorMap[detalhe.credor_id] || 'Não vinculado'}</b>
             </div>
             <div>
               <span>Forma de pagamento</span>
@@ -5367,6 +5831,160 @@ function FinanceiroLivroCaixaPage() {
               </button>
             )}
           </div>
+        </Modal>
+      )}
+      {novoLancamento && (
+        <Modal title={novoLancamento.origemRegistro === 'receita' ? 'Nova receita — Livro Caixa' : 'Nova despesa — Livro Caixa'} wide onClose={() => !saving && setNovoLancamento(null)}>
+          <form onSubmit={salvarNovoLancamento}>
+            <div className="grid cols2">
+              <div className="field">
+                <label>Data *</label>
+                <input type="date" value={novoLancamento.data || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, data: e.target.value, referencia: novoLancamento.referencia || referenciaFromDate(e.target.value) })} />
+              </div>
+              <div className="field">
+                <label>Referência *</label>
+                <input type="month" value={novoLancamento.referencia || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, referencia: e.target.value })} />
+              </div>
+              {novoLancamento.origemRegistro === 'receita' ? (
+                <>
+                  <div className="field">
+                    <label>Tipo de entrada *</label>
+                    <select value={novoLancamento.tipo || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, tipo: e.target.value })}>
+                      <option value="">Selecione</option>
+                      {tiposReceita.options.map((o) => (
+                        <option key={o.value} value={o.label}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Membro (opcional)</label>
+                    <select value={novoLancamento.membro_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, membro_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {membros.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Tipo de Caixa *</label>
+                    <select value={novoLancamento.tipo_caixa_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, tipo_caixa_id: e.target.value })}>
+                      <option value="">Selecione</option>
+                      {caixas.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Filho ou dependente (opcional)</label>
+                    <select value={novoLancamento.dependente_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, dependente_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {dependenteOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted smallText">Use quando a contribuição for de filho/dependente ainda não formalizado como membro.</div>
+                  </div>
+                  <div className="field">
+                    <label>Valor (R$) *</label>
+                    <MoneyInput value={novoLancamento.valor} onChange={(valor) => setNovoLancamento({ ...novoLancamento, valor })} className="incomeMoney" />
+                  </div>
+                  <div className="field">
+                    <label>Congregado (opcional)</label>
+                    <select value={novoLancamento.congregado_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, congregado_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {congregadoOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted smallText">Use quando a contribuição for de congregado ainda não formalizado como membro.</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="field full">
+                    <label>Descrição *</label>
+                    <input value={novoLancamento.descricao || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, descricao: e.target.value })} />
+                  </div>
+                  <div className="field">
+                    <label>Categoria *</label>
+                    <select value={novoLancamento.categoria_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, categoria_id: e.target.value })}>
+                      <option value="">Selecione</option>
+                      {categorias.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Credor / prestador</label>
+                    <select value={novoLancamento.credor_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, credor_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {credores.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Tipo de Caixa *</label>
+                    <select value={novoLancamento.tipo_caixa_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, tipo_caixa_id: e.target.value })}>
+                      <option value="">Selecione</option>
+                      {caixas.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Valor (R$) *</label>
+                    <MoneyInput value={novoLancamento.valor} onChange={(valor) => setNovoLancamento({ ...novoLancamento, valor })} className="expenseMoney" />
+                  </div>
+                </>
+              )}
+              <div className="field">
+                <label>Forma de pagamento</label>
+                <select value={novoLancamento.forma_pagamento || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, forma_pagamento: e.target.value })}>
+                  <option value="">Selecione</option>
+                  {formasPagamento.options.map((o) => (
+                    <option key={o.value} value={o.label}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {novoLancamento.origemRegistro === 'receita' && (
+                <div className="field">
+                  <label>Culto / evento</label>
+                  <input value={novoLancamento.culto || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, culto: e.target.value })} />
+                </div>
+              )}
+              <div className="field full">
+                <label>Observações</label>
+                <textarea value={novoLancamento.observacoes || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, observacoes: e.target.value })} />
+              </div>
+            </div>
+            <div className="modalActions">
+              <button type="button" className="secondary" onClick={() => setNovoLancamento(null)} disabled={saving}>
+                Cancelar
+              </button>
+              <button type="submit" className={novoLancamento.origemRegistro === 'receita' ? 'green' : 'red'} disabled={saving}>
+                {saving ? 'Salvando…' : novoLancamento.origemRegistro === 'receita' ? 'Salvar receita' : 'Salvar despesa'}
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
       {editando && (
@@ -5500,6 +6118,252 @@ function FinanceiroLivroCaixaPage() {
           </form>
         </Modal>
       )}
+    </div>
+  );
+}
+
+function HistoricoContribuicoesPage() {
+  const igrejaRecibo = useChurchReceiptIdentity();
+  const { referencia, caixaIds } = useGlobalFilters();
+  const [filter, setFilter] = useFinancialPeriodFilter(referencia);
+  const [membroId, setMembroId] = useState('');
+  const receitas = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+  });
+  const membros = useLookup('membros');
+  const caixas = useLookup('tipos_caixa');
+  const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m])), [membros.rows]);
+  const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
+  const membroOptions = useMemo(
+    () =>
+      [
+        { value: '', label: 'Selecione um membro...' },
+        ...membros.rows
+          .filter((m) => m.ativo !== false && m.situacao !== 'inativo')
+          .map((m) => ({ value: m.id, label: [m.numero_membro ? `#${m.numero_membro}` : '', m.nome].filter(Boolean).join(' - ') }))
+          .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
+      ],
+    [membros.rows],
+  );
+  const membroSelecionado = membroMap[membroId] || null;
+  const globalFilters = useMemo(() => ({ referencia, caixaIds }), [referencia, caixaIds]);
+  const contribuicoes = useMemo(() => {
+    if (!membroId) return [];
+    return (receitas.rows || [])
+      .filter((r) => String(r.membro_id || '') === String(membroId))
+      .filter((r) => rowMatchesFinanceFilter(r, filter, globalFilters))
+      .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  }, [receitas.rows, membroId, filter, globalFilters]);
+  const resumo = useMemo(() => {
+    const total = contribuicoes.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    const maior = contribuicoes.reduce((max, r) => Math.max(max, Number(r.valor) || 0), 0);
+    return {
+      total,
+      quantidade: contribuicoes.length,
+      media: contribuicoes.length ? total / contribuicoes.length : 0,
+      maior,
+    };
+  }, [contribuicoes]);
+  const emitirRecibo = (r) => {
+    abrirRecibo({
+      igreja: igrejaRecibo,
+      modo: 'recebimento',
+      numero: incomeReceiptNumber(r),
+      nome: membroSelecionado?.nome || 'Contribuinte',
+      valor: r.valor,
+      referencia: r.referencia || referenciaFromDate(r.data),
+      tipo: r.tipo || r.categoria || 'Contribuição',
+      data: r.data,
+      caixa: caixaMap[r.tipo_caixa_id] || '—',
+      historico: r.observacoes || r.culto || '',
+      formaPagamento: r.forma_pagamento || '',
+      cancelado: r.status === 'cancelado',
+    });
+  };
+  const exportarCsv = () => {
+    if (!membroSelecionado || !contribuicoes.length) return;
+    const rows = contribuicoes.map((r) => ({
+      data: fmtDate(r.data),
+      referencia: fmtReferencia(r.referencia || referenciaFromDate(r.data)),
+      membro: membroSelecionado.nome || '',
+      tipo: r.tipo || '',
+      caixa: caixaMap[r.tipo_caixa_id] || '',
+      forma_pagamento: r.forma_pagamento || '',
+      valor: fmtMoney(r.valor),
+      recibo: incomeReceiptNumber(r),
+      observacoes: r.observacoes || '',
+    }));
+    downloadTextFile(
+      `historico_contribuicoes_${normalizeKey(membroSelecionado.nome || 'membro')}_${financialFilterLabel(filter, referencia).replace(/[^0-9a-zA-Z_-]+/g, '_')}.csv`,
+      rowsToCsv(rows, [
+        { key: 'data', label: 'Data' },
+        { key: 'referencia', label: 'Referência' },
+        { key: 'membro', label: 'Membro' },
+        { key: 'tipo', label: 'Tipo' },
+        { key: 'caixa', label: 'Caixa' },
+        { key: 'forma_pagamento', label: 'Forma de pagamento' },
+        { key: 'valor', label: 'Valor' },
+        { key: 'recibo', label: 'Recibo' },
+        { key: 'observacoes', label: 'Observações' },
+      ]),
+    );
+  };
+  const imprimirRelatorio = () => {
+    if (!membroSelecionado || !contribuicoes.length) return;
+    const periodo = financialFilterLabel(filter, referencia);
+    const geradoEm = new Date().toLocaleString('pt-BR');
+    const membroLabel = [membroSelecionado.numero_membro ? `#${membroSelecionado.numero_membro}` : '', membroSelecionado.nome].filter(Boolean).join(' - ');
+    const igrejaDados = [igrejaRecibo.cnpj, igrejaRecibo.endereco, igrejaRecibo.contato].filter(Boolean).join(' • ');
+    const rowsHtml = contribuicoes
+      .map(
+        (r) => `<tr>
+          <td>${safeHtml(fmtDate(r.data))}</td>
+          <td>${safeHtml(fmtReferencia(r.referencia || referenciaFromDate(r.data)))}</td>
+          <td>${safeHtml(r.tipo || r.categoria || 'Contribuição')}</td>
+          <td>${safeHtml(caixaMap[r.tipo_caixa_id] || '—')}</td>
+          <td>${safeHtml(r.forma_pagamento || '—')}</td>
+          <td>${safeHtml(incomeReceiptNumber(r))}</td>
+          <td class="money">${fmtMoney(r.valor)}</td>
+          <td>${safeHtml(r.observacoes || r.culto || '—')}</td>
+        </tr>`,
+      )
+      .join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Histórico de Contribuições</title><style>
+      @page{size:A4 portrait;margin:10mm}
+      *{box-sizing:border-box}body{margin:0;background:#eef4f8;color:#0f172a;font-family:Inter,Arial,sans-serif;font-size:12px}.printActions{position:sticky;top:0;display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #dbe7f3}.printActions button{border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;padding:9px 14px;font-weight:800;cursor:pointer}.report{max-width:980px;margin:18px auto;padding:28px;background:#fff;border:1px solid #dbe7f3;border-radius:12px;box-shadow:0 18px 50px rgba(15,23,42,.12)}.header{display:flex;justify-content:space-between;gap:18px;border-bottom:2px solid #0f3e63;padding-bottom:14px}.church{display:flex;gap:12px;align-items:center}.church img{width:58px;height:58px;object-fit:contain}.fallback{width:58px;height:58px;border:2px solid #0f3e63;border-radius:14px;display:grid;place-items:center;font-weight:900;color:#0f3e63}.kicker{text-transform:uppercase;letter-spacing:.08em;color:#0f766e;font-weight:900;font-size:10px}.header h1{margin:2px 0 4px;font-size:24px}.muted{color:#64748b}.meta{text-align:right}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.stat{border:1px solid #dbe7f3;border-radius:10px;padding:11px;background:#f8fafc}.stat span{display:block;color:#64748b;font-size:11px}.stat b{font-size:16px}.context{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin:12px 0 16px}.context div{border:1px solid #dbe7f3;border-radius:10px;padding:10px}.context span{display:block;color:#64748b;font-size:11px}table{width:100%;border-collapse:collapse}th{background:#0f3e63;color:#fff;text-align:left;padding:9px 8px;font-size:11px}td{border-bottom:1px solid #e5edf5;padding:8px;vertical-align:top}tbody tr:nth-child(even){background:#f8fafc}.money{text-align:right;color:#047857;font-weight:900;white-space:nowrap}.footer{margin-top:18px;color:#64748b;font-size:11px;border-top:1px solid #e5edf5;padding-top:10px}@media print{body{background:#fff}.printActions{display:none}.report{max-width:none;margin:0;padding:0;border:0;border-radius:0;box-shadow:none}.header{break-inside:avoid}.stats,.context{break-inside:avoid}tr{break-inside:avoid}th{background:#0f3e63!important;color:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    </style></head><body><div class="printActions"><button onclick="print()">Imprimir / salvar PDF</button></div><main class="report">
+      <section class="header">
+        <div class="church">${igrejaRecibo.logo ? `<img src="${safeHtml(igrejaRecibo.logo)}" alt="Logo">` : '<span class="fallback">IG</span>'}<div><span class="kicker">Financeiro</span><h1>Histórico de Contribuições</h1><p><b>${safeHtml(igrejaRecibo.nome || 'Igreja')}</b></p>${igrejaDados ? `<p class="muted">${safeHtml(igrejaDados)}</p>` : ''}</div></div>
+        <div class="meta"><span class="kicker">Relatório</span><p><b>${safeHtml(periodo)}</b></p><p class="muted">Gerado em ${safeHtml(geradoEm)}</p></div>
+      </section>
+      <section class="context"><div><span>Membro</span><b>${safeHtml(membroLabel || 'Membro selecionado')}</b></div><div><span>Filtro aplicado</span><b>${safeHtml(periodo)}</b></div></section>
+      <section class="stats"><div class="stat"><span>Total</span><b>${fmtMoney(resumo.total)}</b></div><div class="stat"><span>Contribuições</span><b>${resumo.quantidade}</b></div><div class="stat"><span>Média</span><b>${fmtMoney(resumo.media)}</b></div><div class="stat"><span>Maior contribuição</span><b>${fmtMoney(resumo.maior)}</b></div></section>
+      <table><thead><tr><th>Data</th><th>Referência</th><th>Tipo</th><th>Caixa</th><th>Forma</th><th>Recibo</th><th>Valor</th><th>Observações</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      <p class="footer">Relatório gerado a partir dos lançamentos financeiros vinculados ao membro selecionado. Use esta impressão para conferência administrativa.</p>
+    </main></body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+  };
+
+  return (
+    <div className="financeLivroPage">
+      <FinancePeriodPanel filter={filter} setFilter={setFilter} referenciaGlobal={referencia} resumo={{ receitas: resumo.total, despesas: 0, saldo: resumo.total, registros: resumo.quantidade }} compact />
+      <section className="card unifiedLedger">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">Financeiro</span>
+            <h2>Histórico de Contribuições</h2>
+            <p className="muted">Consulte receitas vinculadas a um membro, com total do período e acesso ao recibo.</p>
+          </div>
+          <div className="row">
+            <button className="smallBtn secondary" type="button" onClick={imprimirRelatorio} disabled={!contribuicoes.length}>
+              Imprimir relatório
+            </button>
+            <button className="smallBtn secondary" type="button" onClick={exportarCsv} disabled={!contribuicoes.length}>
+              Exportar CSV
+            </button>
+          </div>
+        </div>
+        <div className="selectionInfoNote">
+          <b>Acesso sensível</b>
+          <span>Esta visão usa a permissão do módulo Financeiro. Para liberar pelo cadastro de membros no futuro, recomendo criar uma permissão específica para o perfil secretário.</span>
+        </div>
+        <div className="grid cols4" style={{ marginBottom: 16 }}>
+          <div className="field" style={{ gridColumn: '1 / span 2' }}>
+            <label>Membro</label>
+            <SearchableSelect value={membroId} onChange={setMembroId} options={membroOptions} placeholder="Pesquisar membro..." />
+          </div>
+          <div className="stat">
+            <b>{fmtMoney(resumo.total)}</b>
+            <span>Total no filtro</span>
+          </div>
+          <div className="stat">
+            <b>{resumo.quantidade}</b>
+            <span>Contribuições</span>
+          </div>
+          <div className="stat">
+            <b>{fmtMoney(resumo.media)}</b>
+            <span>Média</span>
+          </div>
+          <div className="stat">
+            <b>{fmtMoney(resumo.maior)}</b>
+            <span>Maior contribuição</span>
+          </div>
+        </div>
+        {membroSelecionado && (
+          <div className="financeSplitNotice">
+            Histórico de <b>{membroSelecionado.nome}</b> em <b>{financialFilterLabel(filter, referencia)}</b>.
+          </div>
+        )}
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Referência</th>
+                <th>Tipo</th>
+                <th>Caixa</th>
+                <th>Forma</th>
+                <th className="right">Valor</th>
+                <th className="center">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {receitas.loading && (
+                <tr>
+                  <td colSpan={7} className="center">
+                    Carregando contribuições...
+                  </td>
+                </tr>
+              )}
+              {!receitas.loading && !membroId && (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="emptyState">
+                      <b>Selecione um membro</b>
+                      <span>O histórico será exibido apenas depois da seleção para evitar exposição desnecessária de dados financeiros.</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {!receitas.loading && membroId && contribuicoes.length === 0 && (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="emptyState">
+                      <b>Nenhuma contribuição encontrada</b>
+                      <span>Altere o período, a referência global ou verifique se as receitas estão vinculadas ao membro.</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {contribuicoes.map((r) => (
+                <tr key={r.id}>
+                  <td>{fmtDate(r.data)}</td>
+                  <td>{fmtReferencia(r.referencia || referenciaFromDate(r.data))}</td>
+                  <td>
+                    <b>{r.tipo || 'Contribuição'}</b>
+                    <small className="muted blockText">{r.observacoes || r.culto || '—'}</small>
+                  </td>
+                  <td>{caixaMap[r.tipo_caixa_id] || '—'}</td>
+                  <td>{r.forma_pagamento || '—'}</td>
+                  <td className="right moneyIncome">
+                    <b>{fmtMoney(r.valor)}</b>
+                  </td>
+                  <td className="center">
+                    <button className="smallBtn secondary" type="button" onClick={() => emitirRecibo(r)}>
+                      Recibo
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
@@ -8382,7 +9246,7 @@ function normalizeChurchReportIdentity(empresa = {}, tenant = {}) {
   const safeTenant = tenant && typeof tenant === 'object' ? tenant : {};
   const nome = String(safeEmpresa.nome_fantasia || safeEmpresa.nome || safeTenant.empresaNome || 'Igreja').trim() || 'Igreja';
   const local = [safeEmpresa.cidade, safeEmpresa.estado].filter(Boolean).join('/');
-  const dados = [safeEmpresa.cnpj ? `CNPJ: ${safeEmpresa.cnpj}` : '', local].filter(Boolean).join(' • ');
+  const dados = [safeEmpresa.cnpj ? `CNPJ: ${formatCnpj(safeEmpresa.cnpj)}` : '', local].filter(Boolean).join(' • ');
   const logo = String(safeEmpresa.logomarca || safeEmpresa.logo || safeEmpresa.logo_base64 || '').trim();
   return { nome, dados, logo };
 }
@@ -8391,9 +9255,9 @@ function normalizeChurchReceiptIdentity(empresa = {}, tenant = {}) {
   const safeTenant = tenant && typeof tenant === 'object' ? tenant : {};
   const nome = String(safeEmpresa.nome_fantasia || safeEmpresa.nome || safeTenant.empresaNome || 'Igreja').trim() || 'Igreja';
   const local = [safeEmpresa.cidade, safeEmpresa.estado].filter(Boolean).join('/');
-  const endereco = [safeEmpresa.endereco, local, safeEmpresa.cep ? `CEP ${safeEmpresa.cep}` : ''].filter(Boolean).join(' • ');
-  const contato = [safeEmpresa.telefone, safeEmpresa.email].filter(Boolean).join(' • ');
-  const cnpj = safeEmpresa.cnpj ? `CNPJ: ${safeEmpresa.cnpj}` : '';
+  const endereco = [safeEmpresa.endereco, local, safeEmpresa.cep ? `CEP ${formatCep(safeEmpresa.cep)}` : ''].filter(Boolean).join(' • ');
+  const contato = [formatPhone(safeEmpresa.telefone), safeEmpresa.email].filter(Boolean).join(' • ');
+  const cnpj = safeEmpresa.cnpj ? `CNPJ: ${formatCnpj(safeEmpresa.cnpj)}` : '';
   const logo = String(safeEmpresa.logomarca || safeEmpresa.logo || safeEmpresa.logo_base64 || '').trim();
   return { nome, cnpj, endereco, contato, logo };
 }
@@ -10435,9 +11299,10 @@ function FinanceiroModule() {
       <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
         ← Voltar
       </button>
-      {page === 'livro' && <FinanceiroLivroCaixaPage />}
+      {page === 'livro' && <FinanceiroLivroCaixaPage onNovaReceita={() => setPage('receita')} onNovaDespesa={() => setPage('despesa')} />}
       {page === 'receita' && <LancamentosPage onImportar={() => setPage('importar_entradas')} />}
       {page === 'despesa' && <DespesasPage onImportar={() => setPage('importar_despesas')} />}
+      {page === 'historico_contribuicoes' && <HistoricoContribuicoesPage />}
       {page === 'importar_entradas' && <PlanilhaFinanceiraImportPage kind="entrada" onBack={() => setPage('receita')} />}
       {page === 'importar_despesas' && <PlanilhaFinanceiraImportPage kind="despesa" onBack={() => setPage('despesa')} />}
       {page === 'transferencia' && <TransferenciaPage />}
@@ -10707,6 +11572,8 @@ function MembrosPage() {
     payload.cpf = onlyDigits(payload.cpf);
     if (payload.cpf && !isValidCpf(payload.cpf)) throw new Error('CPF inválido. Corrija ou deixe em branco.');
     payload.cep = onlyDigits(payload.cep);
+    payload.telefone_celular = formatPhone(payload.telefone_celular);
+    payload.telefone_residencial = formatPhone(payload.telefone_residencial);
     payload.uf =
       String(payload.uf || '')
         .trim()
@@ -10785,7 +11652,7 @@ function MembrosPage() {
       familia_id: form.familia_id || null,
       responsavel_legal_id: form.responsavel_legal_id || modal?.id || null,
       responsavel_legal_2_id: form.responsavel_legal_2_id || null,
-      telefone: form.telefone || null,
+      telefone: formatPhone(form.telefone) || null,
       futuro_membro: !!form.futuro_membro,
       data_prevista_membro: form.futuro_membro ? dateFromSheet(form.data_prevista_membro) || null : null,
       observacoes_membro: form.futuro_membro ? form.observacoes_membro || null : null,
@@ -10861,6 +11728,10 @@ function MembrosPage() {
   const exportar = () => {
     const exportRows = filtered.map((m) => ({
       ...m,
+      cpf: formatCpf(m.cpf),
+      cep: formatCep(m.cep),
+      telefone_residencial: formatPhone(m.telefone_residencial),
+      telefone_celular: formatPhone(m.telefone_celular),
       estado_civil: estadoCivilLabel(m.estado_civil),
     }));
     downloadTextFile(`membros_${new Date().toISOString().slice(0, 10)}.csv`, rowsToCsv(exportRows, membroHeaders));
@@ -10943,6 +11814,8 @@ function MembrosPage() {
             .toUpperCase();
           item.cpf = onlyDigits(item.cpf);
           item.cep = onlyDigits(item.cep);
+          item.telefone_residencial = formatPhone(item.telefone_residencial);
+          item.telefone_celular = formatPhone(item.telefone_celular);
           item.uf =
             String(item.uf || '')
               .trim()
@@ -11045,7 +11918,7 @@ function MembrosPage() {
                   <b>{m.nome}</b>
                   <div className="muted smallText">{m.endereco || ''}</div>
                 </td>
-                <td>{m.telefone_celular || '—'}</td>
+                <td>{formatPhone(m.telefone_celular) || '—'}</td>
                 <td>{[m.cidade, m.uf].filter(Boolean).join('/') || '—'}</td>
                 <td>{m.congregacao || '—'}</td>
                 <td>{m.cargo || '—'}</td>
@@ -11124,7 +11997,7 @@ function familiaNomeDoDependente(d, familiaMap = {}) {
 }
 function telefoneDependente(d, membroMap = {}) {
   const membro = membroMap[d?.membro_id];
-  return d?.telefone || membro?.telefone_celular || membro?.telefone_residencial || '';
+  return formatPhone(d?.telefone || membro?.telefone_celular || membro?.telefone_residencial || '');
 }
 function dependenteNascimento(d, membroMap = {}) {
   return d?.data_nascimento || membroMap[d?.membro_id]?.data_nascimento || null;
@@ -11228,7 +12101,7 @@ function SecretariaFamiliasPage() {
   const imprimir = (fam) => {
     const pessoas = membrosDaFamilia(fam);
     const deps = dependentesDaFamilia(fam);
-    const membrosHtml = pessoas.map((m) => `<tr><td>${m.nome || ''}</td><td>Membro</td><td>${m.parentesco || ''}</td><td>${m.responsavel_familiar ? 'Sim' : 'Não'}</td><td>${m.telefone_celular || m.telefone_residencial || ''}</td><td>${fmtDate(m.data_nascimento)}</td></tr>`).join('');
+    const membrosHtml = pessoas.map((m) => `<tr><td>${m.nome || ''}</td><td>Membro</td><td>${m.parentesco || ''}</td><td>${m.responsavel_familiar ? 'Sim' : 'Não'}</td><td>${formatPhone(m.telefone_celular || m.telefone_residencial) || ''}</td><td>${fmtDate(m.data_nascimento)}</td></tr>`).join('');
     const depsHtml = deps
       .map((d) => {
         const r1 = membroMap[d.responsavel_legal_id];
@@ -11359,7 +12232,7 @@ function SecretariaFamiliasPage() {
                             .filter(Boolean)
                             .join(', ') || '—'}
                     </td>
-                    <td>{m.telefone_celular || m.telefone_residencial || '—'}</td>
+                    <td>{formatPhone(m.telefone_celular || m.telefone_residencial) || '—'}</td>
                   </tr>
                 ))}
                 {dependentesDaFamilia(detalhe).map((d) => {
@@ -11387,7 +12260,8 @@ function SecretariaFamiliasPage() {
   );
 }
 
-function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, saving }) {
+function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, saving, tipoCadastro = 'dependente' }) {
+  const isCongregado = tipoCadastro === 'congregado';
   const membroOptions = useMemo(() => [{ value: '', label: 'Não vincular a membro' }, ...(membros || []).map((m) => ({ value: m.id, label: m.nome }))], [membros]);
   const familiaOptions = useMemo(() => [{ value: '', label: 'Selecione a família…' }, ...(familias || []).map((f) => ({ value: f.id, label: f.nome }))], [familias]);
   const responsavelOptions = useMemo(() => [{ value: '', label: 'Selecione…' }, ...(membros || []).map((m) => ({ value: m.id, label: m.nome }))], [membros]);
@@ -11395,7 +12269,7 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
     membro_id: initial?.membro_id || '',
     nome: initial?.nome || '',
     data_nascimento: initial?.data_nascimento || '',
-    parentesco: initial?.parentesco || 'Filho(a)',
+    parentesco: isCongregado ? 'Congregado' : initial?.parentesco || 'Filho(a)',
     familia_id: initial?.familia_id || '',
     responsavel_legal_id: initial?.responsavel_legal_id || '',
     responsavel_legal_2_id: initial?.responsavel_legal_2_id || '',
@@ -11415,16 +12289,20 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
       nome: m?.nome || f.nome || '',
       data_nascimento: m?.data_nascimento || f.data_nascimento || '',
       familia_id: m?.familia_id || f.familia_id || '',
-      parentesco: f.parentesco || m?.parentesco || 'Filho(a)',
-      telefone: m?.telefone_celular || m?.telefone_residencial || f.telefone || '',
+      parentesco: isCongregado ? 'Congregado' : f.parentesco || m?.parentesco || 'Filho(a)',
+      telefone: formatPhone(m?.telefone_celular || m?.telefone_residencial || f.telefone || ''),
     }));
   };
   const requiredMissing = !String(form.nome || '').trim();
   return (
     <div className="memberCompactForm">
       <div className="selectionInfoNote">
-        <b>Cadastro próprio</b>
-        <span>Use “Vincular a membro” apenas quando o filho/dependente já existir no cadastro de membros. Caso contrário, preencha os dados básicos aqui.</span>
+        <b>{isCongregado ? 'Cadastro de congregado' : 'Cadastro próprio'}</b>
+        <span>
+          {isCongregado
+            ? 'Use este cadastro para acompanhar congregados que ainda não são membros formais. Quando necessário, use “Virar membro” na lista.'
+            : 'Use “Vincular a membro” apenas quando o filho/dependente já existir no cadastro de membros. Caso contrário, preencha os dados básicos aqui.'}
+        </span>
       </div>
       <div className="grid cols3">
         <div className="field">
@@ -11433,7 +12311,7 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
           <div className="muted smallText">Opcional.</div>
         </div>
         <div className="field">
-          <label>Nome do filho/dependente *</label>
+          <label>{isCongregado ? 'Nome do congregado *' : 'Nome do filho/dependente *'}</label>
           <input value={form.nome} onChange={(e) => set('nome', e.target.value)} />
         </div>
         <div className="field">
@@ -11445,12 +12323,12 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
           <SearchableSelect value={form.familia_id} onChange={(v) => set('familia_id', v)} options={familiaOptions} />
         </div>
         <div className="field">
-          <label>Parentesco</label>
-          <input value={form.parentesco} onChange={(e) => set('parentesco', e.target.value)} placeholder="Filho(a), Neto(a), Dependente…" />
+          <label>{isCongregado ? 'Classificação' : 'Parentesco'}</label>
+          <input value={form.parentesco} onChange={(e) => set('parentesco', isCongregado ? 'Congregado' : e.target.value)} placeholder="Filho(a), Neto(a), Dependente…" readOnly={isCongregado} />
         </div>
         <div className="field">
           <label>Telefone/contato</label>
-          <input value={form.telefone} onChange={(e) => set('telefone', e.target.value)} />
+          <input value={formatPhone(form.telefone)} onChange={(e) => set('telefone', formatPhone(e.target.value))} inputMode="numeric" maxLength="15" />
         </div>
         <div className="field">
           <label>Responsável legal 1</label>
@@ -11463,7 +12341,7 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
         <div className="field">
           <label>Status</label>
           <label className="checkRow">
-            <input type="checkbox" checked={!!form.ativo} onChange={(e) => set('ativo', e.target.checked)} /> Dependente ativo
+            <input type="checkbox" checked={!!form.ativo} onChange={(e) => set('ativo', e.target.checked)} /> {isCongregado ? 'Congregado ativo' : 'Dependente ativo'}
           </label>
         </div>
         <div className="field">
@@ -11471,7 +12349,7 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
           <label className="checkRow">
             <input type="checkbox" checked={!!form.futuro_membro} onChange={(e) => set('futuro_membro', e.target.checked)} /> Marcar para virar membro
           </label>
-          <div className="muted smallText">Use para acompanhar crianças/dependentes que futuramente serão cadastrados como membros.</div>
+          <div className="muted smallText">{isCongregado ? 'Use para acompanhar congregados que futuramente serão cadastrados como membros.' : 'Use para acompanhar crianças/dependentes que futuramente serão cadastrados como membros.'}</div>
         </div>
         <div className="field">
           <label>Previsão / data sugerida</label>
@@ -11498,7 +12376,12 @@ function FilhoDependenteForm({ initial, membros, familias, onCancel, onSave, sav
   );
 }
 
-function FilhosDependentesPage() {
+function FilhosDependentesPage({ tipoCadastro = 'dependente' } = {}) {
+  const isCongregado = tipoCadastro === 'congregado';
+  const cadastroLabel = isCongregado ? 'congregado' : 'filho/dependente';
+  const cadastroLabelPlural = isCongregado ? 'congregados' : 'filhos/dependentes';
+  const tituloPagina = isCongregado ? 'Congregados' : 'Filhos e dependentes';
+  const descricaoPagina = isCongregado ? 'Cadastre congregados que participam da igreja, mas ainda não são membros formais.' : 'Cadastre filhos/dependentes mesmo quando ainda não forem membros formais da igreja.';
   const tenant = React.useContext(TenantContext);
   const access = usePermissions();
   const canCreate = access.can('secretaria', 'create');
@@ -11522,6 +12405,7 @@ function FilhosDependentesPage() {
   const filhos = useMemo(() => {
     const term = normalizeText(q);
     return (dependentes.rows || [])
+      .filter((d) => (isCongregado ? normalizeKey(d.parentesco) === 'congregado' : normalizeKey(d.parentesco) !== 'congregado'))
       .filter((d) => !familiaId || String(d.familia_id || '') === String(familiaId))
       .filter((d) => !showFutureOnly || !!d.futuro_membro)
       .filter((d) => {
@@ -11529,26 +12413,26 @@ function FilhosDependentesPage() {
         const resp2 = membroMap[d.responsavel_legal_2_id]?.nome || '';
         return !term || normalizeText(`${dependenteNome(d, membroMap)} ${familiaNomeDoDependente(d, familiaMap)} ${telefoneDependente(d, membroMap)} ${resp1} ${resp2}`).includes(term);
       });
-  }, [dependentes.rows, q, familiaId, familiaMap, membroMap, showFutureOnly]);
+  }, [dependentes.rows, q, familiaId, familiaMap, membroMap, showFutureOnly, isCongregado]);
 
   const save = async (form) => {
     const editing = modal?.id;
     if (editing && !canUpdate) {
-      push('Seu perfil não tem permissão para editar dependentes.', 'error');
+      push(`Seu perfil não tem permissão para editar ${cadastroLabelPlural}.`, 'error');
       return;
     }
     if (!editing && !canCreate) {
-      push('Seu perfil não tem permissão para cadastrar dependentes.', 'error');
+      push(`Seu perfil não tem permissão para cadastrar ${cadastroLabelPlural}.`, 'error');
       return;
     }
     const nome = String(form.nome || '').trim();
     if (!nome) {
-      push('Informe o nome do filho/dependente.', 'error');
+      push(`Informe o nome do ${cadastroLabel}.`, 'error');
       return;
     }
     const duplicate = form.membro_id ? (dependentes.rows || []).find((d) => d.membro_id && String(d.membro_id) === String(form.membro_id) && String(d.id) !== String(modal?.id || '')) : null;
     if (duplicate) {
-      push('Este membro já está cadastrado como filho/dependente.', 'warning');
+      push(`Este membro já está cadastrado como ${cadastroLabel}.`, 'warning');
       return;
     }
     setSaving(true);
@@ -11556,11 +12440,11 @@ function FilhosDependentesPage() {
       membro_id: form.membro_id || null,
       nome,
       data_nascimento: form.data_nascimento || null,
-      parentesco: form.parentesco || 'Dependente',
+      parentesco: isCongregado ? 'Congregado' : form.parentesco || 'Dependente',
       familia_id: form.familia_id || null,
       responsavel_legal_id: form.responsavel_legal_id || null,
       responsavel_legal_2_id: form.responsavel_legal_2_id || null,
-      telefone: form.telefone || null,
+      telefone: formatPhone(form.telefone) || null,
       futuro_membro: !!form.futuro_membro,
       data_prevista_membro: form.futuro_membro ? form.data_prevista_membro || null : null,
       observacoes_membro: form.futuro_membro ? form.observacoes_membro || null : null,
@@ -11581,13 +12465,13 @@ function FilhosDependentesPage() {
       push(error.message, 'error');
       return;
     }
-    push('Filho/dependente salvo com sucesso.');
+    push(`${isCongregado ? 'Congregado' : 'Filho/dependente'} salvo com sucesso.`);
     setModal(null);
     dependentes.reload();
   };
   const remove = async (dep) => {
     if (!canDelete) {
-      push('Seu perfil não tem permissão para excluir dependentes.', 'error');
+      push(`Seu perfil não tem permissão para excluir ${cadastroLabelPlural}.`, 'error');
       return;
     }
     if (!confirm(`Excluir ${dependenteNome(dep, membroMap)}?`)) return;
@@ -11596,7 +12480,7 @@ function FilhosDependentesPage() {
       push(error.message, 'error');
       return;
     }
-    push('Dependente excluído.');
+    push(`${isCongregado ? 'Congregado' : 'Dependente'} excluído.`);
     dependentes.reload();
   };
   const promoverParaMembro = async (dep) => {
@@ -11605,7 +12489,7 @@ function FilhosDependentesPage() {
       return;
     }
     if (dep.membro_id) {
-      push('Este dependente já está vinculado a um membro.', 'warning');
+      push(`Este ${cadastroLabel} já está vinculado a um membro.`, 'warning');
       return;
     }
     if (!confirm(`Cadastrar ${dependenteNome(dep, membroMap)} como membro da igreja?`)) return;
@@ -11618,10 +12502,10 @@ function FilhosDependentesPage() {
       empresa_id: tenant?.empresaId,
       nome,
       data_nascimento: dep.data_nascimento || null,
-      telefone_celular: dep.telefone || null,
+      telefone_celular: formatPhone(dep.telefone) || null,
       familia_id: dep.familia_id || null,
       familia: familiaNome,
-      parentesco: dep.parentesco || 'Filho(a)',
+      parentesco: isCongregado ? 'Congregado' : dep.parentesco || 'Filho(a)',
       responsavel_legal_id: dep.responsavel_legal_id || null,
       responsavel_legal_2_id: dep.responsavel_legal_2_id || null,
       situacao: 'ativo',
@@ -11643,9 +12527,9 @@ function FilhosDependentesPage() {
       })
       .eq('id', dep.id);
     if (updError) {
-      push(`Membro criado, mas não consegui atualizar o dependente: ${updError.message}`, 'warning');
+      push(`Membro criado, mas não consegui atualizar o ${cadastroLabel}: ${updError.message}`, 'warning');
     } else {
-      push('Dependente cadastrado como membro e vínculo atualizado.');
+      push(`${isCongregado ? 'Congregado' : 'Dependente'} cadastrado como membro e vínculo atualizado.`);
     }
     dependentes.reload();
     membros.reload();
@@ -11667,11 +12551,11 @@ function FilhosDependentesPage() {
       <ToastStack toasts={toasts} close={close} />
       <div className="toolbar">
         <div>
-          <h2>Filhos e dependentes</h2>
-          <p className="muted">Cadastre filhos/dependentes mesmo quando ainda não forem membros formais da igreja.</p>
+          <h2>{tituloPagina}</h2>
+          <p className="muted">{descricaoPagina}</p>
         </div>
         <div className="row">
-          <input placeholder="Buscar filho, responsável ou família…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input placeholder={isCongregado ? 'Buscar congregado, responsável ou família…' : 'Buscar filho, responsável ou família…'} value={q} onChange={(e) => setQ(e.target.value)} />
           <div style={{ minWidth: 240 }}>
             <SearchableSelect value={familiaId} onChange={setFamiliaId} options={familiaOptions} />
           </div>
@@ -11683,24 +12567,28 @@ function FilhosDependentesPage() {
               onClick={() =>
                 setModal({
                   ativo: true,
-                  parentesco: 'Filho(a)',
+                  parentesco: isCongregado ? 'Congregado' : 'Filho(a)',
                   futuro_membro: false,
                 })
               }
             >
-              + Novo dependente
+              {isCongregado ? '+ Novo congregado' : '+ Novo dependente'}
             </button>
           )}
         </div>
       </div>
       <div className="selectionInfoNote">
         <b>Regra de vínculo</b>
-        <span>O dependente pode ser cadastrado diretamente aqui. Marque “Futuro membro” para acompanhar quem deverá ser convertido para membro quando chegar o momento.</span>
+        <span>
+          {isCongregado
+            ? 'O congregado pode ser cadastrado diretamente aqui. Marque “Futuro membro” para acompanhar quem deverá ser convertido para membro quando chegar o momento.'
+            : 'O dependente pode ser cadastrado diretamente aqui. Marque “Futuro membro” para acompanhar quem deverá ser convertido para membro quando chegar o momento.'}
+        </span>
       </div>
       <div className="grid cols4" style={{ marginBottom: 16 }}>
         <div className="stat">
           <b>{filhos.length}</b>
-          <span>filhos/dependentes</span>
+          <span>{cadastroLabelPlural}</span>
         </div>
         <div className="stat">
           <b>{new Set(filhos.map((d) => d.familia_id).filter(Boolean)).size}</b>
@@ -11723,7 +12611,7 @@ function FilhosDependentesPage() {
         <table>
           <thead>
             <tr>
-              <th>Filho/dependente</th>
+              <th>{isCongregado ? 'Congregado' : 'Filho/dependente'}</th>
               <th>Idade</th>
               <th>Família</th>
               <th>Responsável legal</th>
@@ -11743,7 +12631,7 @@ function FilhosDependentesPage() {
             {!dependentes.loading && !membros.loading && filhos.length === 0 && (
               <tr>
                 <td colSpan={7} className="center muted">
-                  Nenhum filho/dependente localizado.
+                  {isCongregado ? 'Nenhum congregado localizado.' : 'Nenhum filho/dependente localizado.'}
                 </td>
               </tr>
             )}
@@ -11769,7 +12657,7 @@ function FilhosDependentesPage() {
                   <td>{idadeDe(nasc) ?? '—'}</td>
                   <td>{familiaNomeDoDependente(d, familiaMap)}</td>
                   <td>{[r1?.nome, r2?.nome].filter(Boolean).join(', ') || '—'}</td>
-                  <td>{[telefoneDependente(d, membroMap), r1?.telefone_celular || r1?.telefone_residencial, r2?.telefone_celular || r2?.telefone_residencial].filter(Boolean).join(' / ') || '—'}</td>
+                  <td>{[telefoneDependente(d, membroMap), formatPhone(r1?.telefone_celular || r1?.telefone_residencial), formatPhone(r2?.telefone_celular || r2?.telefone_residencial)].filter(Boolean).join(' / ') || '—'}</td>
                   <td>
                     <span className={`badge ${d.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{d.ativo !== false ? 'Ativo' : 'Inativo'}</span>
                   </td>
@@ -11802,12 +12690,16 @@ function FilhosDependentesPage() {
         </table>
       </div>
       {modal && (
-        <Modal title={modal.id ? 'Editar filho/dependente' : 'Novo filho/dependente'} onClose={() => setModal(null)} wide className="memberModal">
-          <FilhoDependenteForm initial={modal} membros={membros.rows || []} familias={familias.rows || []} onCancel={() => setModal(null)} onSave={save} saving={saving} />
+        <Modal title={modal.id ? `Editar ${cadastroLabel}` : `Novo ${cadastroLabel}`} onClose={() => setModal(null)} wide className="memberModal">
+          <FilhoDependenteForm initial={modal} membros={membros.rows || []} familias={familias.rows || []} onCancel={() => setModal(null)} onSave={save} saving={saving} tipoCadastro={tipoCadastro} />
         </Modal>
       )}
     </div>
   );
+}
+
+function CongregadosPage() {
+  return <FilhosDependentesPage tipoCadastro="congregado" />;
 }
 
 function SimplePlaceholder({ title, text }) {
@@ -11835,6 +12727,7 @@ function SecretariaModule() {
       {page === 'membros' && <MembrosPage />}
       {page === 'familias' && <SecretariaFamiliasPage />}
       {page === 'filhos' && <FilhosDependentesPage />}
+      {page === 'congregados' && <CongregadosPage />}
       {page === 'ministerios' && <MinisteriosSecretariaPage />}
       {page === 'cargos' && <CargosSecretariaPage />}
       {page === 'relatorios' && <AniversariantesWidget />}
@@ -12124,7 +13017,7 @@ function MatriculasEbdPage() {
           .sort((a, b) => String(membroMap[a.membro_id] || '').localeCompare(String(membroMap[b.membro_id] || ''), 'pt-BR'))
           .map((r, index) => {
             const membro = membroById[r.membro_id] || {};
-            return `<tr><td>${index + 1}</td><td>${htmlSafe(membro.nome || membroMap[r.membro_id] || '—')}</td><td>${htmlSafe(membro.telefone_celular || '')}</td><td>${fmtDate(r.data_matricula)}</td><td></td></tr>`;
+            return `<tr><td>${index + 1}</td><td>${htmlSafe(membro.nome || membroMap[r.membro_id] || '—')}</td><td>${htmlSafe(formatPhone(membro.telefone_celular) || '')}</td><td>${fmtDate(r.data_matricula)}</td><td></td></tr>`;
           })
           .join('')
       : '<tr><td colspan="5">Nenhum membro ativo matriculado nesta turma.</td></tr>';
@@ -12341,7 +13234,7 @@ function MatriculasEbdPage() {
                       <input type="checkbox" checked={!!selectedMembers[m.id]} onChange={(e) => toggleMember(m.id, e.target.checked)} />
                       <span>
                         <b>{m.nome}</b>
-                        <small>{[m.cargo, m.telefone_celular, m.email].filter(Boolean).join(' • ') || 'Membro cadastrado'}</small>
+                        <small>{[m.cargo, formatPhone(m.telefone_celular), m.email].filter(Boolean).join(' • ') || 'Membro cadastrado'}</small>
                       </span>
                       {already && <em>Já matriculado</em>}
                     </label>
@@ -12418,7 +13311,7 @@ function MatriculasEbdPage() {
                         <b>{membro.nome || membroMap[r.membro_id] || '—'}</b>
                         <div className="muted smallText">{membro.email || ''}</div>
                       </td>
-                      <td>{membro.telefone_celular || '—'}</td>
+                      <td>{formatPhone(membro.telefone_celular) || '—'}</td>
                       <td>{fmtDate(r.data_matricula)}</td>
                       <td>
                         <span className={`badge ${r.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{r.ativo !== false ? 'Ativa' : 'Inativa'}</span>
@@ -14882,38 +15775,39 @@ function DadosGeraisEmpresaPage() {
   const empresa = empresas.rows.find((e) => e.id === tenant?.empresaId) || {};
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const [logoProcessing, setLogoProcessing] = useState(false);
 
   useEffect(() => {
     setForm({
       nome: empresa.nome || '',
       nome_fantasia: empresa.nome_fantasia || '',
-      cnpj: empresa.cnpj || '',
+      cnpj: formatCnpj(empresa.cnpj),
       responsavel: empresa.responsavel || '',
-      telefone: empresa.telefone || '',
+      telefone: formatPhone(empresa.telefone),
       email: empresa.email || '',
       endereco: empresa.endereco || '',
       cidade: empresa.cidade || '',
       estado: empresa.estado || '',
-      cep: empresa.cep || '',
+      cep: formatCep(empresa.cep),
       obs: empresa.obs || '',
       logomarca: empresa.logomarca || '',
     });
   }, [empresa.id]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const carregarLogo = (file) => {
+  const carregarLogo = async (file) => {
     if (!file) return;
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      push('Use uma imagem PNG, JPG ou WEBP.', 'error');
-      return;
+    setLogoProcessing(true);
+    try {
+      const optimized = await optimizeLogoFile(file);
+      if (!optimized) return;
+      set('logomarca', optimized.dataUrl);
+      push(`Logo otimizada de ${fileSizeLabel(optimized.originalBytes)} para ${fileSizeLabel(optimized.optimizedBytes)}. Clique em salvar para aplicar.`);
+    } catch (error) {
+      push(error.message || 'Não foi possível otimizar a logo.', 'error');
+    } finally {
+      setLogoProcessing(false);
     }
-    if (file.size > 600 * 1024) {
-      push('A logo deve ter no máximo 600 KB.', 'error');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => set('logomarca', reader.result);
-    reader.readAsDataURL(file);
   };
 
   const salvar = async () => {
@@ -14925,14 +15819,14 @@ function DadosGeraisEmpresaPage() {
     const payload = {
       nome: form.nome || '',
       nome_fantasia: form.nome_fantasia || '',
-      cnpj: form.cnpj || '',
+      cnpj: formatCnpj(form.cnpj),
       responsavel: form.responsavel || '',
-      telefone: form.telefone || '',
+      telefone: formatPhone(form.telefone),
       email: form.email || '',
       endereco: form.endereco || '',
       cidade: form.cidade || '',
       estado: form.estado || '',
-      cep: form.cep || '',
+      cep: formatCep(form.cep),
       obs: form.obs || '',
       logomarca: form.logomarca || '',
     };
@@ -14968,7 +15862,7 @@ function DadosGeraisEmpresaPage() {
             </div>
             <div className="field">
               <label>CNPJ</label>
-              <input value={form.cnpj || ''} onChange={(e) => set('cnpj', e.target.value)} />
+              <input value={formatCnpj(form.cnpj)} onChange={(e) => set('cnpj', formatCnpj(e.target.value))} inputMode="numeric" maxLength="18" />
             </div>
             <div className="field">
               <label>Responsável</label>
@@ -14976,7 +15870,7 @@ function DadosGeraisEmpresaPage() {
             </div>
             <div className="field">
               <label>Telefone</label>
-              <input value={form.telefone || ''} onChange={(e) => set('telefone', e.target.value)} />
+              <input value={formatPhone(form.telefone)} onChange={(e) => set('telefone', formatPhone(e.target.value))} inputMode="numeric" maxLength="15" />
             </div>
             <div className="field">
               <label>E-mail</label>
@@ -14996,7 +15890,7 @@ function DadosGeraisEmpresaPage() {
             </div>
             <div className="field">
               <label>CEP</label>
-              <input value={form.cep || ''} onChange={(e) => set('cep', e.target.value)} />
+              <input value={formatCep(form.cep)} onChange={(e) => set('cep', formatCep(e.target.value))} inputMode="numeric" maxLength="9" />
             </div>
             <div className="field full">
               <label>Observações</label>
@@ -15013,6 +15907,7 @@ function DadosGeraisEmpresaPage() {
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
+                disabled={logoProcessing}
                 onChange={(e) => {
                   carregarLogo(e.target.files?.[0]);
                   e.target.value = '';
@@ -15021,7 +15916,7 @@ function DadosGeraisEmpresaPage() {
               <button type="button" className="secondary" onClick={() => set('logomarca', '')}>
                 Remover logo
               </button>
-              <small className="muted">Permitido: PNG, JPG ou WEBP. Máximo: 600 KB.</small>
+              <small className="muted">Envie PNG, JPG ou WEBP até 2 MB. O sistema otimiza e salva em até 600 KB.</small>
             </div>
           </div>
           <div className="empresaPreview" style={{ borderColor: form.cor_menu || '#1e2a4a' }}>
@@ -15037,8 +15932,8 @@ function DadosGeraisEmpresaPage() {
         </div>
       </div>
       <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
-        <button className="green" disabled={saving || !form.nome} onClick={salvar}>
-          {saving ? 'Salvando…' : 'Salvar dados gerais'}
+        <button className="green" disabled={saving || logoProcessing || !form.nome} onClick={salvar}>
+          {logoProcessing ? 'Otimizando logo...' : saving ? 'Salvando…' : 'Salvar dados gerais'}
         </button>
       </div>
     </div>
@@ -15679,7 +16574,7 @@ function ProfessoresEbdPage() {
       membro_id: membroId || '',
       nome: membro?.nome || f.nome,
       email: membro?.email || f.email || '',
-      telefone: membro?.telefone_celular || membro?.telefone || membro?.telefone_residencial || f.telefone || '',
+      telefone: formatPhone(membro?.telefone_celular || membro?.telefone || membro?.telefone_residencial || f.telefone || ''),
     }));
   };
 
@@ -15702,7 +16597,7 @@ function ProfessoresEbdPage() {
       membro_id: professor.membro_id || '',
       nome: professor.nome || '',
       email: professor.email || '',
-      telefone: professor.telefone || '',
+      telefone: formatPhone(professor.telefone),
       observacoes: professor.observacoes || '',
       ativo: professor.ativo !== false,
       turma_ids: profVinculos.map((v) => String(v.turma_id)),
@@ -15774,7 +16669,7 @@ function ProfessoresEbdPage() {
       membro_id: form.membro_id || null,
       nome: form.nome.trim(),
       email: form.email?.trim() || null,
-      telefone: form.telefone?.trim() || null,
+      telefone: formatPhone(form.telefone) || null,
       observacoes: form.observacoes || null,
       ativo: form.ativo !== false,
     };
@@ -15925,7 +16820,7 @@ function ProfessoresEbdPage() {
                     {p.membro_id && <div className="muted smallText">Vinculado a membro</div>}
                   </td>
                   <td>{p.email || '—'}</td>
-                  <td>{p.telefone || '—'}</td>
+                  <td>{formatPhone(p.telefone) || '—'}</td>
                   <td>{nomesTurmas.length ? nomesTurmas.join(', ') : <span className="muted">Sem turma vinculada</span>}</td>
                   <td>
                     <span className={`badge ${p.ativo !== false ? 'Ativa' : 'Cancelada'}`}>{p.ativo !== false ? 'Ativo' : 'Inativo'}</span>
@@ -15970,7 +16865,7 @@ function ProfessoresEbdPage() {
             </div>
             <div className="field">
               <label>Telefone</label>
-              <input value={form.telefone} onChange={(e) => setForm((f) => ({ ...f, telefone: e.target.value }))} />
+              <input value={formatPhone(form.telefone)} onChange={(e) => setForm((f) => ({ ...f, telefone: formatPhone(e.target.value) }))} inputMode="numeric" maxLength="15" />
             </div>
             <div className="field full">
               <label>Turmas do professor</label>
@@ -16322,6 +17217,13 @@ const DEFAULT_MENU_HUBS = {
             color: 'red',
           },
           {
+            id: 'historico_contribuicoes',
+            icon: '🧾',
+            title: 'Histórico de Contribuições',
+            desc: 'Consulta por membro, totais do período e recibos.',
+            color: 'green',
+          },
+          {
             id: 'transferencia',
             icon: '🔁',
             title: 'Transferência entre caixas',
@@ -16395,6 +17297,13 @@ const DEFAULT_MENU_HUBS = {
             title: 'Filhos e dependentes',
             desc: 'Responsáveis legais e vínculo familiar.',
             color: 'blue',
+          },
+          {
+            id: 'congregados',
+            icon: '🤝',
+            title: 'Congregados',
+            desc: 'Pessoas acompanhadas com opção de virar membro.',
+            color: 'green',
           },
           {
             id: 'ministerios',
@@ -17591,8 +18500,8 @@ function UsuariosPermissoesPage() {
   const cfg = normalizePermissionsConfig(config.rows.find((r) => r.chave === permissoesConfigKey)?.valor || {});
   const [local, setLocal] = useState(cfg.menus || DEFAULT_PERMISSIONS);
   const [dashboardPerms, setDashboardPerms] = useState(cfg.dashboard || DEFAULT_DASHBOARD_PERMISSIONS);
-  const [pay, setPay] = useState(cfg.pagamentos || Object.fromEntries(USER_ROLE_ENTRIES.map(([r]) => [r, Object.fromEntries(PAYMENT_FORMS.map((f) => [f, r === 'admin' || r === 'gerente']))])));
-  const [fin, setFin] = useState(cfg.financeiro || defaultFinancialPermissions);
+  const [pay, setPay] = useState(cfg.pagamentos);
+  const [fin, setFin] = useState(cfg.financeiro);
   const [roleLabels, setRoleLabels] = useState({
     ...DEFAULT_ROLE_LABELS,
     ...(cfg.nomenclaturas || {}),
@@ -17608,8 +18517,8 @@ function UsuariosPermissoesPage() {
     const normalized = normalizePermissionsConfig(next || {});
     if (next?.menus) setLocal(normalized.menus);
     setDashboardPerms(normalized.dashboard);
-    if (next?.pagamentos) setPay(next.pagamentos);
-    if (next?.financeiro) setFin(next.financeiro);
+    setPay(normalized.pagamentos);
+    setFin(normalized.financeiro);
     if (next?.nomenclaturas) setRoleLabels({ ...DEFAULT_ROLE_LABELS, ...next.nomenclaturas });
     if (next?.descricoes) setRoleDescriptions({ ...DEFAULT_ROLE_DESCRIPTIONS, ...next.descricoes });
   }, [config.rows, permissoesConfigKey]);
@@ -17820,8 +18729,8 @@ function UsuariosPermissoesPage() {
     const valor = {
       menus: normalizeMenusConfig(local),
       dashboard: normalizeDashboardPermissionsConfig(dashboardPerms),
-      pagamentos: pay,
-      financeiro: fin,
+      pagamentos: normalizePaymentPermissionsConfig(pay),
+      financeiro: normalizeFinancialPermissionsConfig(fin),
       nomenclaturas: roleLabels,
       descricoes: roleDescriptions,
       atualizado_em: new Date().toISOString(),
@@ -17905,7 +18814,7 @@ function UsuariosPermissoesPage() {
   const restoreDefault = () => {
     setLocal(DEFAULT_PERMISSIONS);
     setDashboardPerms(DEFAULT_DASHBOARD_PERMISSIONS);
-    setPay(Object.fromEntries(USER_ROLE_ENTRIES.map(([r]) => [r, Object.fromEntries(PAYMENT_FORMS.map((f) => [f, r === 'admin' || r === 'gerente']))])));
+    setPay(defaultPaymentPermissions);
     setFin(defaultFinancialPermissions);
   };
 
@@ -17966,8 +18875,8 @@ function UsuariosPermissoesPage() {
           <b>{users.filter((u) => u.role === 'admin').length}</b>
         </div>
         <div className="stat orange">
-          <small>Operadores</small>
-          <b>{users.filter((u) => u.role === 'operador').length}</b>
+          <small>Perfis operacionais</small>
+          <b>{users.filter((u) => ['gerente', 'secretario', 'tesoureiro', 'operador'].includes(u.role)).length}</b>
         </div>
         <div className="stat purple">
           <small>Modo atual</small>
@@ -18123,7 +19032,7 @@ function UsuariosPermissoesPage() {
           <div className="profileCards">
             {roleEntries.map(([role, name]) => (
               <div key={role} className={`profileCard ${role}`}>
-                <div className="profileIcon">{role === 'admin' ? '👑' : role === 'gerente' ? '🧭' : role === 'operador' ? '📦' : '👁️'}</div>
+                <div className="profileIcon">{role === 'admin' ? '👑' : role === 'gerente' ? '🧭' : role === 'secretario' ? '🗂️' : role === 'tesoureiro' ? '💳' : role === 'operador' ? '📦' : role === 'membro' ? '🙋' : '👁️'}</div>
                 <h4>{name}</h4>
                 <p>{roleDescriptions[role]}</p>
               </div>
@@ -18490,21 +19399,26 @@ function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule 
     config.reload();
   };
 
-  const carregarLogoSistema = (file) => {
+  const carregarLogoSistema = async (file) => {
     if (!file) return;
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return push('Envie somente PNG, JPG ou WEBP.', 'error');
-    if (file.size > 450000) return push('Use uma imagem de até 450 KB.', 'error');
-    const reader = new FileReader();
-    reader.onload = () => salvarConfiguracaoSistema({ ...landingForm, usar_logo: true, logo_base64: reader.result }, 'alterar_logo_sistema');
-    reader.readAsDataURL(file);
+    setSavingBrand(true);
+    try {
+      const optimized = await optimizeLogoFile(file);
+      if (!optimized) return;
+      await salvarConfiguracaoSistema({ ...landingForm, usar_logo: true, logo_base64: optimized.dataUrl }, 'alterar_logo_sistema');
+      push(`Logo otimizada de ${fileSizeLabel(optimized.originalBytes)} para ${fileSizeLabel(optimized.optimizedBytes)}.`);
+    } catch (error) {
+      setSavingBrand(false);
+      push(error.message || 'Não foi possível otimizar a logo.', 'error');
+    }
   };
 
   const criarEmpresa = async (form) => {
     const payload = {
       nome: form.nome,
       nome_fantasia: form.nome_fantasia || form.nome,
-      cnpj: form.cnpj || '',
-      telefone: form.telefone || '',
+      cnpj: formatCnpj(form.cnpj),
+      telefone: formatPhone(form.telefone),
       email: form.email || '',
       cidade: form.cidade || '',
       estado: form.estado || '',
@@ -18792,6 +19706,7 @@ function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule 
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
+                disabled={savingBrand}
                 onChange={(e) => {
                   carregarLogoSistema(e.target.files?.[0]);
                   e.target.value = '';
@@ -18800,7 +19715,7 @@ function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule 
               <button type="button" className="secondary" disabled={savingBrand} onClick={() => salvarConfiguracaoSistema({ ...landingForm, usar_logo: false, logo_base64: '' }, 'remover_logo_sistema')}>
                 Remover logo personalizada
               </button>
-              <small className="muted">Permitido: PNG, JPG ou WEBP. Máximo: 450 KB. SVG bloqueado por segurança.</small>
+              <small className="muted">Envie PNG, JPG ou WEBP até 2 MB. O sistema otimiza e salva em até 600 KB. SVG bloqueado por segurança.</small>
             </div>
           </div>
         </div>
@@ -18858,7 +19773,7 @@ function MasterPanel({ selectedEmpresaId, setSelectedEmpresaId, setActiveModule 
                   <td>
                     <b>{e.nome_fantasia || e.nome}</b>
                     <br />
-                    <span className="muted">{e.email || e.cnpj || '—'}</span>
+                    <span className="muted">{e.email || formatCnpj(e.cnpj) || '—'}</span>
                   </td>
                   <td>{[e.cidade, e.estado].filter(Boolean).join('/') || '—'}</td>
                   <td>{e.ativo !== false ? 'Sim' : 'Não'}</td>

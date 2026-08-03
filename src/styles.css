@@ -5510,6 +5510,8 @@ tbody tr:hover td{background:#eef6fb!important}
 .loginActionsStacked>button:not(.secondary){font-size:15px!important}
 .loginActionsStacked>.secondary{background:#fff!important;color:var(--login-primary,#0f2942)!important;border-color:var(--login-secondary,#1d6fa4)!important}
 .loginActionsStacked>.secondary:hover{background:#f0f7ff!important}
+.loginModern .igrejaLoginCard .fieldHint{display:block;margin-top:5px;color:#64748b;font-size:12px;line-height:1.35}
+.loginModern .igrejaLoginCard input[aria-invalid="true"]{border-color:#dc2626!important;box-shadow:0 0 0 3px rgba(220,38,38,.12)!important}
 @media(max-width:900px){
   .loginShell{width:min(680px,100%)!important}
   .igrejaLoginCard{min-height:auto!important}

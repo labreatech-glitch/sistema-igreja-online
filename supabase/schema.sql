@@ -1,8 +1,17 @@
 -- Sistema Igreja Online SaaS Master - RESET LIMPO
 -- ATENÇÃO: este script APAGA todos os objetos do schema public e recria o banco do zero.
 -- Use em projeto Supabase de desenvolvimento ou quando desejar reconstruir a base.
+-- Para executar este reset destrutivo, rode antes na mesma sessão:
+--   set app.allow_destructive_schema_reset = 'true';
 
 begin;
+
+do $$
+begin
+  if coalesce(current_setting('app.allow_destructive_schema_reset', true), '') <> 'true' then
+    raise exception 'Reset destrutivo bloqueado. Este script apaga o schema public. Execute primeiro: set app.allow_destructive_schema_reset = ''true'';';
+  end if;
+end $$;
 
 drop schema if exists public cascade;
 create schema public;
@@ -46,7 +55,7 @@ create table public.profiles (
   empresa_id uuid references public.empresas(id) on delete set null,
   nome text not null default '',
   email text not null default '',
-  role text not null default 'secretario' check (role in ('master','admin','gerente','operador','consulta','tesoureiro','secretario')),
+  role text not null default 'secretario' check (role in ('master','admin','gerente','operador','consulta','tesoureiro','secretario','membro')),
   ativo boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -546,7 +555,7 @@ alter table public.patrimonio_manutencoes enable row level security;
 create policy profiles_select on public.profiles for select
   using (auth.uid() = id or public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id()));
 create policy profiles_insert_self on public.profiles for insert
-  with check (auth.uid() = id and ativo = false and role in ('secretario','admin','gerente','operador','consulta','tesoureiro'));
+  with check (auth.uid() = id and ativo = false and role in ('secretario','admin','gerente','operador','consulta','tesoureiro','membro'));
 create policy profiles_insert_admin on public.profiles for insert
   with check (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id() and role <> 'master'));
 create policy profiles_update_self_pending on public.profiles for update
