@@ -8,7 +8,7 @@ import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSald
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.25.3';
+const APP_VERSION = '2.26.2';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -2787,7 +2787,7 @@ function LoginScreen({ onLogged }) {
   );
 }
 
-function FirstAccessPasswordScreen({ onDone, email }) {
+function FirstAccessPasswordScreen({ onDone, email, temporaryPasswordRequired = false }) {
   const [senha, setSenha] = useState('');
   const [confirmacao, setConfirmacao] = useState('');
   const [msg, setMsg] = useState(null);
@@ -2802,21 +2802,40 @@ function FirstAccessPasswordScreen({ onDone, email }) {
       });
       return;
     }
+    if (temporaryPasswordRequired && (!/[A-Za-zÀ-ÿ]/.test(senha) || !/\d/.test(senha))) {
+      setMsg({
+        kind: 'error',
+        text: 'Use uma senha definitiva com letras e números. Não reutilize o CPF como senha.',
+      });
+      return;
+    }
     if (senha !== confirmacao) {
       setMsg({ kind: 'error', text: 'As senhas não conferem.' });
       return;
     }
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password: senha });
-    setBusy(false);
     if (error) {
+      setBusy(false);
       setMsg({ kind: 'error', text: error.message });
       return;
     }
+    if (temporaryPasswordRequired) {
+      const { error: flagError } = await supabase.rpc('confirm_password_changed');
+      if (flagError) {
+        setBusy(false);
+        setMsg({
+          kind: 'error',
+          text: `Senha alterada no Auth, mas o portal ainda não foi liberado: ${flagError.message}. Confirme se o SQL V62 foi aplicado no Supabase.`,
+        });
+        return;
+      }
+    }
+    setBusy(false);
     clearAuthHashFromUrl();
     setMsg({
       kind: 'ok',
-      text: 'Senha criada com sucesso. Você já pode acessar o sistema normalmente.',
+      text: temporaryPasswordRequired ? 'Senha alterada com sucesso. O Portal do Membro será liberado agora.' : 'Senha criada com sucesso. Você já pode acessar o sistema normalmente.',
     });
     setTimeout(() => onDone && onDone(), 700);
   };
@@ -2829,10 +2848,24 @@ function FirstAccessPasswordScreen({ onDone, email }) {
           <div>
             <h2>Criar senha de acesso</h2>
             <p className="muted">
-              Defina a senha do primeiro acesso para <b>{email || 'seu e-mail'}</b>.
+              {temporaryPasswordRequired ? (
+                <>
+                  Sua senha inicial é temporária. Crie uma senha definitiva para liberar o Portal do Membro de <b>{email || 'seu e-mail'}</b>.
+                </>
+              ) : (
+                <>
+                  Defina a senha do primeiro acesso para <b>{email || 'seu e-mail'}</b>.
+                </>
+              )}
             </p>
           </div>
         </div>
+        {temporaryPasswordRequired && (
+          <div className="infoBox">
+            <b>Troca obrigatória de senha</b>
+            <p>Por segurança, não use novamente o CPF. A nova senha deve ter no mínimo 8 caracteres, com letras e números.</p>
+          </div>
+        )}
         {msg && <div className={`alert ${msg.kind === 'ok' ? 'ok' : ''}`}>{msg.text}</div>}
         <div className="field">
           <label>Nova senha</label>
@@ -11352,6 +11385,7 @@ function MembrosPage() {
   const [secureAction, setSecureAction] = useState(null);
   const [saving, setSaving] = useState(false);
   const [savingDependente, setSavingDependente] = useState(false);
+  const [creatingPortalAccessId, setCreatingPortalAccessId] = useState('');
   const [q, setQ] = useState('');
   const [fCongregacao, setFCongregacao] = useState('');
   const [fSetor, setFSetor] = useState('');
@@ -11398,6 +11432,7 @@ function MembrosPage() {
       name: 'situacao',
       label: 'Situação',
       type: 'select',
+      defaultValue: 'ativo',
       options: [
         { value: 'ativo', label: 'Ativo' },
         { value: 'inativo', label: 'Inativo' },
@@ -11428,6 +11463,18 @@ function MembrosPage() {
       ],
     },
     { name: 'email', label: 'E-mail' },
+    ...(!modal?.id
+      ? [
+          {
+            name: 'criar_acesso_portal',
+            label: 'Criar acesso ao Portal do Membro',
+            type: 'checkbox',
+            defaultValue: true,
+            full: true,
+            help: 'Usa o e-mail como login e o CPF sem pontuação como senha inicial. O relatório pessoal ficará vinculado a este cadastro.',
+          },
+        ]
+      : []),
     { name: 'telefone_celular', label: 'Tel. Cel./WhatsApp' },
     { name: 'telefone_residencial', label: 'Tel. Res.' },
     { name: 'cep', label: 'CEP', type: 'cep' },
@@ -11566,6 +11613,7 @@ function MembrosPage() {
     delete payload.numero_membro;
     // Campo apenas visual do formulário. Não existe e não deve existir na tabela membros.
     delete payload.dependentes_atalho;
+    delete payload.criar_acesso_portal;
     payload.nome = String(payload.nome || '')
       .trim()
       .toUpperCase();
@@ -11583,12 +11631,64 @@ function MembrosPage() {
     payload.data_batismo = dateFromSheet(payload.data_batismo);
     payload.data_conversao = dateFromSheet(payload.data_conversao);
     payload.estado_civil = estadoCivilFromSheet(payload.estado_civil);
+    payload.situacao = payload.situacao || 'ativo';
     payload.familia_id = payload.familia_id || null;
     payload.responsavel_legal_id = payload.responsavel_legal_id || null;
     payload.responsavel_legal_2_id = payload.responsavel_legal_2_id || null;
     if (payload.familia_id) payload.familia = familiaIdOptions.find((o) => String(o.value) === String(payload.familia_id))?.label || payload.familia || null;
     if (!payload.nome) throw new Error('Informe o nome do membro.');
     return payload;
+  };
+
+  const isEdgeFunctionRequestFailure = (message) => /failed to send a request|failed to fetch|networkerror|load failed/i.test(String(message || ''));
+
+  const memberPortalEdgeUnavailableMessage =
+    'Edge Function criar-acesso-membro não está acessível. O membro ficou salvo; implante a função no Supabase e use Ações > Criar acesso para tentar novamente.';
+
+  const edgeErrorMessage = async (error, fallback) => {
+    if (!error) return fallback;
+    try {
+      const details = await error.context?.json?.();
+      if (details?.error) return details.error;
+    } catch {
+      // Mantém a mensagem padrão quando a resposta da função não for JSON.
+    }
+    const message = error.message || fallback;
+    return isEdgeFunctionRequestFailure(message) ? memberPortalEdgeUnavailableMessage : message;
+  };
+
+  const criarAcessoPortalMembro = async (membro) => {
+    const { data, error } = await supabase.functions.invoke('criar-acesso-membro', {
+      body: { membro_id: membro.id },
+    });
+    if (error) throw new Error(await edgeErrorMessage(error, 'Não foi possível criar o acesso do membro.'));
+    if (data?.error) throw new Error(data.error);
+    return data;
+  };
+
+  const retryCriarAcessoPortalMembro = async (membro) => {
+    if (!canUpdate) {
+      push('Seu perfil não tem permissão para criar acesso de membro.', 'error');
+      return;
+    }
+    if (!membro?.email) {
+      push('Informe o e-mail do membro antes de criar o acesso ao portal.', 'error');
+      return;
+    }
+    if (!onlyDigits(membro?.cpf) || !isValidCpf(membro?.cpf)) {
+      push('Informe um CPF válido no cadastro do membro. A senha inicial usa o CPF sem pontuação.', 'error');
+      return;
+    }
+    setCreatingPortalAccessId(membro.id);
+    try {
+      await criarAcessoPortalMembro(membro);
+      push('Acesso do membro criado. Login: e-mail cadastrado. Senha inicial: CPF sem pontuação.');
+      reload();
+    } catch (error) {
+      push(error.message || 'Não foi possível criar o acesso do membro.', 'warning');
+    } finally {
+      setCreatingPortalAccessId('');
+    }
   };
 
   const save = async (form) => {
@@ -11605,6 +11705,10 @@ function MembrosPage() {
     let payload;
     try {
       payload = cleanPayload(form);
+      if (!editing && form.criar_acesso_portal !== false) {
+        if (!payload.email) throw new Error('Informe o e-mail do membro para criar o acesso ao portal.');
+        if (!payload.cpf) throw new Error('Informe o CPF do membro para criar a senha inicial do portal.');
+      }
     } catch (error) {
       setSaving(false);
       push(error.message, 'error');
@@ -11621,12 +11725,25 @@ function MembrosPage() {
       const { data: userData } = await supabase.auth.getUser();
       payload.created_by = userData?.user?.id ?? null;
       payload.empresa_id = tenant?.empresaId;
-      const { error } = await supabase.from('membros').insert(payload);
-      setSaving(false);
+      const { data: membroCriado, error } = await supabase.from('membros').insert(payload).select('*').single();
       if (error) {
+        setSaving(false);
         push(error.message, 'error');
         return;
       }
+      if (form.criar_acesso_portal !== false) {
+        try {
+          await criarAcessoPortalMembro(membroCriado);
+          push('Acesso do membro criado. Login: e-mail cadastrado. Senha inicial: CPF sem pontuação.');
+        } catch (accessError) {
+          setSaving(false);
+          push(`Membro salvo, mas o acesso ao portal não foi criado: ${accessError.message}`, 'warning');
+          setModal(null);
+          reload();
+          return;
+        }
+      }
+      setSaving(false);
     }
     push('Membro salvo com sucesso.');
     setModal(null);
@@ -11928,6 +12045,11 @@ function MembrosPage() {
                     {canUpdate && (
                       <button className="smallBtn secondary" onClick={() => setModal(m)}>
                         Editar
+                      </button>
+                    )}
+                    {canUpdate && (
+                      <button className="smallBtn secondary" disabled={creatingPortalAccessId === m.id} onClick={() => retryCriarAcessoPortalMembro(m)}>
+                        {creatingPortalAccessId === m.id ? 'Criando...' : 'Criar acesso'}
                       </button>
                     )}
                     {canUpdate && (
@@ -15354,8 +15476,13 @@ function PortalPublicationFilesAdmin({ publicacoes }) {
 
 function PortalMembroModule({ profile }) {
   const tenant = React.useContext(TenantContext);
+  const { referencia } = useGlobalFilters();
   const isManager = isMasterProfile(profile) || ['admin', 'gerente', 'secretario'].includes(profile?.role);
+  const canPreviewAsMember = isMasterProfile(profile) || ['admin', 'tesoureiro'].includes(profile?.role);
   const [adminView, setAdminView] = useState(false);
+  const [previewMemberId, setPreviewMemberId] = useState('');
+  const [showContributionReport, setShowContributionReport] = useState(false);
+  const [contributionFilter, setContributionFilter] = useFinancialPeriodFilter(referencia);
   const publicacoes = useTable('portal_publicacoes', {
     order: 'publicado_em',
     ascending: false,
@@ -15384,7 +15511,31 @@ function PortalMembroModule({ profile }) {
     order: 'ordem',
     ascending: true,
   });
-  const membroId = profile?.membro_id || '';
+  const membrosPreview = useLookup('membros');
+  const selectedPreviewMemberId = canPreviewAsMember ? previewMemberId : '';
+  const selectedPreviewMember = useMemo(() => membrosPreview.rows.find((m) => String(m.id) === String(selectedPreviewMemberId)) || null, [membrosPreview.rows, selectedPreviewMemberId]);
+  const membroId = selectedPreviewMemberId || profile?.membro_id || '';
+  const memberDisplayName = selectedPreviewMember?.nome || profile?.nome || 'Membro';
+  const previewingAsMember = !!selectedPreviewMemberId;
+  const previewMemberOptions = useMemo(
+    () =>
+      [
+        { value: '', label: 'Selecione um membro para visualizar...' },
+        ...membrosPreview.rows
+          .filter((m) => m.ativo !== false && m.situacao !== 'inativo')
+          .map((m) => ({ value: m.id, label: [m.numero_membro ? `#${m.numero_membro}` : '', m.nome].filter(Boolean).join(' - ') }))
+          .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
+      ],
+    [membrosPreview.rows],
+  );
+  const contribuicoesMembro = useTable('lancamentos_financeiros', {
+    order: 'data',
+    ascending: false,
+    enabled: !!membroId && showContributionReport,
+  });
+  useEffect(() => {
+    setShowContributionReport(false);
+  }, [membroId]);
   const agora = new Date();
   const proximosEventos = eventos.rows.filter((e) => e.ativo !== false && (!e.fim_em || new Date(e.fim_em) >= agora)).slice(0, 6);
   const posts = publicacoes.rows.filter((p) => p.ativo !== false).slice(0, 12);
@@ -15392,6 +15543,80 @@ function PortalMembroModule({ profile }) {
   const [contribuir, setContribuir] = useState(false);
   const { toasts, push, close } = useToasts();
   const pixAtivos = chavesPix.rows.filter((item) => item.ativo !== false);
+  const minhasContribuicoes = useMemo(
+    () =>
+      (contribuicoesMembro.rows || [])
+        .filter((r) => String(r.membro_id || '') === String(membroId))
+        .filter((r) => r.status !== 'cancelado')
+        .filter((r) => rowMatchesFinanceFilter(r, contributionFilter, { referencia, caixaIds: [] }))
+        .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')) || String(b.created_at || '').localeCompare(String(a.created_at || ''))),
+    [contribuicoesMembro.rows, membroId, contributionFilter, referencia],
+  );
+  const contributionPeriodLabel = financialFilterLabel(contributionFilter, referencia);
+  const minhasContribuicoesResumo = useMemo(() => {
+    const total = minhasContribuicoes.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
+    return {
+      total,
+      quantidade: minhasContribuicoes.length,
+      maior: minhasContribuicoes.reduce((max, r) => Math.max(max, Number(r.valor) || 0), 0),
+    };
+  }, [minhasContribuicoes]);
+  const exportarMinhasContribuicoes = () => {
+    if (!minhasContribuicoes.length) return;
+    const rows = minhasContribuicoes.map((r) => ({
+      data: fmtDate(r.data),
+      referencia: fmtReferencia(r.referencia || referenciaFromDate(r.data)),
+      tipo: r.tipo || r.categoria || 'Contribuição',
+      forma_pagamento: r.forma_pagamento || '',
+      valor: fmtMoney(r.valor),
+      recibo: incomeReceiptNumber(r),
+      observacoes: r.observacoes || r.culto || '',
+    }));
+    downloadTextFile(
+      `minhas_contribuicoes_${normalizeKey(memberDisplayName)}_${new Date().toISOString().slice(0, 10)}.csv`,
+      rowsToCsv(rows, [
+        { key: 'data', label: 'Data' },
+        { key: 'referencia', label: 'Referência' },
+        { key: 'tipo', label: 'Tipo' },
+        { key: 'forma_pagamento', label: 'Forma de pagamento' },
+        { key: 'valor', label: 'Valor' },
+        { key: 'recibo', label: 'Recibo' },
+        { key: 'observacoes', label: 'Observações' },
+      ]),
+    );
+  };
+  const imprimirMinhasContribuicoes = () => {
+    if (!minhasContribuicoes.length) return;
+    const geradoEm = new Date().toLocaleString('pt-BR');
+    const rowsHtml = minhasContribuicoes
+      .map(
+        (r) => `<tr>
+          <td>${safeHtml(fmtDate(r.data))}</td>
+          <td>${safeHtml(fmtReferencia(r.referencia || referenciaFromDate(r.data)))}</td>
+          <td>${safeHtml(r.tipo || r.categoria || 'Contribuição')}</td>
+          <td>${safeHtml(r.forma_pagamento || '—')}</td>
+          <td>${safeHtml(incomeReceiptNumber(r))}</td>
+          <td class="money">${fmtMoney(r.valor)}</td>
+        </tr>`,
+      )
+      .join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Minhas Contribuições</title><style>
+      @page{size:A4 portrait;margin:12mm}*{box-sizing:border-box}body{margin:0;color:#0f172a;font-family:Inter,Arial,sans-serif;font-size:12px}.printActions{position:sticky;top:0;display:flex;justify-content:flex-end;padding:10px 14px;background:#fff;border-bottom:1px solid #dbe7f3}.printActions button{border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;padding:9px 14px;font-weight:800}.report{max-width:920px;margin:18px auto;padding:26px;border:1px solid #dbe7f3;border-radius:12px}.kicker{text-transform:uppercase;letter-spacing:.08em;color:#0f766e;font-weight:900;font-size:10px}h1{margin:3px 0 6px;font-size:25px}.muted{color:#64748b}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0}.stat{border:1px solid #dbe7f3;border-radius:10px;padding:11px;background:#f8fafc}.stat span{display:block;color:#64748b;font-size:11px}.stat b{font-size:16px}table{width:100%;border-collapse:collapse}th{background:#0f3e63;color:#fff;text-align:left;padding:9px 8px;font-size:11px}td{border-bottom:1px solid #e5edf5;padding:8px}.money{text-align:right;color:#047857;font-weight:900;white-space:nowrap}.footer{margin-top:16px;color:#64748b;font-size:11px}@media print{.printActions{display:none}.report{max-width:none;margin:0;padding:0;border:0;border-radius:0}th{background:#0f3e63!important;color:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    </style></head><body><div class="printActions"><button onclick="print()">Imprimir / salvar PDF</button></div><main class="report">
+      <span class="kicker">Portal do Membro</span>
+      <h1>Minhas Contribuições</h1>
+      <p><b>${safeHtml(memberDisplayName)}</b></p>
+      <p class="muted">${previewingAsMember ? 'Visualização administrativa' : 'Relatório exclusivo'} gerado em ${safeHtml(geradoEm)}. ${safeHtml(contributionPeriodLabel)}.</p>
+      <section class="stats"><div class="stat"><span>Total</span><b>${fmtMoney(minhasContribuicoesResumo.total)}</b></div><div class="stat"><span>Contribuições</span><b>${minhasContribuicoesResumo.quantidade}</b></div><div class="stat"><span>Maior contribuição</span><b>${fmtMoney(minhasContribuicoesResumo.maior)}</b></div></section>
+      <table><thead><tr><th>Data</th><th>Referência</th><th>Tipo</th><th>Forma</th><th>Recibo</th><th>Valor</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      <p class="footer">${previewingAsMember ? 'Relatório emitido em visualização administrativa. O membro vê somente os lançamentos vinculados ao próprio cadastro.' : 'Este relatório exibe somente lançamentos financeiros vinculados ao seu cadastro de membro.'}</p>
+    </main></body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+  };
   const copiarPix = async (item) => {
     const chave = String(item?.chave || '').trim();
     if (!chave) return;
@@ -15403,6 +15628,10 @@ function PortalMembroModule({ profile }) {
     }
   };
   const confirmarEvento = async (evento) => {
+    if (previewingAsMember) {
+      push('A visualização administrativa não confirma presença em nome do membro.', 'warning');
+      return;
+    }
     if (!membroId) {
       push('Seu acesso ainda não está vinculado ao cadastro de membro.', 'warning');
       return;
@@ -15608,8 +15837,8 @@ function PortalMembroModule({ profile }) {
       <section className="portalWelcome">
         <div>
           <span className="eyebrow">Minha comunidade</span>
-          <h1>Olá, {String(profile?.nome || 'bem-vindo').split(' ')[0]}</h1>
-          <p>Acompanhe avisos, próximos encontros e sua jornada na comunidade.</p>
+          <h1>Olá, {String(previewingAsMember ? memberDisplayName : profile?.nome || 'bem-vindo').split(' ')[0]}</h1>
+          <p>{previewingAsMember ? 'Você está conferindo como este membro verá o portal e o relatório pessoal.' : 'Acompanhe avisos, próximos encontros e sua jornada na comunidade.'}</p>
         </div>
         {isManager && (
           <button className="secondary" onClick={() => setAdminView(true)}>
@@ -15617,6 +15846,27 @@ function PortalMembroModule({ profile }) {
           </button>
         )}
       </section>
+      {canPreviewAsMember && (
+        <section className="modernPanel portalPreviewBar" aria-label="Visualização administrativa do portal">
+          <div>
+            <span className="eyebrow">Visualização administrativa</span>
+            <h2>Visualizar como membro</h2>
+            <p className="muted">Selecione um membro para conferir o Portal do Membro e o relatório pessoal sem sair do seu acesso Admin.</p>
+          </div>
+          <div className="portalPreviewControls">
+            <SearchableSelect value={selectedPreviewMemberId} onChange={setPreviewMemberId} options={previewMemberOptions} placeholder="Selecione um membro..." emptyText="Nenhum membro encontrado." />
+            <button className="smallBtn secondary" type="button" onClick={() => setPreviewMemberId('')} disabled={!selectedPreviewMemberId}>
+              Sair da visualização
+            </button>
+          </div>
+        </section>
+      )}
+      {previewingAsMember && (
+        <div className="infoBox portalPreviewNotice">
+          <b>Visualização administrativa ativa</b>
+          <p>Você está vendo o portal como {memberDisplayName}. Esta visualização não confirma presença nem altera dados em nome do membro.</p>
+        </div>
+      )}
       <section className="portalHeroGrid">
         <article className="contributionCard">
           <span>Informações para contribuições</span>
@@ -15636,6 +15886,100 @@ function PortalMembroModule({ profile }) {
               Confirmar presença
             </button>
           </article>
+        )}
+      </section>
+      <section className="modernPanel memberContributionPanel">
+        <div className="sectionHeading">
+          <div>
+            <span className="eyebrow">Minhas contribuições</span>
+            <h2>{previewingAsMember ? `Relatório de ${memberDisplayName}` : 'Relatório pessoal'}</h2>
+            <p className="muted">{previewingAsMember ? 'Visualização administrativa dos lançamentos vinculados ao membro selecionado.' : 'Consulta exclusiva dos lançamentos financeiros vinculados ao seu cadastro.'}</p>
+          </div>
+          <div className="row">
+            {membroId && (
+              <button className="smallBtn secondary" type="button" onClick={() => setShowContributionReport((v) => !v)}>
+                {showContributionReport ? 'Ocultar relatório' : 'Ver relatório'}
+              </button>
+            )}
+            <button className="smallBtn secondary" type="button" onClick={imprimirMinhasContribuicoes} disabled={!showContributionReport || !minhasContribuicoes.length}>
+              Imprimir
+            </button>
+            <button className="smallBtn secondary" type="button" onClick={exportarMinhasContribuicoes} disabled={!showContributionReport || !minhasContribuicoes.length}>
+              Exportar
+            </button>
+          </div>
+        </div>
+        {membroId && showContributionReport && (
+          <FinancePeriodPanel filter={contributionFilter} setFilter={setContributionFilter} referenciaGlobal={referencia} resumo={{ receitas: minhasContribuicoesResumo.total, despesas: 0, saldo: minhasContribuicoesResumo.total, registros: minhasContribuicoesResumo.quantidade }} compact />
+        )}
+        {!membroId ? (
+          <div className="emptyState">
+            <b>{canPreviewAsMember ? 'Selecione um membro' : 'Acesso ainda não vinculado'}</b>
+            <span>{canPreviewAsMember ? 'Escolha um membro acima para conferir o relatório pessoal dele.' : 'Peça à secretaria para vincular seu usuário ao cadastro de membro.'}</span>
+          </div>
+        ) : !showContributionReport ? (
+          <div className="emptyState">
+            <b>Relatório protegido</b>
+            <span>{previewingAsMember ? 'Clique em Ver relatório para carregar as contribuições do membro selecionado.' : 'Clique em Ver relatório quando quiser consultar suas contribuições.'}</span>
+          </div>
+        ) : contribuicoesMembro.loading ? (
+          <div className="emptyState">
+            <b>Carregando contribuições...</b>
+            <span>Estamos consultando os lançamentos vinculados ao seu cadastro.</span>
+          </div>
+        ) : (
+          <>
+            <div className="memberContributionStats">
+              <div>
+                <span>Total registrado</span>
+                <b>{fmtMoney(minhasContribuicoesResumo.total)}</b>
+              </div>
+              <div>
+                <span>Contribuições</span>
+                <b>{minhasContribuicoesResumo.quantidade}</b>
+              </div>
+              <div>
+                <span>Maior contribuição</span>
+                <b>{fmtMoney(minhasContribuicoesResumo.maior)}</b>
+              </div>
+            </div>
+            <div className="tablewrap memberContributionTable">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Referência</th>
+                    <th>Tipo</th>
+                    <th>Forma</th>
+                    <th>Recibo</th>
+                    <th className="right">Valor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {minhasContribuicoes.slice(0, 10).map((r) => (
+                    <tr key={r.id}>
+                      <td>{fmtDate(r.data)}</td>
+                      <td>{fmtReferencia(r.referencia || referenciaFromDate(r.data))}</td>
+                      <td>{r.tipo || r.categoria || 'Contribuição'}</td>
+                      <td>{r.forma_pagamento || '—'}</td>
+                      <td>{incomeReceiptNumber(r)}</td>
+                      <td className="right moneyIncome">{fmtMoney(r.valor)}</td>
+                    </tr>
+                  ))}
+                  {!minhasContribuicoes.length && (
+                    <tr>
+                      <td colSpan={6}>
+                        <div className="emptyState">
+                          <b>Nenhuma contribuição vinculada</b>
+                          <span>Quando a tesouraria lançar receitas para o seu cadastro, elas aparecerão aqui.</span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
       <div className="portalContentGrid">
@@ -21041,6 +21385,17 @@ export default function App() {
   }
   if (!profile) return <PendingScreen email={session?.user?.email} onLogout={() => supabase.auth.signOut()} />;
   if (!profile.ativo) return <PendingScreen email={profile.email} onLogout={() => supabase.auth.signOut()} />;
+  if (profile.must_change_password)
+    return (
+      <FirstAccessPasswordScreen
+        email={profile.email || session?.user?.email}
+        temporaryPasswordRequired
+        onDone={() => {
+          clearAuthHashFromUrl();
+          loadProfile(session.user);
+        }}
+      />
+    );
 
   const empresaIdAtual = selectedEmpresaId || profile.empresa_id || null;
 

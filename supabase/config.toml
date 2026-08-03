@@ -1,3 +1,6 @@
+[functions.criar-acesso-membro]
+verify_jwt = true
+
 [functions.mercado-pago-criar-pix]
 verify_jwt = true
 
