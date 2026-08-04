@@ -3,12 +3,15 @@ import { supabase, isSupabaseConfigured } from './lib/supabase.js';
 import { formatCep, formatCnpj, formatCpf, formatCpfCnpj, formatPhone, isValidCpf, onlyDigits } from './shared/lib/cpf.js';
 import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
 import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
+import { calcularDepreciacaoPatrimonio } from './domain/patrimonio/rules/calcularDepreciacao.js';
+import { PATRIMONIO_CATEGORIAS_PADRAO, categoriasPatrimonioPadraoAusentes } from './domain/patrimonio/catalog/categoriasPadrao.js';
+import QRCode from 'qrcode';
 
 /* =========================================================
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.26.3';
+const APP_VERSION = '2.27.2';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -358,7 +361,7 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
   },
   membro: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, false])),
 };
-const TENANT_TABLES = new Set(['membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
+const TENANT_TABLES = new Set(['membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
 TENANT_TABLES.add('transferencias_agendadas');
 const TenantContext = React.createContext({ empresaId: null, isMaster: false });
 const FilterContext = React.createContext({
@@ -664,6 +667,11 @@ function tableModuleKey(table) {
     patrimonio_locais: 'patrimonio',
     patrimonio_fornecedores: 'patrimonio',
     patrimonio_manutencoes: 'patrimonio',
+    patrimonio_documentos: 'patrimonio',
+    patrimonio_movimentacoes: 'patrimonio',
+    patrimonio_depreciacoes: 'patrimonio',
+    patrimonio_inventarios: 'patrimonio',
+    patrimonio_inventario_itens: 'patrimonio',
     profiles: 'usuarios',
     empresas: 'configuracoes',
     app_configuracoes: 'configuracoes',
@@ -1658,6 +1666,11 @@ const AUDIT_TABLE_LABELS = {
   patrimonio_locais: 'Locais patrimônio',
   patrimonio_fornecedores: 'Fornecedores',
   patrimonio_manutencoes: 'Manutenções',
+  patrimonio_documentos: 'Documentos patrimoniais',
+  patrimonio_movimentacoes: 'Movimentações patrimoniais',
+  patrimonio_depreciacoes: 'Depreciações patrimoniais',
+  patrimonio_inventarios: 'Inventários patrimoniais',
+  patrimonio_inventario_itens: 'Itens de inventário patrimonial',
   importacoes_bancarias: 'Importações bancárias',
   importacao_bancaria_itens: 'Itens importação',
   credores: 'Credores',
@@ -14914,6 +14927,112 @@ function EbdModule() {
 /* =========================================================
    MÓDULO PATRIMÔNIO E CONFIGURAÇÕES
 ========================================================= */
+function PatrimonioCategoriasPadraoPanel() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const categorias = useTable('patrimonio_categorias', { order: 'nome', ascending: true });
+  const { toasts, push, close } = useToasts();
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const ausentes = useMemo(() => categoriasPatrimonioPadraoAusentes(categorias.rows), [categorias.rows]);
+  const canCreate = access.can('patrimonio', 'create');
+
+  const adicionarCategoriasAusentes = async () => {
+    if (!tenant?.empresaId) {
+      push('Selecione uma igreja antes de adicionar as categorias.', 'error');
+      return;
+    }
+    if (!canCreate) {
+      push('Seu perfil não tem permissão para criar categorias patrimoniais.', 'error');
+      return;
+    }
+    if (!ausentes.length) {
+      push('Todas as categorias padrão já estão cadastradas.');
+      return;
+    }
+    if (!confirm(`Adicionar ${ausentes.length} categoria(s) ausente(s)? Categorias existentes não serão alteradas.`)) return;
+
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = ausentes.map(({ observacao: _observacao, ...categoria }) => ({
+      ...categoria,
+      empresa_id: tenant.empresaId,
+      created_by: userData?.user?.id || null,
+    }));
+    const { error } = await supabase
+      .from('patrimonio_categorias')
+      .upsert(payload, { onConflict: 'empresa_id,nome', ignoreDuplicates: true });
+    setSaving(false);
+    if (error) {
+      push(`Não foi possível adicionar as categorias: ${error.message}`, 'error');
+      return;
+    }
+    push(`${payload.length} categoria(s) padrão adicionada(s). Revise os parâmetros com o contador antes do fechamento contábil.`);
+    await categorias.reload();
+    window.dispatchEvent(new CustomEvent('igreja:tableRefresh', { detail: { table: 'patrimonio_categorias' } }));
+  };
+
+  return (
+    <>
+      <ToastStack toasts={toasts} close={close} />
+      <div className="infoBox patrimonioCategoryGuide">
+        <div>
+          <b>Categorias e depreciação recomendadas</b>
+          <p>
+            O catálogo oferece parâmetros iniciais editáveis. Ele não substitui a política contábil da igreja: vida útil, valor residual e itens não depreciáveis devem ser validados pelo contador.
+          </p>
+          <span className="muted smallText">
+            {PATRIMONIO_CATEGORIAS_PADRAO.length - ausentes.length} de {PATRIMONIO_CATEGORIAS_PADRAO.length} categorias padrão identificadas nesta igreja.
+          </span>
+        </div>
+        <div className="row patrimonioCategoryGuideActions">
+          <button type="button" className="secondary" onClick={() => setShowCatalog(true)}>Ver catálogo recomendado</button>
+          {canCreate && (
+            <button type="button" onClick={adicionarCategoriasAusentes} disabled={saving || categorias.loading || !ausentes.length}>
+              {saving ? 'Adicionando…' : ausentes.length ? `Adicionar ${ausentes.length} ausente(s)` : 'Catálogo completo'}
+            </button>
+          )}
+        </div>
+      </div>
+      {showCatalog && (
+        <Modal title="Catálogo recomendado — Categorias do Patrimônio" onClose={() => setShowCatalog(false)} wide>
+          <div className="alert ok patrimonioAccountingNotice">
+            <b>Referência gerencial inicial.</b> O CPC 27 orienta que vida útil e valor residual reflitam o uso esperado e sejam revisados periodicamente. Confirme a política com o contador antes de usar os valores oficialmente.
+          </div>
+          <div className="tablewrap patrimonioCategoryCatalogTable">
+            <table>
+              <thead>
+                <tr>
+                  <th>Categoria</th>
+                  <th>Depreciação</th>
+                  <th>Vida útil</th>
+                  <th>Residual</th>
+                  <th>Orientação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {PATRIMONIO_CATEGORIAS_PADRAO.map((categoria) => (
+                  <tr key={categoria.nome}>
+                    <td><b>{categoria.nome}</b><div className="muted smallText">{categoria.descricao}</div></td>
+                    <td>{categoria.depreciavel ? 'Sim' : 'Não'}</td>
+                    <td>{categoria.depreciavel ? `${categoria.vida_util_meses} meses` : '—'}</td>
+                    <td>{categoria.depreciavel ? `${categoria.valor_residual_percentual}%` : '—'}</td>
+                    <td>{categoria.observacao}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row patrimonioCatalogFooter">
+            <a className="link" href="https://www.cpc.org.br/CPC/Documentos-Emitidos/Pronunciamentos/Pronunciamento?Id=58" target="_blank" rel="noreferrer">Consultar CPC 27 — Ativo Imobilizado</a>
+            <button type="button" className="secondary" onClick={() => setShowCatalog(false)}>Fechar</button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function PatrimonioCategoriasPage() {
   return (
     <CrudPage
@@ -14925,16 +15044,24 @@ function PatrimonioCategoriasPage() {
       columns={[
         { key: 'nome', label: 'Categoria' },
         { key: 'descricao', label: 'Descrição' },
+        { key: 'depreciavel', label: 'Depreciação', render: (r) => r.depreciavel ? `${r.vida_util_meses || '—'} meses` : 'Não' },
+        { key: 'valor_residual_percentual', label: 'Residual', render: (r) => r.depreciavel ? `${Number(r.valor_residual_percentual || 0).toLocaleString('pt-BR')}%` : '—' },
       ]}
       fields={[
         { name: 'nome', label: 'Nome da categoria', required: true },
         { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+        { name: 'depreciavel', label: 'Calcular depreciação', type: 'checkbox' },
+        { name: 'vida_util_meses', label: 'Vida útil (meses)', type: 'number' },
+        { name: 'valor_residual_percentual', label: 'Valor residual (%)', type: 'number', defaultValue: 0 },
       ]}
+      topContent={<PatrimonioCategoriasPadraoPanel />}
     />
   );
 }
 
 function PatrimonioLocaisPage() {
+  const congregacoes = useTable('congregacoes', { order: 'nome', ascending: true });
+  const congregacaoOptions = congregacoes.rows.map((r) => ({ value: r.id, label: r.nome }));
   return (
     <CrudPage
       table="patrimonio_locais"
@@ -14944,10 +15071,18 @@ function PatrimonioLocaisPage() {
       searchKeys={['nome', 'descricao']}
       columns={[
         { key: 'nome', label: 'Local' },
+        { key: 'tipo', label: 'Tipo' },
         { key: 'descricao', label: 'Descrição' },
+        { key: 'ativo', label: 'Situação', render: (r) => r.ativo === false ? 'Inativo' : 'Ativo' },
       ]}
       fields={[
         { name: 'nome', label: 'Nome do local', required: true },
+        { name: 'tipo', label: 'Tipo', type: 'select', defaultValue: 'outro', options: [
+          { value: 'sede', label: 'Sede' }, { value: 'congregacao', label: 'Congregação' }, { value: 'sala', label: 'Sala' },
+          { value: 'ministerio', label: 'Ministério' }, { value: 'deposito', label: 'Depósito' }, { value: 'outro', label: 'Outro' },
+        ] },
+        { name: 'congregacao_id', label: 'Congregação vinculada', type: 'select', options: congregacaoOptions },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
         { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
       ]}
     />
@@ -14974,6 +15109,9 @@ function PatrimonioCadastroPage() {
   const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
   const categorias = useTable('patrimonio_categorias', { order: 'nome', ascending: true });
   const locais = useTable('patrimonio_locais', { order: 'nome', ascending: true });
+  const membros = useTable('membros', { order: 'nome', ascending: true });
+  const congregacoes = useTable('congregacoes', { order: 'nome', ascending: true });
+  const despesas = useTable('despesas', { order: 'data', ascending: false, limit: 300 });
   const empresas = useTable('empresas', { order: 'nome', ascending: true, tenantScoped: false });
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -14990,6 +15128,9 @@ function PatrimonioCadastroPage() {
   const localMap = useMemo(() => Object.fromEntries(locais.rows.map((l) => [l.id, l.nome])), [locais.rows]);
   const categoriaOptions = categorias.rows.map((c) => ({ value: c.id, label: c.nome }));
   const localOptions = locais.rows.map((l) => ({ value: l.id, label: l.nome }));
+  const membroOptions = membros.rows.map((m) => ({ value: m.id, label: m.nome }));
+  const congregacaoOptions = congregacoes.rows.map((c) => ({ value: c.id, label: c.nome }));
+  const despesaOptions = despesas.rows.map((d) => ({ value: d.id, label: `${fmtDate(d.data)} — ${d.descricao} — ${fmtMoney(d.valor)}` }));
   const filtered = bens.rows.filter((r) => {
     const query = q.trim().toLowerCase();
     const qOk = !query || [r.numero_patrimonio, r.nome, r.marca, r.modelo, r.numero_serie, localMap[r.local_id], r.localizacao].some((v) => String(v || '').toLowerCase().includes(query));
@@ -15010,6 +15151,7 @@ function PatrimonioCadastroPage() {
     { name: 'nome', label: 'Nome do bem', required: true, autoComplete: 'off' },
     { name: 'categoria_id', label: 'Categoria', type: 'select', options: categoriaOptions },
     { name: 'local_id', label: 'Local', type: 'select', options: localOptions },
+    { name: 'congregacao_id', label: 'Congregação', type: 'select', options: congregacaoOptions },
     { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
     { name: 'localizacao', label: 'Localização complementar' },
     {
@@ -15023,8 +15165,8 @@ function PatrimonioCadastroPage() {
         { value: 'emprestado', label: 'Emprestado' },
         { value: 'cedido', label: 'Cedido' },
         { value: 'extraviado', label: 'Extraviado' },
-        { value: 'baixado', label: 'Baixado' },
       ],
+      help: 'Para baixar, vender ou doar um bem, use o fluxo formal em Movimentações.',
     },
     { name: 'valor_aquisicao', label: 'Valor de aquisição', type: 'money' },
     { name: 'data_aquisicao', label: 'Data de aquisição', type: 'date' },
@@ -15034,7 +15176,14 @@ function PatrimonioCadastroPage() {
     { name: 'fornecedor', label: 'Fornecedor' },
     { name: 'nota_fiscal', label: 'Nota fiscal' },
     { name: 'responsavel', label: 'Responsável pelo bem' },
+    { name: 'responsavel_membro_id', label: 'Membro responsável', type: 'select', options: membroOptions },
+    { name: 'despesa_aquisicao_id', label: 'Despesa de aquisição vinculada', type: 'select', options: despesaOptions },
     { name: 'garantia_ate', label: 'Garantia até', type: 'date' },
+    { name: 'seguro_ate', label: 'Seguro até', type: 'date' },
+    { name: 'proxima_manutencao', label: 'Próxima manutenção', type: 'date' },
+    { name: 'vida_util_meses', label: 'Vida útil específica (meses)', type: 'number' },
+    { name: 'valor_residual', label: 'Valor residual', type: 'money', defaultValue: 0 },
+    { name: 'depreciacao_inicio', label: 'Início da depreciação', type: 'date' },
     { name: 'foto_url', label: 'URL da foto' },
     { name: 'documento_url', label: 'URL do documento/anexo' },
     { name: 'data_baixa', label: 'Data da baixa', type: 'date' },
@@ -15045,9 +15194,9 @@ function PatrimonioCadastroPage() {
     setSaving(true);
     const payload = { ...form };
     delete payload.numero_patrimonio;
-    ['valor_aquisicao'].forEach((k) => { payload[k] = payload[k] === '' ? null : Number(payload[k] || 0); });
-    ['categoria_id', 'local_id'].forEach((k) => { if (!payload[k]) payload[k] = null; });
-    ['data_aquisicao', 'garantia_ate', 'data_baixa'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    ['valor_aquisicao', 'valor_residual', 'vida_util_meses'].forEach((k) => { payload[k] = payload[k] === '' ? null : Number(payload[k] || 0); });
+    ['categoria_id', 'local_id', 'congregacao_id', 'responsavel_membro_id', 'despesa_aquisicao_id'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    ['data_aquisicao', 'garantia_ate', 'seguro_ate', 'proxima_manutencao', 'depreciacao_inicio', 'data_baixa'].forEach((k) => { if (!payload[k]) payload[k] = null; });
     if (payload.status !== 'baixado') {
       payload.data_baixa = null;
       payload.motivo_baixa = null;
@@ -15079,7 +15228,7 @@ function PatrimonioCadastroPage() {
     const cfg = configs[size] || configs.padrao;
     const labels = [];
     for (const row of rows) {
-      const qr = `https://quickchart.io/qr?size=160&margin=0&text=${encodeURIComponent(qrUrlFor(row))}`;
+      const qr = await QRCode.toDataURL(qrUrlFor(row), { width: 160, margin: 0, errorCorrectionLevel: 'M' });
       for (let i = 0; i < copies; i += 1) labels.push(`
         <article class="label ${cfg.cls}" style="width:${cfg.w}mm;height:${cfg.h}mm">
           <div class="labelText"><strong>${safeHtml(igrejaNome)}</strong><span>PATRIMÔNIO</span><b>${safeHtml(row.numero_patrimonio || '')}</b><small>${safeHtml(row.nome || '')}</small><small>${safeHtml(localMap[row.local_id] || row.localizacao || '')}</small></div>
@@ -15094,8 +15243,9 @@ function PatrimonioCadastroPage() {
     const copies = Math.max(1, Number(window.prompt('Quantidade de etiquetas por item', '1') || 1));
     try {
       const html = await buildLabelHtml(rows, size.toLowerCase(), copies);
-      const w = window.open('', '_blank', 'noopener,noreferrer');
+      const w = window.open('', '_blank');
       if (!w) return push('O navegador bloqueou a janela de impressão.', 'warning');
+      try { w.opener = null; } catch {}
       w.document.open(); w.document.write(html); w.document.close();
     } catch (error) { push(`Não foi possível gerar as etiquetas: ${error.message}`, 'error'); }
   };
@@ -15111,7 +15261,12 @@ function PatrimonioCadastroPage() {
     const id = new URLSearchParams(window.location.search).get('patrimonio');
     if (id && bens.rows.length) {
       const found = bens.rows.find((r) => r.id === id);
-      if (found) setHistoryRow(found);
+      if (found) {
+        openHistory(found);
+        const url = new URL(window.location.href);
+        url.searchParams.delete('patrimonio');
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      }
     }
   }, [bens.rows]);
 
@@ -15132,7 +15287,7 @@ function PatrimonioCadastroPage() {
       <div className="tablewrap"><table><thead><tr><th className="center"><input type="checkbox" checked={filtered.length > 0 && filtered.every((r) => selected.includes(r.id))} onChange={(e) => setSelected(e.target.checked ? filtered.map((r) => r.id) : [])} /></th><th>Nº Patrimônio</th><th>Bem</th><th>Categoria</th><th>Local</th><th>Status</th><th>Valor</th><th className="center">Ações</th></tr></thead><tbody>
         {bens.loading && <tr><td colSpan={8} className="center">Carregando…</td></tr>}
         {!bens.loading && !filtered.length && <tr><td colSpan={8} className="center muted">Nenhum patrimônio encontrado.</td></tr>}
-        {filtered.map((r) => <tr key={r.id}><td className="center"><input type="checkbox" checked={selected.includes(r.id)} onChange={() => setSelected((old) => old.includes(r.id) ? old.filter((id) => id !== r.id) : [...old, r.id])} /></td><td><b>{r.numero_patrimonio}</b></td><td>{r.nome}<small className="muted blockText">{[r.marca, r.modelo].filter(Boolean).join(' ')}</small></td><td>{categoriaMap[r.categoria_id] || '—'}</td><td>{localMap[r.local_id] || r.localizacao || '—'}</td><td><span className={`badge ${r.status === 'ativo' ? 'Ativa' : r.status === 'baixado' ? 'Cancelada' : 'Parcial'}`}>{String(r.status || '').replace('_', ' ')}</span></td><td>{fmtMoney(r.valor_aquisicao)}</td><td className="center"><div className="actionsInline"><button className="smallBtn secondary" onClick={() => setHistoryRow(r)}>Ver</button>{canUpdate && <button className="smallBtn secondary" onClick={() => setModal(r)}>Editar</button>}<button className="smallBtn secondary" onClick={() => printLabels([r])}>Etiqueta</button><button className="smallBtn secondary" onClick={() => openHistory(r)}>Histórico</button></div></td></tr>)}
+        {filtered.map((r) => <tr key={r.id}><td className="center"><input type="checkbox" checked={selected.includes(r.id)} onChange={() => setSelected((old) => old.includes(r.id) ? old.filter((id) => id !== r.id) : [...old, r.id])} /></td><td><b>{r.numero_patrimonio}</b></td><td>{r.nome}<small className="muted blockText">{[r.marca, r.modelo].filter(Boolean).join(' ')}</small></td><td>{categoriaMap[r.categoria_id] || '—'}</td><td>{localMap[r.local_id] || r.localizacao || '—'}</td><td><span className={`badge ${r.status === 'ativo' ? 'Ativa' : r.status === 'baixado' ? 'Cancelada' : 'Parcial'}`}>{String(r.status || '').replace('_', ' ')}</span></td><td>{fmtMoney(r.valor_aquisicao)}</td><td className="center"><div className="actionsInline"><button className="smallBtn secondary" onClick={() => openHistory(r)}>Ver</button>{canUpdate && <button className="smallBtn secondary" onClick={() => setModal(r)}>Editar</button>}<button className="smallBtn secondary" onClick={() => printLabels([r])}>Etiqueta</button><button className="smallBtn secondary" onClick={() => openHistory(r)}>Histórico</button></div></td></tr>)}
       </tbody></table></div>
       {modal && <Modal title={`${modal === 'new' ? 'Novo registro' : 'Editar registro'} — Cadastro de Patrimônio`} onClose={() => !saving && setModal(null)}><EntityForm fields={fields} initial={modal === 'new' ? { status: 'ativo', numero_patrimonio: `${prefixoPrevisto}-PRÓXIMO` } : modal} onCancel={() => setModal(null)} onSave={save} saving={saving} formClass="patrimonioForm" /></Modal>}
       {historyRow && <Modal title={`${historyRow.numero_patrimonio || ''} — ${historyRow.nome}`} onClose={() => { setHistoryRow(null); setHistory([]); }}><div className="patrimonioDetailGrid"><div><span>Status</span><b>{historyRow.status}</b></div><div><span>Local</span><b>{localMap[historyRow.local_id] || historyRow.localizacao || '—'}</b></div><div><span>Responsável</span><b>{historyRow.responsavel || '—'}</b></div><div><span>Nº de série</span><b>{historyRow.numero_serie || '—'}</b></div><div className="full"><span>Descrição</span><b>{historyRow.descricao || '—'}</b></div></div><h3>Histórico</h3>{historyLoading ? <p>Carregando…</p> : <div className="tablewrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Detalhes</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{formatDateTime(h.created_at)}</td><td>{h.evento}</td><td>{h.detalhes || '—'}</td></tr>)}{!history.length && <tr><td colSpan={3} className="center muted">Nenhuma alteração registrada.</td></tr>}</tbody></table></div>}</Modal>}
@@ -15140,8 +15295,336 @@ function PatrimonioCadastroPage() {
   );
 }
 
+const PATRIMONIO_DOCUMENT_BUCKET = 'patrimonio-documentos';
+const PATRIMONIO_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+const PATRIMONIO_DOCUMENT_MIMES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+const patrimonioSafeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
+const patrimonioBemLabel = (bem) => bem ? `${bem.numero_patrimonio || 'S/N'} — ${bem.nome}` : '—';
+const patrimonioMovimentoLabel = (tipo) => ({
+  emprestimo: 'Empréstimo', devolucao: 'Devolução', transferencia: 'Transferência', baixa: 'Baixa',
+  venda: 'Venda', doacao: 'Doação', perda: 'Perda/extravio', ajuste: 'Ajuste de inventário',
+}[tipo] || tipo || '—');
+const patrimonioStatusMovimentoLabel = (status) => ({
+  rascunho: 'Rascunho', pendente: 'Pendente', aprovado: 'Aprovado', em_andamento: 'Em andamento',
+  concluido: 'Concluído', rejeitado: 'Rejeitado', cancelado: 'Cancelado',
+}[status] || status || '—');
+const patrimonioSafeFileName = (name = '') => String(name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-');
+const openPrintableHtml = (title, body) => {
+  const w = window.open('', '_blank');
+  if (!w) return false;
+  w.document.open();
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${patrimonioSafeHtml(title)}</title><style>@page{margin:16mm}body{font-family:Arial,sans-serif;color:#111;line-height:1.5}h1{font-size:20px;text-align:center}h2{font-size:15px;margin-top:24px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px;margin:20px 0}.meta div{border-bottom:1px solid #bbb;padding:5px 0}.sign{margin-top:70px;display:grid;grid-template-columns:1fr 1fr;gap:50px;text-align:center}.sign div{border-top:1px solid #111;padding-top:6px}.muted{color:#555;font-size:12px}@media print{button{display:none}}</style></head><body>${body}<script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
+  return true;
+};
+
+function PatrimonioDocumentosPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const documentos = useTable('patrimonio_documentos', { order: 'created_at', ascending: false });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const bemMap = useMemo(() => Object.fromEntries(bens.rows.map((b) => [b.id, b])), [bens.rows]);
+  const bemOptions = bens.rows.map((b) => ({ value: b.id, label: patrimonioBemLabel(b) }));
+  const fields = [
+    { name: 'patrimonio_id', label: 'Bem patrimonial', type: 'select', options: bemOptions, required: true, full: true },
+    { name: 'tipo', label: 'Tipo', type: 'select', required: true, defaultValue: 'nota_fiscal', options: [
+      { value: 'nota_fiscal', label: 'Nota fiscal' }, { value: 'garantia', label: 'Garantia' }, { value: 'seguro', label: 'Seguro/apólice' },
+      { value: 'foto', label: 'Foto' }, { value: 'termo', label: 'Termo' }, { value: 'laudo', label: 'Laudo' }, { value: 'outro', label: 'Outro' },
+    ] },
+    { name: 'titulo', label: 'Título', required: true },
+    { name: 'validade_ate', label: 'Validade até', type: 'date' },
+    { name: 'arquivo', label: 'Arquivo (PDF, JPG, PNG ou WEBP; até 10 MB)', type: 'file', accept: 'application/pdf,image/jpeg,image/png,image/webp', required: true, transient: true, full: true },
+    { name: 'observacoes', label: 'Observações', type: 'textarea', full: true },
+  ];
+  const save = async (form) => {
+    const file = form.arquivo;
+    if (!file || !PATRIMONIO_DOCUMENT_MIMES.has(file.type)) return push('Selecione um PDF, JPG, PNG ou WEBP válido.', 'error');
+    if (file.size > PATRIMONIO_DOCUMENT_MAX_BYTES) return push('O arquivo deve ter no máximo 10 MB.', 'error');
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const path = `${tenant.empresaId}/${form.patrimonio_id}/${Date.now()}-${patrimonioSafeFileName(file.name)}`;
+    const { error: uploadError } = await supabase.storage.from(PATRIMONIO_DOCUMENT_BUCKET).upload(path, file, { contentType: file.type, upsert: false });
+    if (uploadError) { setSaving(false); return push(uploadError.message, 'error'); }
+    const { error } = await supabase.from('patrimonio_documentos').insert({
+      empresa_id: tenant.empresaId, patrimonio_id: form.patrimonio_id, tipo: form.tipo, titulo: form.titulo,
+      storage_path: path, nome_original: file.name, mime_type: file.type, tamanho_bytes: file.size,
+      validade_ate: form.validade_ate || null, observacoes: form.observacoes || null, created_by: userData?.user?.id || null,
+    });
+    if (error) {
+      await supabase.storage.from(PATRIMONIO_DOCUMENT_BUCKET).remove([path]);
+      setSaving(false);
+      return push(error.message, 'error');
+    }
+    setSaving(false); setModal(false); documentos.reload(); push('Documento armazenado com acesso privado.');
+  };
+  const openDocument = async (row) => {
+    const { data, error } = await supabase.storage.from(PATRIMONIO_DOCUMENT_BUCKET).createSignedUrl(row.storage_path, 300);
+    if (error || !data?.signedUrl) return push(error?.message || 'Não foi possível abrir o documento.', 'error');
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+  return <div><ToastStack toasts={toasts} close={close} /><div className="toolbar"><div><h2 style={{ margin: 0 }}>Documentos do Patrimônio</h2><small className="muted">Notas fiscais, garantias, seguros, fotos, termos e laudos em armazenamento privado.</small></div>{access.can('patrimonio', 'create') && <button onClick={() => setModal(true)}>+ Anexar documento</button>}</div>
+    <div className="tablewrap"><table><thead><tr><th>Bem</th><th>Tipo</th><th>Título</th><th>Arquivo</th><th>Validade</th><th>Ações</th></tr></thead><tbody>
+      {documentos.loading && <tr><td colSpan={6} className="center">Carregando…</td></tr>}
+      {!documentos.loading && !documentos.rows.length && <tr><td colSpan={6} className="center muted">Nenhum documento anexado.</td></tr>}
+      {documentos.rows.map((r) => <tr key={r.id}><td>{patrimonioBemLabel(bemMap[r.patrimonio_id])}</td><td>{String(r.tipo || '').replaceAll('_', ' ')}</td><td>{r.titulo}</td><td>{r.nome_original}<small className="muted blockText">{fileSizeLabel(r.tamanho_bytes)}</small></td><td>{fmtDate(r.validade_ate) || '—'}</td><td><button className="smallBtn secondary" onClick={() => openDocument(r)}>Abrir</button></td></tr>)}
+    </tbody></table></div>
+    {modal && <Modal title="Anexar documento ao patrimônio" onClose={() => !saving && setModal(false)}><EntityForm fields={fields} onCancel={() => setModal(false)} onSave={save} saving={saving} /></Modal>}
+  </div>;
+}
+
+function PatrimonioMovimentacoesPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const locais = useTable('patrimonio_locais', { order: 'nome', ascending: true });
+  const membros = useTable('membros', { order: 'nome', ascending: true });
+  const despesas = useTable('despesas', { order: 'data', ascending: false, limit: 300 });
+  const lancamentos = useTable('lancamentos_financeiros', { order: 'data', ascending: false, limit: 300 });
+  const movimentos = useTable('patrimonio_movimentacoes', { order: 'created_at', ascending: false });
+  const { toasts, push, close } = useToasts();
+  const [modal, setModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const bemMap = useMemo(() => Object.fromEntries(bens.rows.map((b) => [b.id, b])), [bens.rows]);
+  const localMap = useMemo(() => Object.fromEntries(locais.rows.map((l) => [l.id, l.nome])), [locais.rows]);
+  const memberMap = useMemo(() => Object.fromEntries(membros.rows.map((m) => [m.id, m.nome])), [membros.rows]);
+  const fields = [
+    { name: 'tipo', label: 'Tipo de movimentação', type: 'select', required: true, options: [
+      { value: 'emprestimo', label: 'Empréstimo' }, { value: 'transferencia', label: 'Transferência' }, { value: 'baixa', label: 'Baixa' },
+      { value: 'venda', label: 'Venda' }, { value: 'doacao', label: 'Doação' }, { value: 'perda', label: 'Perda/extravio' }, { value: 'ajuste', label: 'Ajuste de inventário' },
+    ] },
+    { name: 'patrimonio_id', label: 'Bem patrimonial', type: 'select', required: true, options: bens.rows.filter((b) => b.status !== 'baixado').map((b) => ({ value: b.id, label: patrimonioBemLabel(b) })) },
+    { name: 'data_movimentacao', label: 'Data', type: 'date', required: true },
+    { name: 'data_prevista_retorno', label: 'Retorno previsto', type: 'date' },
+    { name: 'local_destino_id', label: 'Local de destino', type: 'select', options: locais.rows.filter((l) => l.ativo !== false).map((l) => ({ value: l.id, label: l.nome })) },
+    { name: 'responsavel_membro_id', label: 'Membro responsável', type: 'select', options: membros.rows.map((m) => ({ value: m.id, label: m.nome })) },
+    { name: 'responsavel_nome', label: 'Responsável externo' },
+    { name: 'finalidade', label: 'Finalidade' },
+    { name: 'estado_saida', label: 'Estado do bem na saída', type: 'textarea', full: true },
+    { name: 'justificativa', label: 'Justificativa / observações', type: 'textarea', full: true },
+    { name: 'despesa_id', label: 'Despesa vinculada (opcional)', type: 'select', options: despesas.rows.map((d) => ({ value: d.id, label: `${fmtDate(d.data)} — ${d.descricao} — ${fmtMoney(d.valor)}` })) },
+    { name: 'lancamento_id', label: 'Receita vinculada (opcional)', type: 'select', options: lancamentos.rows.map((l) => ({ value: l.id, label: `${fmtDate(l.data)} — ${l.tipo} — ${fmtMoney(l.valor)}` })) },
+  ];
+  const save = async (form) => {
+    const bem = bemMap[form.patrimonio_id];
+    if (form.tipo === 'transferencia' && !form.local_destino_id) return push('Informe o local de destino da transferência.', 'error');
+    if (['baixa', 'venda', 'doacao', 'perda'].includes(form.tipo) && !String(form.justificativa || '').trim()) return push('A justificativa é obrigatória para alienação ou baixa.', 'error');
+    if (form.tipo === 'emprestimo' && !form.responsavel_membro_id && !String(form.responsavel_nome || '').trim()) return push('Informe quem ficará responsável pelo empréstimo.', 'error');
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = { ...form, empresa_id: tenant.empresaId, local_origem_id: bem?.local_id || null, status: 'pendente', created_by: userData?.user?.id || null };
+    ['local_destino_id', 'responsavel_membro_id', 'despesa_id', 'lancamento_id'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    ['data_prevista_retorno'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    const { error } = await supabase.from('patrimonio_movimentacoes').insert(payload);
+    setSaving(false);
+    if (error) return push(error.message, 'error');
+    setModal(false); movimentos.reload(); push('Movimentação registrada e aguardando aprovação.');
+  };
+  const approve = async (row) => {
+    if (!access.can('patrimonio', 'update')) return push('Seu perfil não pode aprovar movimentações.', 'error');
+    const { error } = await supabase.rpc('patrimonio_processar_movimentacao', { p_movimentacao_id: row.id, p_acao: 'aprovar' });
+    if (error) return push(error.message, 'error');
+    movimentos.reload(); bens.reload(); push('Movimentação aprovada.');
+  };
+  const conclude = async (row) => {
+    if (!access.can('patrimonio', 'update')) return push('Seu perfil não pode concluir movimentações.', 'error');
+    const { error } = await supabase.rpc('patrimonio_processar_movimentacao', { p_movimentacao_id: row.id, p_acao: 'concluir' });
+    if (error) return push(error.message, 'error');
+    movimentos.reload(); bens.reload(); push(row.tipo === 'emprestimo' ? 'Devolução registrada e bem liberado.' : 'Movimentação concluída.');
+  };
+  const accept = async (row) => {
+    const name = window.prompt('Nome completo de quem aceita o termo/responsabilidade', row.responsavel_nome || memberMap[row.responsavel_membro_id] || '');
+    if (!name?.trim()) return;
+    const { error } = await supabase.from('patrimonio_movimentacoes').update({ aceite_nome: name.trim(), aceite_em: new Date().toISOString() }).eq('id', row.id);
+    if (error) return push(error.message, 'error');
+    movimentos.reload(); push('Aceite interno registrado com data e hora.');
+  };
+  const printTerm = (row) => {
+    const bem = bemMap[row.patrimonio_id];
+    const responsavel = memberMap[row.responsavel_membro_id] || row.responsavel_nome || row.aceite_nome || '________________________________';
+    const title = row.tipo === 'emprestimo' ? 'TERMO DE RESPONSABILIDADE E EMPRÉSTIMO' : 'TERMO DE MOVIMENTAÇÃO PATRIMONIAL';
+    openPrintableHtml(title, `<h1>${patrimonioSafeHtml(title)}</h1><p>Declaro ciência e responsabilidade pela movimentação do bem patrimonial abaixo descrito, comprometendo-me com sua guarda e devolução nas condições registradas.</p><section class="meta"><div><b>Bem:</b> ${patrimonioSafeHtml(patrimonioBemLabel(bem))}</div><div><b>Código do termo:</b> ${patrimonioSafeHtml(row.termo_codigo)}</div><div><b>Tipo:</b> ${patrimonioSafeHtml(patrimonioMovimentoLabel(row.tipo))}</div><div><b>Data:</b> ${patrimonioSafeHtml(fmtDate(row.data_movimentacao))}</div><div><b>Origem:</b> ${patrimonioSafeHtml(localMap[row.local_origem_id] || '—')}</div><div><b>Destino:</b> ${patrimonioSafeHtml(localMap[row.local_destino_id] || '—')}</div><div><b>Responsável:</b> ${patrimonioSafeHtml(responsavel)}</div><div><b>Retorno previsto:</b> ${patrimonioSafeHtml(fmtDate(row.data_prevista_retorno) || '—')}</div></section><h2>Finalidade e condições</h2><p>${patrimonioSafeHtml(row.finalidade || '—')}</p><p>${patrimonioSafeHtml(row.estado_saida || '—')}</p><p>${patrimonioSafeHtml(row.justificativa || '')}</p><div class="sign"><div>Responsável</div><div>Representante da igreja</div></div><p class="muted">Aceite interno: ${patrimonioSafeHtml(row.aceite_nome || 'não registrado')} ${row.aceite_em ? `em ${patrimonioSafeHtml(new Date(row.aceite_em).toLocaleString('pt-BR'))}` : ''}</p>`);
+  };
+  return <div><ToastStack toasts={toasts} close={close} /><div className="toolbar"><div><h2 style={{ margin: 0 }}>Movimentações e Responsabilidades</h2><small className="muted">Empréstimos, transferências, devoluções e baixas com aprovação e histórico.</small></div>{access.can('patrimonio', 'create') && <button onClick={() => setModal(true)}>+ Nova movimentação</button>}</div>
+    <div className="tablewrap"><table><thead><tr><th>Data</th><th>Bem</th><th>Tipo</th><th>Origem / Destino</th><th>Responsável</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+      {movimentos.loading && <tr><td colSpan={7} className="center">Carregando…</td></tr>}
+      {!movimentos.loading && !movimentos.rows.length && <tr><td colSpan={7} className="center muted">Nenhuma movimentação registrada.</td></tr>}
+      {movimentos.rows.map((r) => <tr key={r.id}><td>{fmtDate(r.data_movimentacao)}</td><td>{patrimonioBemLabel(bemMap[r.patrimonio_id])}</td><td>{patrimonioMovimentoLabel(r.tipo)}</td><td>{localMap[r.local_origem_id] || '—'} → {localMap[r.local_destino_id] || '—'}</td><td>{memberMap[r.responsavel_membro_id] || r.responsavel_nome || '—'}</td><td><span className={`badge ${r.status === 'concluido' ? 'Ativa' : r.status === 'cancelado' || r.status === 'rejeitado' ? 'Cancelada' : 'Parcial'}`}>{patrimonioStatusMovimentoLabel(r.status)}</span></td><td><div className="actionsInline"><button className="smallBtn secondary" onClick={() => printTerm(r)}>Imprimir termo</button>{!r.aceite_em && access.can('patrimonio', 'update') && <button className="smallBtn secondary" onClick={() => accept(r)}>Registrar aceite</button>}{r.status === 'pendente' && access.can('patrimonio', 'update') && <button className="smallBtn green" onClick={() => approve(r)}>Aprovar</button>}{['aprovado', 'em_andamento'].includes(r.status) && access.can('patrimonio', 'update') && <button className="smallBtn green" onClick={() => conclude(r)}>{r.tipo === 'emprestimo' ? 'Registrar devolução' : 'Concluir/receber'}</button>}</div></td></tr>)}
+    </tbody></table></div>
+    {modal && <Modal title="Nova movimentação patrimonial" onClose={() => !saving && setModal(false)} wide><EntityForm fields={fields} onCancel={() => setModal(false)} onSave={save} saving={saving} /></Modal>}
+  </div>;
+}
+
+function PatrimonioDepreciacaoPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const categorias = useTable('patrimonio_categorias', { order: 'nome', ascending: true });
+  const depreciacoes = useTable('patrimonio_depreciacoes', { order: 'competencia', ascending: false });
+  const { toasts, push, close } = useToasts();
+  const [competencia, setCompetencia] = useState(currentReferencia());
+  const [saving, setSaving] = useState(false);
+  const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c])), [categorias.rows]);
+  const calculos = useMemo(() => bens.rows.filter((b) => b.status !== 'baixado').map((bem) => ({ bem, calculo: calcularDepreciacaoPatrimonio(bem, categoriaMap[bem.categoria_id], competencia) })).filter((item) => item.calculo.elegivel), [bens.rows, categoriaMap, competencia]);
+  const totalAquisicao = calculos.reduce((sum, item) => sum + Number(item.bem.valor_aquisicao || 0), 0);
+  const totalAcumulado = calculos.reduce((sum, item) => sum + item.calculo.depreciacaoAcumulada, 0);
+  const totalContabil = calculos.reduce((sum, item) => sum + item.calculo.valorContabil, 0);
+  const competenciaDate = `${competencia}-01`;
+  const alreadySaved = depreciacoes.rows.filter((d) => d.competencia === competenciaDate).length;
+  const save = async () => {
+    if (!access.can('patrimonio', 'update')) return push('Seu perfil não pode fechar a depreciação.', 'error');
+    if (!calculos.length) return push('Nenhum bem elegível para depreciação nesta competência.', 'warning');
+    setSaving(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const rows = calculos.map(({ bem, calculo }) => ({
+      empresa_id: tenant.empresaId, patrimonio_id: bem.id, competencia: competenciaDate,
+      valor_mensal: Number(calculo.valorMensal.toFixed(2)), depreciacao_acumulada: Number(calculo.depreciacaoAcumulada.toFixed(2)),
+      valor_contabil: Number(calculo.valorContabil.toFixed(2)), vida_util_meses: calculo.vidaUtilMeses,
+      valor_residual: Number(calculo.valorResidual.toFixed(2)), created_by: userData?.user?.id || null,
+    }));
+    const { error } = await supabase.from('patrimonio_depreciacoes').upsert(rows, { onConflict: 'empresa_id,patrimonio_id,competencia' });
+    setSaving(false);
+    if (error) return push(error.message, 'error');
+    depreciacoes.reload(); push('Competência de depreciação calculada e registrada. Nenhum lançamento financeiro foi criado automaticamente.');
+  };
+  return <div><ToastStack toasts={toasts} close={close} /><div className="toolbar"><div><h2 style={{ margin: 0 }}>Depreciação do Patrimônio</h2><small className="muted">Método linear, com vida útil e valor residual configurados por categoria ou bem.</small></div><div className="row"><input type="month" value={competencia} onChange={(e) => setCompetencia(e.target.value)} style={{ width: 180 }} />{access.can('patrimonio', 'update') && <button onClick={save} disabled={saving}>{saving ? 'Calculando…' : alreadySaved ? 'Recalcular competência' : 'Fechar competência'}</button>}</div></div>
+    <div className="alert ok">Cálculo gerencial/contábil. A política contábil e as taxas devem ser validadas pelo contador da igreja antes do uso oficial.</div>
+    <div className="grid auto frete-kpis"><div className="card kpi"><div className="label">Bens depreciáveis</div><div className="value">{calculos.length}</div></div><div className="card kpi"><div className="label">Valor de aquisição</div><div className="value">{fmtMoney(totalAquisicao)}</div></div><div className="card kpi"><div className="label">Depreciação acumulada</div><div className="value">{fmtMoney(totalAcumulado)}</div></div><div className="card kpi"><div className="label">Valor contábil estimado</div><div className="value">{fmtMoney(totalContabil)}</div></div></div>
+    <div className="tablewrap"><table><thead><tr><th>Bem</th><th>Aquisição</th><th>Vida útil</th><th>Mensal</th><th>Acumulada</th><th>Residual</th><th>Valor contábil</th></tr></thead><tbody>{calculos.map(({ bem, calculo }) => <tr key={bem.id}><td>{patrimonioBemLabel(bem)}</td><td>{fmtMoney(bem.valor_aquisicao)}</td><td>{calculo.vidaUtilMeses} meses</td><td>{fmtMoney(calculo.valorMensal)}</td><td>{fmtMoney(calculo.depreciacaoAcumulada)}</td><td>{fmtMoney(calculo.valorResidual)}</td><td><b>{fmtMoney(calculo.valorContabil)}</b></td></tr>)}{!calculos.length && <tr><td colSpan={7} className="center muted">Configure uma categoria como depreciável e informe a vida útil.</td></tr>}</tbody></table></div>
+  </div>;
+}
+
+function PatrimonioInventoryScanner({ inventario, bens, itens, locais, onRefresh, push }) {
+  const [codigo, setCodigo] = useState('');
+  const [localId, setLocalId] = useState(inventario?.local_id || '');
+  const [cameraActive, setCameraActive] = useState(false);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const scanTimerRef = useRef(null);
+  const processingRef = useRef(false);
+  const stopCamera = useCallback(() => {
+    if (scanTimerRef.current) window.clearInterval(scanTimerRef.current);
+    scanTimerRef.current = null;
+    streamRef.current?.getTracks?.().forEach((track) => track.stop());
+    streamRef.current = null;
+    setCameraActive(false);
+  }, []);
+  useEffect(() => () => stopCamera(), [stopCamera]);
+  const confirmCode = useCallback(async (rawCode) => {
+    const clean = String(rawCode || '').trim();
+    if (!clean || processingRef.current) return;
+    processingRef.current = true;
+    try {
+      let idFromUrl = '';
+      try { idFromUrl = new URL(clean, window.location.origin).searchParams.get('patrimonio') || ''; } catch {}
+      const bem = bens.find((b) => b.id === idFromUrl || b.id === clean || String(b.numero_patrimonio || '').toLowerCase() === clean.toLowerCase());
+      if (!bem) { push(`Bem não encontrado para o código ${clean}.`, 'error'); return; }
+      const existing = itens.find((i) => i.patrimonio_id === bem.id);
+      const situacao = existing && (!localId || existing.local_esperado_id === localId) ? 'confirmado' : 'divergente';
+      const { data: userData } = await supabase.auth.getUser();
+      let error;
+      if (existing) ({ error } = await supabase.from('patrimonio_inventario_itens').update({ situacao, local_encontrado_id: localId || bem.local_id || null, conferido_em: new Date().toISOString(), conferido_por: userData?.user?.id || null }).eq('id', existing.id));
+      else ({ error } = await supabase.from('patrimonio_inventario_itens').insert({ empresa_id: inventario.empresa_id, inventario_id: inventario.id, patrimonio_id: bem.id, local_esperado_id: bem.local_id || null, local_encontrado_id: localId || bem.local_id || null, situacao: 'sobra', conferido_em: new Date().toISOString(), conferido_por: userData?.user?.id || null }));
+      if (error) { push(error.message, 'error'); return; }
+      setCodigo(''); onRefresh(); push(`${patrimonioBemLabel(bem)} conferido${situacao === 'divergente' ? ' com divergência de local' : ''}.`);
+    } finally { processingRef.current = false; }
+  }, [bens, itens, localId, inventario, onRefresh, push]);
+  const startCamera = async () => {
+    if (!('BarcodeDetector' in window)) return push('Leitura automática não está disponível neste navegador. Digite ou use um leitor que preencha o código abaixo.', 'warning');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      streamRef.current = stream; setCameraActive(true);
+      window.setTimeout(() => { if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); } }, 0);
+      const detector = new window.BarcodeDetector({ formats: ['qr_code', 'code_128', 'code_39', 'ean_13'] });
+      scanTimerRef.current = window.setInterval(async () => {
+        if (!videoRef.current || processingRef.current || videoRef.current.readyState < 2) return;
+        try { const found = await detector.detect(videoRef.current); if (found?.[0]?.rawValue) { stopCamera(); confirmCode(found[0].rawValue); } } catch {}
+      }, 500);
+    } catch (error) { stopCamera(); push(`Não foi possível acessar a câmera: ${error.message}`, 'error'); }
+  };
+  return <div className="card patrimonioScanner"><div className="toolbar"><div><h3 style={{ margin: 0 }}>Conferência móvel</h3><small className="muted">Leia a etiqueta ou informe o número patrimonial.</small></div><button className="secondary" onClick={cameraActive ? stopCamera : startCamera}>{cameraActive ? 'Parar câmera' : 'Abrir câmera'}</button></div>
+    {cameraActive && <video ref={videoRef} playsInline muted className="patrimonioScannerVideo" />}
+    <div className="grid cols2"><div className="field"><label>Local encontrado</label><SearchableSelect value={localId} onChange={setLocalId} options={locais.map((l) => ({ value: l.id, label: l.nome }))} placeholder="Selecione o local…" /></div><div className="field"><label>Número ou conteúdo do QR</label><div className="quickSelectRow"><input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') confirmCode(codigo); }} placeholder="Ex.: PIEBL-0001" autoFocus /><button onClick={() => confirmCode(codigo)}>Confirmar</button></div></div></div>
+  </div>;
+}
+
+function PatrimonioInventariosPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const locais = useTable('patrimonio_locais', { order: 'nome', ascending: true });
+  const inventarios = useTable('patrimonio_inventarios', { order: 'created_at', ascending: false });
+  const { toasts, push, close } = useToasts();
+  const [active, setActive] = useState(null);
+  const [modal, setModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const activeItems = useTable('patrimonio_inventario_itens', { order: 'created_at', ascending: true, enabled: !!active?.id, filters: active?.id ? [{ column: 'inventario_id', value: active.id }] : [] });
+  const bemMap = useMemo(() => Object.fromEntries(bens.rows.map((b) => [b.id, b])), [bens.rows]);
+  const localMap = useMemo(() => Object.fromEntries(locais.rows.map((l) => [l.id, l.nome])), [locais.rows]);
+  const createFields = [
+    { name: 'titulo', label: 'Título do inventário', required: true, full: true },
+    { name: 'local_id', label: 'Local (vazio = todos)', type: 'select', options: locais.rows.filter((l) => l.ativo !== false).map((l) => ({ value: l.id, label: l.nome })) },
+    { name: 'data_inicio', label: 'Data de início', type: 'date', required: true },
+    { name: 'responsavel', label: 'Equipe/responsável' },
+    { name: 'observacoes', label: 'Observações', type: 'textarea', full: true },
+  ];
+  const createInventory = async (form) => {
+    setSaving(true);
+    const { data: inventarioId, error } = await supabase.rpc('patrimonio_abrir_inventario', { p_empresa_id: tenant.empresaId, p_titulo: form.titulo, p_local_id: form.local_id || null, p_data_inicio: form.data_inicio || todayISO(), p_responsavel: form.responsavel || null, p_observacoes: form.observacoes || null });
+    if (error) { setSaving(false); return push(error.message, 'error'); }
+    const { data, error: readError } = await supabase.from('patrimonio_inventarios').select('*').eq('id', inventarioId).single();
+    if (readError) { setSaving(false); return push(readError.message, 'error'); }
+    const expected = bens.rows.filter((b) => b.status !== 'baixado' && (!form.local_id || b.local_id === form.local_id));
+    setSaving(false); setModal(false); setActive(data); inventarios.reload(); activeItems.reload(); push(`Inventário aberto com ${expected.length} bens esperados.`);
+  };
+  const conclude = async () => {
+    if (!active) return;
+    if (!window.confirm('Concluir o inventário? Itens ainda pendentes serão marcados como faltantes.')) return;
+    const { error } = await supabase.rpc('patrimonio_concluir_inventario', { p_inventario_id: active.id });
+    if (error) return push(error.message, 'error');
+    setActive((old) => ({ ...old, status: 'concluido', data_fim: todayISO() })); activeItems.reload(); inventarios.reload(); push('Inventário concluído e divergências consolidadas.');
+  };
+  const exportReport = () => {
+    const rows = activeItems.rows.map((i) => ({ patrimonio: bemMap[i.patrimonio_id]?.numero_patrimonio || '', bem: bemMap[i.patrimonio_id]?.nome || '', local_esperado: localMap[i.local_esperado_id] || '', local_encontrado: localMap[i.local_encontrado_id] || '', situacao: i.situacao, conferido_em: i.conferido_em || '', observacoes: i.observacoes || '' }));
+    const headers = [
+      { key: 'patrimonio', label: 'Patrimônio' }, { key: 'bem', label: 'Bem' }, { key: 'local_esperado', label: 'Local esperado' },
+      { key: 'local_encontrado', label: 'Local encontrado' }, { key: 'situacao', label: 'Situação' },
+      { key: 'conferido_em', label: 'Conferido em' }, { key: 'observacoes', label: 'Observações' },
+    ];
+    downloadTextFile(`inventario_${String(active?.titulo || 'patrimonio').replace(/\s+/g, '_')}.csv`, rowsToCsv(rows, headers));
+  };
+  const counts = activeItems.rows.reduce((acc, i) => ({ ...acc, [i.situacao]: (acc[i.situacao] || 0) + 1 }), {});
+  return <div><ToastStack toasts={toasts} close={close} />{!active ? <><div className="toolbar"><div><h2 style={{ margin: 0 }}>Inventários do Patrimônio</h2><small className="muted">Checklist periódico com fotografia dos bens esperados e relatório de divergências.</small></div>{access.can('patrimonio', 'create') && <button onClick={() => setModal(true)}>+ Novo inventário</button>}</div><div className="tablewrap"><table><thead><tr><th>Início</th><th>Título</th><th>Local</th><th>Responsável</th><th>Status</th><th>Ações</th></tr></thead><tbody>{inventarios.rows.map((r) => <tr key={r.id}><td>{fmtDate(r.data_inicio)}</td><td>{r.titulo}</td><td>{localMap[r.local_id] || 'Todos'}</td><td>{r.responsavel || '—'}</td><td>{r.status}</td><td><button className="smallBtn secondary" onClick={() => setActive(r)}>Abrir</button></td></tr>)}{!inventarios.loading && !inventarios.rows.length && <tr><td colSpan={6} className="center muted">Nenhum inventário criado.</td></tr>}</tbody></table></div></> : <><div className="toolbar"><div><button className="secondary smallBtn" onClick={() => setActive(null)}>← Inventários</button><h2>{active.titulo}</h2><small className="muted">{localMap[active.local_id] || 'Todos os locais'} · {active.status}</small></div><div className="row"><button className="secondary" onClick={exportReport}>Exportar divergências</button>{active.status === 'aberto' && access.can('patrimonio', 'update') && <button onClick={conclude}>Concluir inventário</button>}</div></div><div className="grid auto frete-kpis"><div className="card kpi"><div className="label">Esperados</div><div className="value">{activeItems.rows.length}</div></div><div className="card kpi"><div className="label">Confirmados</div><div className="value">{counts.confirmado || 0}</div></div><div className="card kpi"><div className="label">Divergentes</div><div className="value">{(counts.divergente || 0) + (counts.sobra || 0)}</div></div><div className="card kpi"><div className="label">Faltantes</div><div className="value">{counts.faltante || 0}</div></div></div>{active.status === 'aberto' && <PatrimonioInventoryScanner inventario={active} bens={bens.rows} itens={activeItems.rows} locais={locais.rows} onRefresh={activeItems.reload} push={push} />}<div className="tablewrap" style={{ marginTop: 16 }}><table><thead><tr><th>Patrimônio</th><th>Bem</th><th>Esperado</th><th>Encontrado</th><th>Situação</th><th>Conferido em</th></tr></thead><tbody>{activeItems.rows.map((i) => <tr key={i.id}><td>{bemMap[i.patrimonio_id]?.numero_patrimonio || '—'}</td><td>{bemMap[i.patrimonio_id]?.nome || '—'}</td><td>{localMap[i.local_esperado_id] || '—'}</td><td>{localMap[i.local_encontrado_id] || '—'}</td><td><span className={`badge ${i.situacao === 'confirmado' ? 'Ativa' : i.situacao === 'pendente' ? 'Parcial' : 'Cancelada'}`}>{i.situacao}</span></td><td>{i.conferido_em ? new Date(i.conferido_em).toLocaleString('pt-BR') : '—'}</td></tr>)}</tbody></table></div></>}
+    {modal && <Modal title="Abrir inventário patrimonial" onClose={() => !saving && setModal(false)}><EntityForm fields={createFields} onCancel={() => setModal(false)} onSave={createInventory} saving={saving} /></Modal>}
+  </div>;
+}
+
+function PatrimonioDashboardPage() {
+  const bens = useTable('patrimonio', { order: 'numero_patrimonio', ascending: true });
+  const categorias = useTable('patrimonio_categorias', { order: 'nome', ascending: true });
+  const locais = useTable('patrimonio_locais', { order: 'nome', ascending: true });
+  const manutencoes = useTable('patrimonio_manutencoes', { order: 'data_manutencao', ascending: false });
+  const movimentos = useTable('patrimonio_movimentacoes', { order: 'created_at', ascending: false });
+  const documentos = useTable('patrimonio_documentos', { order: 'created_at', ascending: false });
+  const inventarios = useTable('patrimonio_inventarios', { order: 'created_at', ascending: false });
+  const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c])), [categorias.rows]);
+  const localMap = useMemo(() => Object.fromEntries(locais.rows.map((l) => [l.id, l.nome])), [locais.rows]);
+  const ativos = bens.rows.filter((b) => b.status !== 'baixado');
+  const valorAquisicao = ativos.reduce((sum, b) => sum + Number(b.valor_aquisicao || 0), 0);
+  const valorContabil = ativos.reduce((sum, b) => sum + calcularDepreciacaoPatrimonio(b, categoriaMap[b.categoria_id], currentReferencia()).valorContabil, 0);
+  const custoManutencao = manutencoes.rows.filter((m) => m.status !== 'cancelada').reduce((sum, m) => sum + Number(m.custo || 0), 0);
+  const today = todayISO();
+  const alertas = ativos.filter((b) => (b.garantia_ate && b.garantia_ate <= today) || (b.seguro_ate && b.seguro_ate <= today) || (b.proxima_manutencao && b.proxima_manutencao <= today));
+  const docsVencendo = documentos.rows.filter((d) => d.validade_ate && d.validade_ate <= today);
+  const porLocal = Object.entries(ativos.reduce((acc, b) => { const key = localMap[b.local_id] || b.localizacao || 'Sem local'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1]);
+  return <div><div className="toolbar"><div><h2 style={{ margin: 0 }}>Dashboard do Patrimônio</h2><small className="muted">Posição atual, custos, alertas e movimentações que exigem atenção.</small></div></div><div className="grid auto frete-kpis"><div className="card kpi"><div className="label">Bens ativos</div><div className="value">{ativos.length}</div></div><div className="card kpi"><div className="label">Valor de aquisição</div><div className="value">{fmtMoney(valorAquisicao)}</div></div><div className="card kpi"><div className="label">Valor contábil estimado</div><div className="value">{fmtMoney(valorContabil)}</div></div><div className="card kpi"><div className="label">Custo de manutenção</div><div className="value">{fmtMoney(custoManutencao)}</div></div><div className="card kpi"><div className="label">Emprestados</div><div className="value">{ativos.filter((b) => b.status === 'emprestado').length}</div></div><div className="card kpi"><div className="label">Inventários abertos</div><div className="value">{inventarios.rows.filter((i) => i.status === 'aberto').length}</div></div></div><div className="grid cols2"><div className="card"><h3>Alertas</h3>{[...alertas.map((b) => patrimonioBemLabel(b)), ...docsVencendo.map((d) => `Documento: ${d.titulo}`)].slice(0, 12).map((text, i) => <div className="alert" key={`${text}-${i}`}>{text}</div>)}{!alertas.length && !docsVencendo.length && <div className="emptyState success"><b>Nenhum alerta vencido</b><span>Garantias, seguros, documentos e manutenções estão sem pendências cadastradas.</span></div>}</div><div className="card"><h3>Bens por local</h3><div className="cleanList">{porLocal.slice(0, 12).map(([nome, total]) => <div key={nome}><span>{nome}</span><b>{total}</b></div>)}</div></div></div><div className="card" style={{ marginTop: 16 }}><h3>Movimentações pendentes</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Bem</th><th>Tipo</th><th>Status</th></tr></thead><tbody>{movimentos.rows.filter((m) => !['concluido', 'cancelado', 'rejeitado'].includes(m.status)).slice(0, 10).map((m) => <tr key={m.id}><td>{fmtDate(m.data_movimentacao)}</td><td>{bens.rows.find((b) => b.id === m.patrimonio_id)?.nome || '—'}</td><td>{patrimonioMovimentoLabel(m.tipo)}</td><td>{patrimonioStatusMovimentoLabel(m.status)}</td></tr>)}{!movimentos.rows.some((m) => !['concluido', 'cancelado', 'rejeitado'].includes(m.status)) && <tr><td colSpan={4} className="center muted">Nenhuma movimentação pendente.</td></tr>}</tbody></table></div></div></div>;
+}
+
 function PatrimonioManutencoesPage() {
   const bens = useTable('patrimonio', { order: 'nome', ascending: true });
+  const despesas = useTable('despesas', { order: 'data', ascending: false, limit: 300 });
   const bemOptions = bens.rows.map((b) => ({
     value: b.id,
     label: `${b.numero_patrimonio ? b.numero_patrimonio + ' — ' : ''}${b.nome}`,
@@ -15162,7 +15645,9 @@ function PatrimonioManutencoesPage() {
           render: (r) => fmtDate(r.data_manutencao),
         },
         { key: 'tipo', label: 'Tipo' },
+        { key: 'status', label: 'Status', render: (r) => String(r.status || '').replaceAll('_', ' ') },
         { key: 'custo', label: 'Custo', render: (r) => fmtMoney(r.custo) },
+        { key: 'proxima_manutencao', label: 'Próxima', render: (r) => fmtDate(r.proxima_manutencao) || '—' },
         { key: 'responsavel', label: 'Responsável' },
       ]}
       fields={[
@@ -15190,6 +15675,10 @@ function PatrimonioManutencoesPage() {
             { value: 'outra', label: 'Outra' },
           ],
         },
+        { name: 'status', label: 'Status', type: 'select', defaultValue: 'concluida', options: [
+          { value: 'agendada', label: 'Agendada' }, { value: 'em_andamento', label: 'Em andamento' },
+          { value: 'concluida', label: 'Concluída' }, { value: 'cancelada', label: 'Cancelada' },
+        ] },
         {
           name: 'descricao',
           label: 'Descrição',
@@ -15199,6 +15688,9 @@ function PatrimonioManutencoesPage() {
         },
         { name: 'custo', label: 'Custo', type: 'money' },
         { name: 'responsavel', label: 'Responsável' },
+        { name: 'proxima_manutencao', label: 'Próxima manutenção', type: 'date' },
+        { name: 'despesa_id', label: 'Despesa vinculada', type: 'select', options: despesas.rows.map((d) => ({ value: d.id, label: `${fmtDate(d.data)} — ${d.descricao} — ${fmtMoney(d.valor)}` })) },
+        { name: 'documento_url', label: 'URL do orçamento/laudo', full: true },
       ]}
     />
   );
@@ -15212,7 +15704,12 @@ function PatrimonioModule() {
       <button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>
         ← Voltar
       </button>
+      {page === 'dashboard_patrimonio' && <PatrimonioDashboardPage />}
       {page === 'cadastro' && <PatrimonioCadastroPage />}
+      {page === 'movimentacoes' && <PatrimonioMovimentacoesPage />}
+      {page === 'documentos' && <PatrimonioDocumentosPage />}
+      {page === 'inventarios' && <PatrimonioInventariosPage />}
+      {page === 'depreciacao' && <PatrimonioDepreciacaoPage />}
       {page === 'categorias' && <PatrimonioCategoriasPage />}
       {page === 'locais' && <PatrimonioLocaisPage />}
       {page === 'manutencoes' && <PatrimonioManutencoesPage />}
@@ -17758,11 +18255,46 @@ const DEFAULT_MENU_HUBS = {
         title: 'Patrimônio',
         items: [
           {
+            id: 'dashboard_patrimonio',
+            icon: '📊',
+            title: 'Dashboard patrimonial',
+            desc: 'Valor dos bens, custo de manutenção, alertas e pendências.',
+            color: 'blue',
+          },
+          {
             id: 'cadastro',
             icon: '🏷️',
             title: 'Cadastro',
             desc: 'Bens patrimoniais da igreja, valor, status e localização.',
             color: 'orange',
+          },
+          {
+            id: 'movimentacoes',
+            icon: '🔄',
+            title: 'Movimentações',
+            desc: 'Empréstimos, termos, transferências, devoluções e baixas formais.',
+            color: 'green',
+          },
+          {
+            id: 'documentos',
+            icon: '📎',
+            title: 'Documentos',
+            desc: 'Notas fiscais, garantias, seguros, fotos, termos e laudos privados.',
+            color: 'purple',
+          },
+          {
+            id: 'inventarios',
+            icon: '📱',
+            title: 'Inventários e QR',
+            desc: 'Checklist periódico e conferência móvel por QR Code ou código.',
+            color: 'accent',
+          },
+          {
+            id: 'depreciacao',
+            icon: '📉',
+            title: 'Depreciação',
+            desc: 'Cálculo linear por competência, vida útil e valor residual.',
+            color: 'warning',
           },
           {
             id: 'categorias',

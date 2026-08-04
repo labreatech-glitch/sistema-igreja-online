@@ -1,6 +1,6 @@
 {
   "name": "labreatech-igreja",
-  "version": "2.26.3",
+  "version": "2.27.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",
     "@vitejs/plugin-react": "^4.3.4",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "read-excel-file": "^6.0.3",

@@ -200,6 +200,11 @@ body{overflow-x:hidden}.page{width:min(var(--page-max),calc(100vw - 28px));max-w
   gap: 12px;
   align-items: end;
 }
+
+/* v2.27.2 — conferência patrimonial móvel */
+.patrimonioScanner{margin-top:16px}
+.patrimonioScannerVideo{display:block;width:min(100%,680px);max-height:420px;object-fit:cover;margin:0 auto 16px;border-radius:14px;background:#08111d}
+@media(max-width:760px){.patrimonioScanner .quickSelectRow{display:grid!important;grid-template-columns:1fr!important}.patrimonioScanner .quickSelectRow button{width:100%!important}.patrimonioScannerVideo{max-height:55vh}}
 .globalFilterTitle{display:flex;flex-direction:column;gap:2px;color:#14213d}.globalFilterTitle span{font-size:12px;color:#607089}.field.compact{margin:0}.field.compact input,.field.compact select{height:40px}.filterPanel.compactFilters{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr)) auto auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--border,#c8d6e6);border-radius:14px;padding:12px;margin:12px 0}.filterPanel.compactFilters .field{margin:0}.smallText{font-size:12px}.selectedRow{background:#eef7ff}@media(max-width:900px){.globalFilterBar,.filterPanel.compactFilters{grid-template-columns:1fr}.globalFilterBar{margin:10px}}
 
 /* v40 - filtros globais com múltiplos caixas */
@@ -5621,7 +5626,7 @@ tbody tr:hover td{background:#eef6fb!important}
   .officialMiniLogo{width:48px!important;height:48px!important}
 }
 
-/* v2.26.3 — navegação e cabeçalho legíveis no celular */
+/* v2.27.2 — navegação e cabeçalho legíveis no celular */
 @media(max-width:760px){
   /* No celular o menu é sempre apresentado expandido, mesmo que tenha sido
      recolhido anteriormente no computador. */
@@ -5696,3 +5701,5 @@ tbody tr:hover td{background:#eef6fb!important}
     border-radius:0!important;
   }
 }
+/* v2.27.2 — catálogo patrimonial padrão e orientação contábil */
+.patrimonioCategoryGuide{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px}.patrimonioCategoryGuide p{margin:5px 0 4px;max-width:820px}.patrimonioCategoryGuideActions{justify-content:flex-end;flex-shrink:0}.patrimonioCategoryCatalogTable table{min-width:1060px}.patrimonioCategoryCatalogTable td:first-child{min-width:260px;max-width:340px}.patrimonioCategoryCatalogTable td:last-child{min-width:260px}.patrimonioAccountingNotice{margin-bottom:14px}.patrimonioCatalogFooter{justify-content:space-between;margin-top:16px}.patrimonioCatalogFooter .link{max-width:70%}@media(max-width:760px){.patrimonioCategoryGuide{align-items:stretch;flex-direction:column}.patrimonioCategoryGuideActions{justify-content:flex-start}.patrimonioCategoryGuideActions button{flex:1}.patrimonioCatalogFooter{align-items:stretch;flex-direction:column}.patrimonioCatalogFooter .link{max-width:none}.patrimonioCatalogFooter button{width:100%}}
