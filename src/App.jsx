@@ -8,7 +8,7 @@ import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSald
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.26.2';
+const APP_VERSION = '2.26.3';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
