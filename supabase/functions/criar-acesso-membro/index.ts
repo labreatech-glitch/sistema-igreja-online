@@ -145,7 +145,11 @@ serve(async (req) => {
     };
 
     const { error: profileError } = await admin.from('profiles').upsert(profilePayload, { onConflict: 'id' });
-    if (profileError) throw profileError;
+    if (profileError) {
+      const { error: cleanupError } = await admin.auth.admin.deleteUser(created.data.user.id);
+      if (cleanupError) console.error('Falha ao remover usuário Auth órfão:', cleanupError.message);
+      throw profileError;
+    }
 
     return json({
       ok: true,

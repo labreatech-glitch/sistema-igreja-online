@@ -376,9 +376,9 @@ $$;
 create or replace function public.is_master()
 returns boolean
 language sql stable security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
-  select coalesce((select p.ativo and (p.role = 'master' or lower(p.email) in ('labreatech@gmail.com','labreatech@hotmail.com')) from public.profiles p where p.id = auth.uid()), false);
+  select coalesce((select p.ativo and (p.role = 'master' or (lower(p.email) in ('labreatech@gmail.com','labreatech@hotmail.com') and lower(p.email) = lower(coalesce(auth.jwt() ->> 'email', '')))) from public.profiles p where p.id = auth.uid()), false);
 $$;
 
 create or replace function public.is_ativo()
@@ -555,12 +555,12 @@ alter table public.patrimonio_manutencoes enable row level security;
 create policy profiles_select on public.profiles for select
   using (auth.uid() = id or public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id()));
 create policy profiles_insert_self on public.profiles for insert
-  with check (auth.uid() = id and ativo = false and role in ('secretario','admin','gerente','operador','consulta','tesoureiro','membro'));
+  with check (auth.uid() = id and ativo = false and role in ('secretario','admin','gerente','operador','consulta','tesoureiro','membro') and lower(trim(email)) = lower(trim(coalesce(auth.jwt() ->> 'email', ''))));
 create policy profiles_insert_admin on public.profiles for insert
   with check (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id() and role <> 'master'));
 create policy profiles_update_self_pending on public.profiles for update
-  using (auth.uid() = id)
-  with check (auth.uid() = id and ativo = false and role in ('secretario','admin'));
+  using (auth.uid() = id and ativo = false)
+  with check (auth.uid() = id and ativo = false and role in ('secretario','admin','gerente','operador','consulta','tesoureiro','membro') and lower(trim(email)) = lower(trim(coalesce(auth.jwt() ->> 'email', ''))));
 create policy profiles_update_admin on public.profiles for update
   using (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id()))
   with check (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id() and role <> 'master'));
