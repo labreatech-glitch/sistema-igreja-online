@@ -4,6 +4,7 @@ import { formatCep, formatCnpj, formatCpf, formatCpfCnpj, formatPhone, isValidCp
 import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
 import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
 import { calcularDepreciacaoPatrimonio } from './domain/patrimonio/rules/calcularDepreciacao.js';
+import { codigosEtiquetaRepetidos, normalizarCodigoEtiquetaPatrimonio, patrimonioEstadoFromSheet, patrimonioSheetHeader } from './domain/patrimonio/rules/preCadastro.js';
 import { PATRIMONIO_CATEGORIAS_PADRAO, categoriasPatrimonioPadraoAusentes } from './domain/patrimonio/catalog/categoriasPadrao.js';
 import QRCode from 'qrcode';
 
@@ -11,7 +12,7 @@ import QRCode from 'qrcode';
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.27.2';
+const APP_VERSION = '2.27.7';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -2077,6 +2078,56 @@ function MultiSearchableSelect({ value = [], onChange, options = [], placeholder
   );
 }
 
+function CreatableSelectInput({ field, value, onChange }) {
+  const options = field.options || [];
+  const valueExists = options.some((option) => String(option.value) === String(value ?? ''));
+  const [creating, setCreating] = useState(() => Boolean(value) && !valueExists);
+
+  useEffect(() => {
+    if (value && !options.some((option) => String(option.value) === String(value))) setCreating(true);
+  }, [value, options]);
+
+  if (creating) {
+    return (
+      <div className="quickSelectRow">
+        <input
+          value={value ?? ''}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.newPlaceholder || 'Digite o novo tipo…'}
+          maxLength={field.maxLength || 80}
+          autoFocus
+        />
+        <button
+          type="button"
+          className="smallBtn secondary nowrapBtn"
+          onClick={() => {
+            setCreating(false);
+            onChange(field.defaultValue || '');
+          }}
+        >
+          Usar existente
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="quickSelectRow">
+      <SearchableSelect value={value ?? ''} onChange={onChange} options={options} placeholder={field.placeholder || 'Selecione…'} disabled={!!field.readOnly} />
+      <button
+        type="button"
+        className="smallBtn secondary nowrapBtn"
+        onClick={() => {
+          onChange('');
+          setCreating(true);
+        }}
+      >
+        + Novo
+      </button>
+    </div>
+  );
+}
+
 function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, setForm, initial }) {
   if (field.type === 'custom') {
     return typeof field.render === 'function' ? field.render({ value, onChange, form, setForm, initial }) : null;
@@ -2087,7 +2138,7 @@ function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, se
     value: hasDocumentMask ? formatDocumentValue(field, value, { preserveFreeText: false }) : value ?? '',
     onChange: (e) => onChange(field.type === 'checkbox' ? e.target.checked : hasDocumentMask ? formatDocumentValue(field, e.target.value, { preserveFreeText: false }) : e.target.value),
     readOnly: !!field.readOnly,
-    maxLength: documentFieldMaxLength(field),
+    maxLength: documentFieldMaxLength(field) || field.maxLength,
     inputMode: hasDocumentMask ? 'numeric' : undefined,
   };
   if (field.type === 'select' || field.type === 'quickselect') {
@@ -2104,6 +2155,7 @@ function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, se
     }
     return input;
   }
+  if (field.type === 'creatableselect') return <CreatableSelectInput field={field} value={value} onChange={onChange} />;
   if (field.type === 'combo') {
     const listId = `list_${field.name}`;
     return (
@@ -2111,7 +2163,7 @@ function FieldInput({ field, value, onChange, onQuickCreate, onCepFill, form, se
         <input list={listId} {...common} />
         <datalist id={listId}>
           {(field.options || []).map((o) => (
-            <option key={o.value || o.label} value={o.label || o.value} />
+            <option key={o.value || o.label} value={o.value ?? o.label} label={o.label ?? o.value} />
           ))}
         </datalist>
       </>
@@ -15061,7 +15113,21 @@ function PatrimonioCategoriasPage() {
 
 function PatrimonioLocaisPage() {
   const congregacoes = useTable('congregacoes', { order: 'nome', ascending: true });
+  const locais = useTable('patrimonio_locais', { order: 'tipo', ascending: true });
   const congregacaoOptions = congregacoes.rows.map((r) => ({ value: r.id, label: r.nome }));
+  const tiposPadrao = [
+    { value: 'sede', label: 'Sede' },
+    { value: 'congregacao', label: 'Congregação' },
+    { value: 'sala', label: 'Sala' },
+    { value: 'ministerio', label: 'Ministério' },
+    { value: 'deposito', label: 'Depósito' },
+    { value: 'outro', label: 'Outro' },
+  ];
+  const tipoPadraoMap = Object.fromEntries(tiposPadrao.map((tipo) => [tipo.value, tipo.label]));
+  const tiposPersonalizados = [...new Set(locais.rows.map((r) => String(r.tipo || '').trim()).filter(Boolean))]
+    .filter((tipo) => !tiposPadrao.some((padrao) => padrao.value === tipo))
+    .map((tipo) => ({ value: tipo, label: tipo }));
+  const tipoOptions = [...tiposPadrao, ...tiposPersonalizados];
   return (
     <CrudPage
       table="patrimonio_locais"
@@ -15071,20 +15137,27 @@ function PatrimonioLocaisPage() {
       searchKeys={['nome', 'descricao']}
       columns={[
         { key: 'nome', label: 'Local' },
-        { key: 'tipo', label: 'Tipo' },
+        { key: 'tipo', label: 'Tipo', render: (r) => tipoPadraoMap[r.tipo] || r.tipo || 'Outro' },
         { key: 'descricao', label: 'Descrição' },
         { key: 'ativo', label: 'Situação', render: (r) => r.ativo === false ? 'Inativo' : 'Ativo' },
       ]}
       fields={[
         { name: 'nome', label: 'Nome do local', required: true },
-        { name: 'tipo', label: 'Tipo', type: 'select', defaultValue: 'outro', options: [
-          { value: 'sede', label: 'Sede' }, { value: 'congregacao', label: 'Congregação' }, { value: 'sala', label: 'Sala' },
-          { value: 'ministerio', label: 'Ministério' }, { value: 'deposito', label: 'Depósito' }, { value: 'outro', label: 'Outro' },
-        ] },
+        {
+          name: 'tipo',
+          label: 'Tipo',
+          type: 'creatableselect',
+          defaultValue: 'outro',
+          required: true,
+          options: tipoOptions,
+          help: 'Selecione um tipo existente ou clique em “+ Novo” para cadastrar um tipo personalizado.',
+        },
         { name: 'congregacao_id', label: 'Congregação vinculada', type: 'select', options: congregacaoOptions },
         { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
         { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
       ]}
+      preparePayload={({ payload }) => ({ ...payload, tipo: String(payload.tipo || 'outro').trim().slice(0, 80) || 'outro' })}
+      onAfterSave={locais.reload}
     />
   );
 }
@@ -15100,6 +15173,67 @@ function patrimonioPrefixo(nome = '') {
     .filter(Boolean)
     .filter((p) => !ignorar.has(p));
   return palavras.map((p) => p[0]).join('').slice(0, 8) || 'PAT';
+}
+
+const PATRIMONIO_ESTADO_OPTIONS = [
+  { value: 'novo', label: 'Novo' },
+  { value: 'bom', label: 'Bom' },
+  { value: 'regular', label: 'Regular' },
+  { value: 'ruim', label: 'Ruim' },
+  { value: 'inservivel', label: 'Inservível' },
+];
+
+const patrimonioEstadoLabel = (value) => PATRIMONIO_ESTADO_OPTIONS.find((item) => item.value === value)?.label || '—';
+
+function PatrimonioPreCadastroModal({ igrejaNome, igrejaLogo, locais, onClose, push }) {
+  const [departamento, setDepartamento] = useState('');
+  const [localId, setLocalId] = useState('');
+  const [responsavel, setResponsavel] = useState('');
+  const [quantidade, setQuantidade] = useState(10);
+  const local = locais.find((item) => item.id === localId);
+
+  const imprimir = () => {
+    const total = Math.max(5, Math.min(20, Number(quantidade) || 10));
+    const rows = Array.from({ length: total }, (_, index) => `
+      <tr>
+        <td class="seq">${index + 1}</td>
+        <td></td><td></td><td></td><td></td><td></td><td></td>
+        <td>${safeHtml(local?.nome || '')}</td><td></td><td></td>
+      </tr>`).join('');
+    const logo = igrejaLogo ? `<img src="${safeAttr(igrejaLogo)}" alt="Logo da igreja">` : '';
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ficha de pré-cadastro patrimonial</title><style>
+      @page{size:A4 landscape;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;font-size:9pt}
+      .header{display:flex;align-items:center;gap:4mm;border-bottom:2px solid #173f63;padding-bottom:3mm;margin-bottom:3mm}.header img{width:18mm;height:18mm;object-fit:contain}.header h1{font-size:15pt;margin:0}.header p{margin:1mm 0 0;color:#444}
+      .meta{display:grid;grid-template-columns:1.2fr 1fr 1fr .7fr;gap:3mm;margin-bottom:3mm}.box{border:1px solid #555;padding:2mm;min-height:12mm}.box b{display:block;font-size:7pt;text-transform:uppercase;margin-bottom:1.5mm;color:#173f63}
+      table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:1px solid #333;padding:1.2mm;vertical-align:middle}th{background:#173f63;color:#fff;font-size:7pt;height:10mm}td{height:13mm}.seq{width:7mm;text-align:center}.selo{width:23mm}.bem{width:auto}.categoria{width:24mm}.marca{width:30mm}.serie{width:25mm}.estado{width:19mm}.local{width:28mm}.resp{width:28mm}.obs{width:35mm}
+      .help{margin-top:2mm;font-size:7pt;color:#444}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:20mm;margin-top:8mm}.signature{border-top:1px solid #222;text-align:center;padding-top:1.5mm;font-size:8pt}
+      @media print{.noPrint{display:none}}
+    </style></head><body>
+      <header class="header">${logo}<div><h1>${safeHtml(igrejaNome)}</h1><p>Ficha de pré-cadastro de bens patrimoniais</p></div></header>
+      <section class="meta"><div class="box"><b>Departamento/Ministério</b>${safeHtml(departamento)}</div><div class="box"><b>Local</b>${safeHtml(local?.nome || '')}</div><div class="box"><b>Responsável pelo levantamento</b>${safeHtml(responsavel)}</div><div class="box"><b>Data</b>${new Date().toLocaleDateString('pt-BR')}</div></section>
+      <table><thead><tr><th class="seq">Nº</th><th class="selo">Código do selo</th><th class="bem">Bem</th><th class="categoria">Categoria</th><th class="marca">Marca/Modelo</th><th class="serie">Nº de série</th><th class="estado">Estado</th><th class="local">Local</th><th class="resp">Responsável</th><th class="obs">Observações</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="help">Estado: Novo, Bom, Regular, Ruim ou Inservível. Não preencher número patrimonial: ele será gerado automaticamente pelo sistema.</p>
+      <section class="signatures"><div class="signature">Responsável pelo departamento</div><div class="signature">Equipe de patrimônio</div></section>
+      <script>window.onload=()=>window.print()<\/script>
+    </body></html>`;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return push('O navegador bloqueou a janela de impressão.', 'warning');
+    try { printWindow.opener = null; } catch {}
+    printWindow.document.open(); printWindow.document.write(html); printWindow.document.close();
+  };
+
+  return (
+    <Modal title="Imprimir ficha de pré-cadastro patrimonial" onClose={onClose}>
+      <div className="alert ok">A ficha será impressa em A4 paisagem. O número patrimonial será gerado somente durante o lançamento ou importação.</div>
+      <div className="grid cols2">
+        <div className="field"><label>Departamento/Ministério</label><input value={departamento} onChange={(event) => setDepartamento(event.target.value)} placeholder="Ex.: Ministério de Louvor" /></div>
+        <div className="field"><label>Local</label><SearchableSelect value={localId} onChange={setLocalId} options={locais.map((item) => ({ value: item.id, label: item.nome }))} placeholder="Selecione o local…" /></div>
+        <div className="field"><label>Responsável pelo levantamento</label><input value={responsavel} onChange={(event) => setResponsavel(event.target.value)} /></div>
+        <div className="field"><label>Quantidade de linhas</label><input type="number" min="5" max="20" value={quantidade} onChange={(event) => setQuantidade(event.target.value)} /></div>
+      </div>
+      <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}><button className="secondary" onClick={onClose}>Cancelar</button><button onClick={imprimir}>Imprimir formulário</button></div>
+    </Modal>
+  );
 }
 
 function PatrimonioCadastroPage() {
@@ -15119,6 +15253,10 @@ function PatrimonioCadastroPage() {
   const [historyRow, setHistoryRow] = useState(null);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [preCadastroOpen, setPreCadastroOpen] = useState(false);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const importFileRef = useRef(null);
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('todos');
   const empresa = empresas.rows.find((e) => e.id === tenant?.empresaId) || {};
@@ -15133,7 +15271,7 @@ function PatrimonioCadastroPage() {
   const despesaOptions = despesas.rows.map((d) => ({ value: d.id, label: `${fmtDate(d.data)} — ${d.descricao} — ${fmtMoney(d.valor)}` }));
   const filtered = bens.rows.filter((r) => {
     const query = q.trim().toLowerCase();
-    const qOk = !query || [r.numero_patrimonio, r.nome, r.marca, r.modelo, r.numero_serie, localMap[r.local_id], r.localizacao].some((v) => String(v || '').toLowerCase().includes(query));
+    const qOk = !query || [r.numero_patrimonio, r.codigo_etiqueta, r.nome, r.marca, r.modelo, r.numero_serie, localMap[r.local_id], r.localizacao].some((v) => String(v || '').toLowerCase().includes(query));
     const statusOk = statusFilter === 'todos' || r.status === statusFilter;
     return qOk && statusOk;
   });
@@ -15147,6 +15285,12 @@ function PatrimonioCadastroPage() {
       readOnly: true,
       defaultValue: () => `${prefixoPrevisto}-PRÓXIMO`,
       help: `Gerado automaticamente ao salvar, usando as iniciais do nome da igreja: ${igrejaNome} → ${prefixoPrevisto}-0001.`,
+    },
+    {
+      name: 'codigo_etiqueta',
+      label: 'Código do selo/etiqueta',
+      maxLength: 120,
+      help: 'Leia com o leitor ou digite exatamente o código já impresso no selo. Deve ser único nesta igreja.',
     },
     { name: 'nome', label: 'Nome do bem', required: true, autoComplete: 'off' },
     { name: 'categoria_id', label: 'Categoria', type: 'select', options: categoriaOptions },
@@ -15173,6 +15317,7 @@ function PatrimonioCadastroPage() {
     { name: 'marca', label: 'Marca' },
     { name: 'modelo', label: 'Modelo' },
     { name: 'numero_serie', label: 'Número de série' },
+    { name: 'estado_conservacao', label: 'Estado de conservação', type: 'select', options: PATRIMONIO_ESTADO_OPTIONS },
     { name: 'fornecedor', label: 'Fornecedor' },
     { name: 'nota_fiscal', label: 'Nota fiscal' },
     { name: 'responsavel', label: 'Responsável pelo bem' },
@@ -15194,6 +15339,7 @@ function PatrimonioCadastroPage() {
     setSaving(true);
     const payload = { ...form };
     delete payload.numero_patrimonio;
+    payload.codigo_etiqueta = String(payload.codigo_etiqueta || '').trim() || null;
     ['valor_aquisicao', 'valor_residual', 'vida_util_meses'].forEach((k) => { payload[k] = payload[k] === '' ? null : Number(payload[k] || 0); });
     ['categoria_id', 'local_id', 'congregacao_id', 'responsavel_membro_id', 'despesa_aquisicao_id'].forEach((k) => { if (!payload[k]) payload[k] = null; });
     ['data_aquisicao', 'garantia_ate', 'seguro_ate', 'proxima_manutencao', 'depreciacao_inicio', 'data_baixa'].forEach((k) => { if (!payload[k]) payload[k] = null; });
@@ -15216,6 +15362,140 @@ function PatrimonioCadastroPage() {
     bens.reload();
   };
 
+  const patrimonioSheetHeaders = [
+    { key: 'codigo_etiqueta', label: 'Código do selo' },
+    { key: 'nome', label: 'Nome do bem' },
+    { key: 'categoria', label: 'Categoria' },
+    { key: 'local', label: 'Local/Departamento' },
+    { key: 'congregacao', label: 'Congregação' },
+    { key: 'marca', label: 'Marca' },
+    { key: 'modelo', label: 'Modelo' },
+    { key: 'numero_serie', label: 'Número de série' },
+    { key: 'estado_conservacao', label: 'Estado de conservação' },
+    { key: 'responsavel', label: 'Responsável' },
+    { key: 'data_aquisicao', label: 'Data de aquisição' },
+    { key: 'valor_aquisicao', label: 'Valor de aquisição' },
+    { key: 'descricao', label: 'Descrição/Observações' },
+  ];
+
+  const baixarModeloPatrimonio = () => {
+    const example = {
+      codigo_etiqueta: '00001234',
+      nome: 'Caixa de som ativa',
+      categoria: categorias.rows[0]?.nome || '',
+      local: locais.rows[0]?.nome || '',
+      congregacao: congregacoes.rows[0]?.nome || '',
+      marca: 'Exemplo',
+      modelo: 'XPTO-100',
+      numero_serie: '',
+      estado_conservacao: 'Bom',
+      responsavel: '',
+      data_aquisicao: '',
+      valor_aquisicao: '',
+      descricao: 'Preencha o código do selo como texto para preservar zeros à esquerda.',
+    };
+    downloadTextFile('modelo_pre_cadastro_patrimonio.csv', rowsToCsv([example], patrimonioSheetHeaders));
+  };
+
+  const lerPlanilhaPatrimonio = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      let rows;
+      if (/\.xlsx$/i.test(file.name || '')) {
+        const { default: readXlsxFile } = await import('read-excel-file');
+        rows = await readXlsxFile(file);
+      } else rows = parseCsvText(await file.text());
+      if (rows.length < 2) throw new Error('A planilha não possui linhas para importar.');
+      const headerIndex = rows.findIndex((line) => line.map(patrimonioSheetHeader).includes('nome'));
+      if (headerIndex < 0) throw new Error('Não encontrei a coluna “Nome do bem”. Baixe o modelo atualizado e mantenha o cabeçalho.');
+      const headers = rows[headerIndex].map(patrimonioSheetHeader);
+      const rawRows = rows
+        .slice(headerIndex + 1)
+        .map((values, index) => ({ ...Object.fromEntries(headers.map((header, column) => [header, values[column] ?? ''])), __line: headerIndex + index + 2 }))
+        .filter((row) => Object.entries(row).some(([key, value]) => key !== '__line' && String(value ?? '').trim()));
+      if (!rawRows.length) throw new Error('A planilha não possui bens preenchidos.');
+
+      const repeatedCodes = codigosEtiquetaRepetidos(rawRows.map((row) => row.codigo_etiqueta));
+      const existingCodes = new Set(bens.rows.map((bem) => normalizarCodigoEtiquetaPatrimonio(bem.codigo_etiqueta)).filter(Boolean));
+      const lookupByName = (collection, value) => {
+        const normalized = normalizeText(value);
+        return normalized ? collection.find((item) => normalizeText(item.nome) === normalized) : null;
+      };
+
+      const previewRows = rawRows.map((row) => {
+        const errors = [];
+        const warnings = [];
+        const nome = String(row.nome || '').trim();
+        const codigo = String(row.codigo_etiqueta || '').trim();
+        const normalizedCode = normalizarCodigoEtiquetaPatrimonio(codigo);
+        const categoria = lookupByName(categorias.rows, row.categoria);
+        const local = lookupByName(locais.rows, row.local);
+        const congregacao = lookupByName(congregacoes.rows, row.congregacao);
+        const rawEstado = String(row.estado_conservacao || '').trim();
+        const estado = patrimonioEstadoFromSheet(rawEstado);
+        const rawDate = row.data_aquisicao;
+        const dataAquisicao = String(rawDate ?? '').trim() ? financeSheetDate(rawDate) : null;
+        const rawValue = String(row.valor_aquisicao ?? '').trim();
+        const valorAquisicao = rawValue ? financeSheetMoney(row.valor_aquisicao) : 0;
+
+        if (!nome) errors.push('Nome do bem é obrigatório.');
+        if (!codigo) warnings.push('Código do selo não informado.');
+        if (normalizedCode && repeatedCodes.has(normalizedCode)) errors.push('Código do selo repetido na planilha.');
+        if (normalizedCode && existingCodes.has(normalizedCode)) errors.push('Código do selo já cadastrado.');
+        if (String(row.categoria || '').trim() && !categoria) errors.push('Categoria não encontrada.');
+        if (String(row.local || '').trim() && !local) errors.push('Local não encontrado.');
+        if (String(row.congregacao || '').trim() && !congregacao) errors.push('Congregação não encontrada.');
+        if (rawEstado && !estado) errors.push('Estado de conservação inválido.');
+        if (String(rawDate ?? '').trim() && !dataAquisicao) errors.push('Data de aquisição inválida.');
+        if (rawValue && !/[0-9]/.test(rawValue)) errors.push('Valor de aquisição inválido.');
+
+        return {
+          line: row.__line,
+          source: row,
+          errors,
+          warnings,
+          valid: errors.length === 0,
+          payload: {
+            codigo_etiqueta: codigo || null,
+            nome,
+            categoria_id: categoria?.id || null,
+            local_id: local?.id || null,
+            congregacao_id: congregacao?.id || null,
+            marca: String(row.marca || '').trim() || null,
+            modelo: String(row.modelo || '').trim() || null,
+            numero_serie: String(row.numero_serie || '').trim() || null,
+            estado_conservacao: estado || null,
+            responsavel: String(row.responsavel || '').trim() || null,
+            data_aquisicao: dataAquisicao || null,
+            valor_aquisicao: Math.max(0, valorAquisicao || 0),
+            descricao: String(row.descricao || '').trim() || null,
+            status: 'ativo',
+          },
+        };
+      });
+      setImportPreview({ fileName: file.name, rows: previewRows });
+    } catch (error) {
+      push(error.message || 'Não foi possível ler a planilha patrimonial.', 'error');
+    }
+  };
+
+  const importarPatrimoniosValidos = async () => {
+    if (!canCreate || !importPreview) return;
+    const validRows = importPreview.rows.filter((row) => row.valid);
+    if (!validRows.length) return push('Não há linhas válidas para importar.', 'warning');
+    setImporting(true);
+    const { data: userData } = await supabase.auth.getUser();
+    const payload = validRows.map((row) => ({ ...row.payload, empresa_id: tenant?.empresaId, created_by: userData?.user?.id || null }));
+    const { error } = await supabase.from('patrimonio').insert(payload);
+    setImporting(false);
+    if (error) return push(`Importação não concluída: ${error.message}`, 'error');
+    push(`${validRows.length} bem(ns) importado(s) e numerado(s) automaticamente.`);
+    setImportPreview(null);
+    bens.reload();
+  };
+
   const qrUrlFor = (row) => `${window.location.origin}${window.location.pathname}?patrimonio=${encodeURIComponent(row.id)}`;
   const safeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
   const formatDateTime = (value) => value ? new Date(value).toLocaleString('pt-BR') : '—';
@@ -15231,7 +15511,7 @@ function PatrimonioCadastroPage() {
       const qr = await QRCode.toDataURL(qrUrlFor(row), { width: 160, margin: 0, errorCorrectionLevel: 'M' });
       for (let i = 0; i < copies; i += 1) labels.push(`
         <article class="label ${cfg.cls}" style="width:${cfg.w}mm;height:${cfg.h}mm">
-          <div class="labelText"><strong>${safeHtml(igrejaNome)}</strong><span>PATRIMÔNIO</span><b>${safeHtml(row.numero_patrimonio || '')}</b><small>${safeHtml(row.nome || '')}</small><small>${safeHtml(localMap[row.local_id] || row.localizacao || '')}</small></div>
+          <div class="labelText"><strong>${safeHtml(igrejaNome)}</strong><span>PATRIMÔNIO</span><b>${safeHtml(row.numero_patrimonio || '')}</b>${row.codigo_etiqueta ? `<small>Selo: ${safeHtml(row.codigo_etiqueta)}</small>` : ''}<small>${safeHtml(row.nome || '')}</small><small>${safeHtml(localMap[row.local_id] || row.localizacao || '')}</small></div>
           <img src="${qr}" alt="QR Code" />
         </article>`);
     }
@@ -15280,17 +15560,24 @@ function PatrimonioCadastroPage() {
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ minWidth: 160 }}>
             <option value="todos">Todos os status</option><option value="ativo">Ativos</option><option value="manutencao">Em manutenção</option><option value="emprestado">Emprestados</option><option value="cedido">Cedidos</option><option value="extraviado">Extraviados</option><option value="baixado">Baixados</option>
           </select>
+          <button className="secondary" onClick={() => setPreCadastroOpen(true)}>Imprimir formulário</button>
+          <button className="secondary" onClick={baixarModeloPatrimonio}>Baixar planilha</button>
+          {canCreate && <button className="secondary" onClick={() => importFileRef.current?.click()}>Importar planilha</button>}
           <button className="secondary" onClick={() => printLabels(bens.rows.filter((r) => selected.includes(r.id)))}>Imprimir etiquetas selecionadas</button>
           {canCreate && <button onClick={() => setModal('new')}>+ Novo patrimônio</button>}
+          <input ref={importFileRef} type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={lerPlanilhaPatrimonio} hidden />
         </div>
       </div>
-      <div className="tablewrap"><table><thead><tr><th className="center"><input type="checkbox" checked={filtered.length > 0 && filtered.every((r) => selected.includes(r.id))} onChange={(e) => setSelected(e.target.checked ? filtered.map((r) => r.id) : [])} /></th><th>Nº Patrimônio</th><th>Bem</th><th>Categoria</th><th>Local</th><th>Status</th><th>Valor</th><th className="center">Ações</th></tr></thead><tbody>
-        {bens.loading && <tr><td colSpan={8} className="center">Carregando…</td></tr>}
-        {!bens.loading && !filtered.length && <tr><td colSpan={8} className="center muted">Nenhum patrimônio encontrado.</td></tr>}
-        {filtered.map((r) => <tr key={r.id}><td className="center"><input type="checkbox" checked={selected.includes(r.id)} onChange={() => setSelected((old) => old.includes(r.id) ? old.filter((id) => id !== r.id) : [...old, r.id])} /></td><td><b>{r.numero_patrimonio}</b></td><td>{r.nome}<small className="muted blockText">{[r.marca, r.modelo].filter(Boolean).join(' ')}</small></td><td>{categoriaMap[r.categoria_id] || '—'}</td><td>{localMap[r.local_id] || r.localizacao || '—'}</td><td><span className={`badge ${r.status === 'ativo' ? 'Ativa' : r.status === 'baixado' ? 'Cancelada' : 'Parcial'}`}>{String(r.status || '').replace('_', ' ')}</span></td><td>{fmtMoney(r.valor_aquisicao)}</td><td className="center"><div className="actionsInline"><button className="smallBtn secondary" onClick={() => openHistory(r)}>Ver</button>{canUpdate && <button className="smallBtn secondary" onClick={() => setModal(r)}>Editar</button>}<button className="smallBtn secondary" onClick={() => printLabels([r])}>Etiqueta</button><button className="smallBtn secondary" onClick={() => openHistory(r)}>Histórico</button></div></td></tr>)}
+      <div className="alert ok"><b>Pré-cadastro:</b> imprima a ficha para os departamentos ou baixe a planilha. Categoria, local e congregação precisam existir antes da importação; o número patrimonial será gerado automaticamente.</div>
+      <div className="tablewrap"><table><thead><tr><th className="center"><input type="checkbox" checked={filtered.length > 0 && filtered.every((r) => selected.includes(r.id))} onChange={(e) => setSelected(e.target.checked ? filtered.map((r) => r.id) : [])} /></th><th>Nº Patrimônio</th><th>Selo</th><th>Bem</th><th>Categoria</th><th>Local</th><th>Estado</th><th>Status</th><th>Valor</th><th className="center">Ações</th></tr></thead><tbody>
+        {bens.loading && <tr><td colSpan={10} className="center">Carregando…</td></tr>}
+        {!bens.loading && !filtered.length && <tr><td colSpan={10} className="center muted">Nenhum patrimônio encontrado.</td></tr>}
+        {filtered.map((r) => <tr key={r.id}><td className="center"><input type="checkbox" checked={selected.includes(r.id)} onChange={() => setSelected((old) => old.includes(r.id) ? old.filter((id) => id !== r.id) : [...old, r.id])} /></td><td><b>{r.numero_patrimonio}</b></td><td>{r.codigo_etiqueta || '—'}</td><td>{r.nome}<small className="muted blockText">{[r.marca, r.modelo].filter(Boolean).join(' ')}</small></td><td>{categoriaMap[r.categoria_id] || '—'}</td><td>{localMap[r.local_id] || r.localizacao || '—'}</td><td>{patrimonioEstadoLabel(r.estado_conservacao)}</td><td><span className={`badge ${r.status === 'ativo' ? 'Ativa' : r.status === 'baixado' ? 'Cancelada' : 'Parcial'}`}>{String(r.status || '').replace('_', ' ')}</span></td><td>{fmtMoney(r.valor_aquisicao)}</td><td className="center"><div className="actionsInline"><button className="smallBtn secondary" onClick={() => openHistory(r)}>Ver</button>{canUpdate && <button className="smallBtn secondary" onClick={() => setModal(r)}>Editar</button>}<button className="smallBtn secondary" onClick={() => printLabels([r])}>Etiqueta</button><button className="smallBtn secondary" onClick={() => openHistory(r)}>Histórico</button></div></td></tr>)}
       </tbody></table></div>
+      {preCadastroOpen && <PatrimonioPreCadastroModal igrejaNome={igrejaNome} igrejaLogo={empresa.logomarca || empresa.logo || empresa.logo_base64 || ''} locais={locais.rows.filter((item) => item.ativo !== false)} onClose={() => setPreCadastroOpen(false)} push={push} />}
+      {importPreview && <Modal title={`Prévia da importação — ${importPreview.fileName}`} onClose={() => !importing && setImportPreview(null)}><div className="grid auto frete-kpis"><div className="card kpi"><div className="label">Linhas</div><div className="value">{importPreview.rows.length}</div></div><div className="card kpi"><div className="label">Válidas</div><div className="value">{importPreview.rows.filter((row) => row.valid).length}</div></div><div className="card kpi"><div className="label">Com erro</div><div className="value">{importPreview.rows.filter((row) => !row.valid).length}</div></div><div className="card kpi"><div className="label">Sem selo</div><div className="value">{importPreview.rows.filter((row) => !row.payload.codigo_etiqueta).length}</div></div></div><div className="alert warn"><b>Conferência obrigatória:</b> linhas com erro não serão importadas. Cadastros auxiliares desconhecidos não serão criados automaticamente.</div><div className="tablewrap"><table><thead><tr><th>Linha</th><th>Selo</th><th>Bem</th><th>Categoria</th><th>Local</th><th>Resultado</th></tr></thead><tbody>{importPreview.rows.map((row) => <tr key={row.line}><td>{row.line}</td><td>{row.payload.codigo_etiqueta || '—'}</td><td>{row.payload.nome || '—'}</td><td>{row.source.categoria || '—'}</td><td>{row.source.local || '—'}</td><td>{row.valid ? <span className="badge Ativa">Válida{row.warnings.length ? ' · atenção' : ''}</span> : <><span className="badge Cancelada">Com erro</span><small className="muted blockText">{row.errors.join(' ')}</small></>}</td></tr>)}</tbody></table></div><div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}><button className="secondary" disabled={importing} onClick={() => setImportPreview(null)}>Cancelar</button><button disabled={importing || !importPreview.rows.some((row) => row.valid)} onClick={importarPatrimoniosValidos}>{importing ? 'Importando…' : 'Importar linhas válidas'}</button></div></Modal>}
       {modal && <Modal title={`${modal === 'new' ? 'Novo registro' : 'Editar registro'} — Cadastro de Patrimônio`} onClose={() => !saving && setModal(null)}><EntityForm fields={fields} initial={modal === 'new' ? { status: 'ativo', numero_patrimonio: `${prefixoPrevisto}-PRÓXIMO` } : modal} onCancel={() => setModal(null)} onSave={save} saving={saving} formClass="patrimonioForm" /></Modal>}
-      {historyRow && <Modal title={`${historyRow.numero_patrimonio || ''} — ${historyRow.nome}`} onClose={() => { setHistoryRow(null); setHistory([]); }}><div className="patrimonioDetailGrid"><div><span>Status</span><b>{historyRow.status}</b></div><div><span>Local</span><b>{localMap[historyRow.local_id] || historyRow.localizacao || '—'}</b></div><div><span>Responsável</span><b>{historyRow.responsavel || '—'}</b></div><div><span>Nº de série</span><b>{historyRow.numero_serie || '—'}</b></div><div className="full"><span>Descrição</span><b>{historyRow.descricao || '—'}</b></div></div><h3>Histórico</h3>{historyLoading ? <p>Carregando…</p> : <div className="tablewrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Detalhes</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{formatDateTime(h.created_at)}</td><td>{h.evento}</td><td>{h.detalhes || '—'}</td></tr>)}{!history.length && <tr><td colSpan={3} className="center muted">Nenhuma alteração registrada.</td></tr>}</tbody></table></div>}</Modal>}
+      {historyRow && <Modal title={`${historyRow.numero_patrimonio || ''} — ${historyRow.nome}`} onClose={() => { setHistoryRow(null); setHistory([]); }}><div className="patrimonioDetailGrid"><div><span>Código do selo</span><b>{historyRow.codigo_etiqueta || '—'}</b></div><div><span>Estado</span><b>{patrimonioEstadoLabel(historyRow.estado_conservacao)}</b></div><div><span>Status</span><b>{historyRow.status}</b></div><div><span>Local</span><b>{localMap[historyRow.local_id] || historyRow.localizacao || '—'}</b></div><div><span>Responsável</span><b>{historyRow.responsavel || '—'}</b></div><div><span>Nº de série</span><b>{historyRow.numero_serie || '—'}</b></div><div className="full"><span>Descrição</span><b>{historyRow.descricao || '—'}</b></div></div><h3>Histórico</h3>{historyLoading ? <p>Carregando…</p> : <div className="tablewrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Detalhes</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{formatDateTime(h.created_at)}</td><td>{h.evento}</td><td>{h.detalhes || '—'}</td></tr>)}{!history.length && <tr><td colSpan={3} className="center muted">Nenhuma alteração registrada.</td></tr>}</tbody></table></div>}</Modal>}
     </div>
   );
 }
@@ -15519,7 +15806,7 @@ function PatrimonioInventoryScanner({ inventario, bens, itens, locais, onRefresh
     try {
       let idFromUrl = '';
       try { idFromUrl = new URL(clean, window.location.origin).searchParams.get('patrimonio') || ''; } catch {}
-      const bem = bens.find((b) => b.id === idFromUrl || b.id === clean || String(b.numero_patrimonio || '').toLowerCase() === clean.toLowerCase());
+      const bem = bens.find((b) => b.id === idFromUrl || b.id === clean || String(b.numero_patrimonio || '').toLowerCase() === clean.toLowerCase() || String(b.codigo_etiqueta || '').trim().toLowerCase() === clean.toLowerCase());
       if (!bem) { push(`Bem não encontrado para o código ${clean}.`, 'error'); return; }
       const existing = itens.find((i) => i.patrimonio_id === bem.id);
       const situacao = existing && (!localId || existing.local_esperado_id === localId) ? 'confirmado' : 'divergente';
@@ -15544,9 +15831,9 @@ function PatrimonioInventoryScanner({ inventario, bens, itens, locais, onRefresh
       }, 500);
     } catch (error) { stopCamera(); push(`Não foi possível acessar a câmera: ${error.message}`, 'error'); }
   };
-  return <div className="card patrimonioScanner"><div className="toolbar"><div><h3 style={{ margin: 0 }}>Conferência móvel</h3><small className="muted">Leia a etiqueta ou informe o número patrimonial.</small></div><button className="secondary" onClick={cameraActive ? stopCamera : startCamera}>{cameraActive ? 'Parar câmera' : 'Abrir câmera'}</button></div>
+  return <div className="card patrimonioScanner"><div className="toolbar"><div><h3 style={{ margin: 0 }}>Conferência móvel</h3><small className="muted">Leia o selo, o QR Code ou informe o número patrimonial.</small></div><button className="secondary" onClick={cameraActive ? stopCamera : startCamera}>{cameraActive ? 'Parar câmera' : 'Abrir câmera'}</button></div>
     {cameraActive && <video ref={videoRef} playsInline muted className="patrimonioScannerVideo" />}
-    <div className="grid cols2"><div className="field"><label>Local encontrado</label><SearchableSelect value={localId} onChange={setLocalId} options={locais.map((l) => ({ value: l.id, label: l.nome }))} placeholder="Selecione o local…" /></div><div className="field"><label>Número ou conteúdo do QR</label><div className="quickSelectRow"><input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') confirmCode(codigo); }} placeholder="Ex.: PIEBL-0001" autoFocus /><button onClick={() => confirmCode(codigo)}>Confirmar</button></div></div></div>
+    <div className="grid cols2"><div className="field"><label>Local encontrado</label><SearchableSelect value={localId} onChange={setLocalId} options={locais.map((l) => ({ value: l.id, label: l.nome }))} placeholder="Selecione o local…" /></div><div className="field"><label>Código do selo, número ou QR</label><div className="quickSelectRow"><input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') confirmCode(codigo); }} placeholder="Ex.: 00001234 ou PIEBL-0001" autoFocus /><button onClick={() => confirmCode(codigo)}>Confirmar</button></div></div></div>
   </div>;
 }
 
