@@ -3895,7 +3895,18 @@ html,body,#root,.appShell,.sidebar{
 .prestacaoCheck:hover{border-color:#93c5fd;background:#f8fbff;transform:translateY(-1px)}
 .prestacaoCheck input{margin-top:3px;accent-color:#0f766e}
 .prestacaoCheck span{display:flex;flex-direction:column;gap:3px}
-.prestacaoCheck b{font-size:13px;color:#0f172a}
+.prestacaoCheck b{
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
+  line-clamp:2;
+  overflow:hidden;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  font-size:13px;
+  line-height:1.25;
+  color:#0f172a;
+}
 .prestacaoCheck small{font-size:11px;line-height:1.25;color:#64748b;font-weight:700}
 .prestacaoKpis{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px}
 .prestacaoKpis .miniStat.total b,.moneyBlue{color:#0969da!important}
@@ -4072,11 +4083,20 @@ html,body,#root,.appShell,.sidebar{
   z-index:3;
 }
 .prestacaoSlidesDeck .kicker{
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
+  line-clamp:2;
+  overflow:hidden;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  max-width:100%;
   text-transform:uppercase;
   letter-spacing:.14em;
   color:#0f766e;
   font-weight:950;
   font-size:15px;
+  line-height:1.25;
   margin-bottom:10px;
 }
 .prestacaoSlidesDeck .slide h1{font-size:54px;line-height:1.05;margin:0 0 18px;color:#0f172a;}
@@ -4150,9 +4170,36 @@ html,body,#root,.appShell,.sidebar{
 .prestacaoSlidesDeck .table tr:last-child td{border-bottom:0;}
 .prestacaoSlidesDeck .monthlyTable{table-layout:fixed;}
 .prestacaoSlidesDeck .monthlyTable th,.prestacaoSlidesDeck .monthlyTable td{padding:11px 6px;white-space:nowrap;overflow:hidden;text-overflow:clip;}
-.prestacaoSlidesDeck .monthlyTable th{font-size:10px;letter-spacing:0;}
+.prestacaoSlidesDeck .monthlyTable th{
+  font-size:10px;
+  line-height:1.15;
+  letter-spacing:0;
+  white-space:normal;
+  overflow:visible;
+  overflow-wrap:break-word;
+  vertical-align:middle;
+}
 .prestacaoSlidesDeck .monthlyTable td{font-size:14px;font-variant-numeric:tabular-nums;}
 .prestacaoSlidesDeck .monthlyTable th:first-child,.prestacaoSlidesDeck .monthlyTable td:first-child{width:8%;}
+.prestacaoSlidesDeck .cashBoxTable{table-layout:fixed;}
+.prestacaoSlidesDeck .cashBoxTable th,.prestacaoSlidesDeck .cashBoxTable td{padding:10px 6px;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.prestacaoSlidesDeck .cashBoxTable th{
+  font-size:9px;
+  line-height:1.15;
+  letter-spacing:0;
+  white-space:normal;
+  overflow:visible;
+  overflow-wrap:break-word;
+  vertical-align:middle;
+}
+.prestacaoSlidesDeck .cashBoxTable th:first-child,.prestacaoSlidesDeck .cashBoxTable td:first-child{width:18%;white-space:normal;}
+.prestacaoSlidesDeck .cashBoxTotals td{background:#eef5ff;font-weight:950;border-top:2px solid #9fb9d6;}
+.prestacaoSlidesDeck .cashBoxNote{font-size:14px!important;margin:12px 0 0;color:#64748b!important;font-weight:750;}
+.prestacaoSlidesDeck .summaryCards{grid-template-columns:repeat(4,1fr);}
+.prestacaoSlidesDeck .summaryCards .card{padding:14px 16px;}
+.prestacaoSlidesDeck .summaryCards .card span{font-size:11px;}
+.prestacaoSlidesDeck .summaryCards .card b{font-size:23px;}
+.prestacaoSlidesDeck .summaryFormula{font-size:15px!important;margin:18px 0 0;padding:12px 16px;border-radius:14px;background:#eff6ff;color:#334155!important;font-weight:800;}
 .prestacaoSlidesDeck .two{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
 .prestacaoSlidesDeck .bigTotal{font-size:46px;font-weight:950;color:#0969da;}
 .prestacaoSlidesDeck .footerMsg{position:absolute;left:60px;bottom:44px;font-size:28px;font-weight:950;color:#0f766e;}

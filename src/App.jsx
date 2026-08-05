@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { supabase, isSupabaseConfigured } from './lib/supabase.js';
 import { formatCep, formatCnpj, formatCpf, formatCpfCnpj, formatPhone, isValidCpf, onlyDigits } from './shared/lib/cpf.js';
 import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
+import { calcularPosicaoCaixaPrestacao } from './domain/financeiro/rules/calcularPrestacao.js';
 import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
 import { calcularDepreciacaoPatrimonio } from './domain/patrimonio/rules/calcularDepreciacao.js';
 import { codigosEtiquetaRepetidos, normalizarCodigoEtiquetaPatrimonio, patrimonioEstadoFromSheet, patrimonioSheetHeader } from './domain/patrimonio/rules/preCadastro.js';
@@ -12,7 +13,7 @@ import QRCode from 'qrcode';
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.27.8';
+const APP_VERSION = '2.28.2';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -10089,7 +10090,7 @@ function PrestacaoContasPage() {
     prestacao_relatorio_id: '',
     tipo_origem: 'caixa',
     origem_id: '',
-    tipo_movimento: 'receitas',
+    tipo_movimento: 'ambos',
     grupo: '',
   });
   const [showNovoRelatorio, setShowNovoRelatorio] = useState(false);
@@ -10296,8 +10297,8 @@ function PrestacaoContasPage() {
           despesas,
           transferencias,
           transferenciasInternas,
-          transferenciasRecebidas: resumoTransferenciasMes.recebidas,
-          transferenciasEnviadas: resumoTransferenciasMes.enviadas,
+          transferenciasRecebidas: resumoTransferenciasMes.recebidasMovimentadas,
+          transferenciasEnviadas: resumoTransferenciasMes.enviadasMovimentadas,
           saldoMensal: entradas - despesas + transferencias,
           saldoAnterior: antesEntradas - antesDespesas + antesTransferencias,
           saldoAtual: antesEntradas - antesDespesas + antesTransferencias + entradas - despesas + transferencias,
@@ -10376,23 +10377,21 @@ function PrestacaoContasPage() {
           const receitasAtuais = (receitasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowInPrestacaoPeriod(row, period));
           const despesasAtuais = (despesasTable.rows || []).filter((row) => String(row.tipo_caixa_id || '') === caixaId && rowInPrestacaoPeriod(row, period));
           const transferenciasAtuais = transferenciasAtivas.filter((row) => rowInPrestacaoPeriod(row, period));
-          const transferenciasRecebidasCaixa = transferenciasAtuais.filter((row) => String(row.caixa_destino_id || '') === caixaId).reduce((sum, row) => sum + Math.abs(Number(row.valor) || 0), 0);
-          const transferenciasEnviadasCaixa = transferenciasAtuais.filter((row) => String(row.caixa_origem_id || '') === caixaId).reduce((sum, row) => sum + Math.abs(Number(row.valor) || 0), 0);
-          const saldoAnteriorCaixa = sumRows(receitasAnterioresCaixa) - sumRows(despesasAnterioresCaixa) + transferenciaImpacto(transferenciasAnterioresCaixa, [caixaId]);
-          const entradasCaixa = sumRows(receitasAtuais) + transferenciasRecebidasCaixa;
-          const saidasCaixa = sumRows(despesasAtuais) + transferenciasEnviadasCaixa;
-          const saldoAtualCaixa = saldoAnteriorCaixa + entradasCaixa - saidasCaixa;
+          const posicaoCaixa = calcularPosicaoCaixaPrestacao({
+            caixaId,
+            receitasAnteriores: receitasAnterioresCaixa,
+            despesasAnteriores: despesasAnterioresCaixa,
+            transferenciasAnteriores: transferenciasAnterioresCaixa,
+            receitasPeriodo: receitasAtuais,
+            despesasPeriodo: despesasAtuais,
+            transferenciasPeriodo: transferenciasAtuais,
+          });
           reportItem.cashBoxes.push({
             caixaId,
             nome: caixaMapPrestacao[caixaId] || fonte.nome_exibicao || 'Caixa',
-            saldoAnterior: saldoAnteriorCaixa,
-            entradas: entradasCaixa,
-            saidas: saidasCaixa,
-            transferenciasRecebidas: transferenciasRecebidasCaixa,
-            transferenciasEnviadas: transferenciasEnviadasCaixa,
-            saldoAtual: saldoAtualCaixa,
+            ...posicaoCaixa,
           });
-          reportItem.total += saldoAtualCaixa;
+          reportItem.total += posicaoCaixa.saldoAtual;
           reportItem.count += 1;
         }
         return;
@@ -10514,13 +10513,23 @@ function PrestacaoContasPage() {
       push('Escolha a origem que entrará no slide.', 'error');
       return;
     }
+    const origemDuplicada = fontesAtivas.some(
+      (fonte) =>
+        String(fonte.prestacao_relatorio_id || '') === String(fonteForm.prestacao_relatorio_id || '') &&
+        String(fonte.tipo_origem || '') === String(fonteForm.tipo_origem || '') &&
+        String(fonte.origem_id || '') === String(fonteForm.origem_id || ''),
+    );
+    if (origemDuplicada) {
+      push('Esta origem já está vinculada ao slide selecionado.', 'error');
+      return;
+    }
     const selected = fonteOrigemOptions.find((o) => String(o.value) === String(fonteForm.origem_id));
     const payload = {
       prestacao_relatorio_id: fonteForm.prestacao_relatorio_id,
       tipo_origem: fonteForm.tipo_origem,
       origem_id: String(fonteForm.origem_id),
       nome_exibicao: selected?.label || fonteForm.origem_id,
-      tipo_movimento: fonteForm.tipo_origem === 'categoria_despesa' ? 'despesas' : fonteForm.tipo_movimento,
+      tipo_movimento: fonteForm.tipo_origem === 'caixa' ? 'ambos' : fonteForm.tipo_origem === 'categoria_despesa' ? 'despesas' : fonteForm.tipo_movimento,
       grupo: fonteForm.grupo || selected?.label || '',
       incluir_slide: true,
       ativo: true,
@@ -10531,9 +10540,9 @@ function PrestacaoContasPage() {
       push(error.message, 'error');
       return;
     }
-    push('Origem adicionada ao slide.');
     setFonteForm((old) => ({ ...old, origem_id: '', grupo: '' }));
-    fontesSlideTable.reload();
+    await fontesSlideTable.reload();
+    push('Origem adicionada e valores do slide atualizados.');
   };
   const excluirFonteSlide = async (row) => {
     if (!confirm('Remover esta origem automática do slide?')) return;
@@ -10545,6 +10554,9 @@ function PrestacaoContasPage() {
     push('Origem removida.');
     fontesSlideTable.reload();
   };
+  const saldoAnteriorLabel = period.modo === 'mes' && period.referencia
+    ? `Saldo anterior (até ${fmtReferencia(previousReferencia(period.referencia))})`
+    : 'Saldo anterior ao período';
   const slideModels = useMemo(() => {
     const list = [];
     const add = (id, title, jsx, html, fallback = true) => {
@@ -10567,7 +10579,7 @@ function PrestacaoContasPage() {
       </div>,
       coverHtml,
     );
-    const monthlyHtml = `<div class="kicker">Movimentação mensal</div><h2>${safeHtml(period.label)}</h2><table class="table monthlyTable"><thead><tr><th>Mês</th><th>Saldo anterior</th><th>Entrada</th><th>Despesa</th><th>Transf. recebidas</th><th>Transf. enviadas</th><th>Saldo mensal</th><th>Saldo atual</th></tr></thead><tbody>${months.map((m) => `<tr><td><b>${safeHtml(m.nome)}</b></td><td class="${m.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(m.saldoAnterior)}</td><td class="income">${fmtMoney(m.entradas)}</td><td class="expense">${fmtMoney(m.despesas)}</td><td class="income">${fmtMoney(m.transferenciasRecebidas)}</td><td class="expense">${fmtMoney(m.transferenciasEnviadas)}</td><td class="${m.saldoMensal < 0 ? 'expense' : 'income'}">${fmtMoney(m.saldoMensal)}</td><td class="${m.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(m.saldoAtual)}</td></tr>`).join('')}</tbody></table>`;
+    const monthlyHtml = `<div class="kicker">Movimentação mensal</div><h2>${safeHtml(period.label)}</h2><table class="table monthlyTable"><thead><tr><th>Mês</th><th>Saldo<br/>anterior</th><th>Entrada</th><th>Despesa</th><th>Transf.<br/>recebidas</th><th>Transf.<br/>enviadas</th><th>Saldo<br/>mensal</th><th>Saldo<br/>atual</th></tr></thead><tbody>${months.map((m) => `<tr><td><b>${safeHtml(m.nome)}</b></td><td class="${m.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(m.saldoAnterior)}</td><td class="income">${fmtMoney(m.entradas)}</td><td class="expense">${fmtMoney(m.despesas)}</td><td class="income">${fmtMoney(m.transferenciasRecebidas)}</td><td class="expense">${fmtMoney(m.transferenciasEnviadas)}</td><td class="${m.saldoMensal < 0 ? 'expense' : 'income'}">${fmtMoney(m.saldoMensal)}</td><td class="${m.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(m.saldoAtual)}</td></tr>`).join('')}</tbody></table>`;
     add(
       'movimentacao',
       'Movimentação mensal',
@@ -10578,6 +10590,7 @@ function PrestacaoContasPage() {
             <thead>
               <tr>
                 <th>Mês</th>
+                <th>Saldo anterior</th>
                 <th>Entrada</th>
                 <th>Despesa</th>
                 <th>Transf. recebidas</th>
@@ -10592,6 +10605,7 @@ function PrestacaoContasPage() {
                   <td>
                     <b>{m.nome}</b>
                   </td>
+                  <td className={m.saldoAnterior < 0 ? 'moneyExpense' : ''}>{fmtMoney(m.saldoAnterior)}</td>
                   <td className="moneyIncome">{fmtMoney(m.entradas)}</td>
                   <td className="moneyExpense">{fmtMoney(m.despesas)}</td>
                   <td className="moneyIncome">{fmtMoney(m.transferenciasRecebidas)}</td>
@@ -10625,7 +10639,7 @@ function PrestacaoContasPage() {
             <b>{fmtMoney(totalDespesas)}</b>
           </div>
           <div className="miniStat">
-            <span>Entre caixas selecionados</span>
+            <span>Transferências internas (informativas)</span>
             <b>{fmtMoney(totalTransferenciasInternas)}</b>
           </div>
           {transferenciasRecebidas > 0 && (
@@ -10641,12 +10655,12 @@ function PrestacaoContasPage() {
             </div>
           )}
           <div className={`miniStat ${saldoTotal < 0 ? 'expense' : 'total'}`}>
-            <span>Saldo total</span>
+            <span>Saldo final</span>
             <b>{fmtMoney(saldoTotal)}</b>
           </div>
         </div>
       </div>,
-      `<div class="kicker">Balanço do período</div><h2>${safeHtml(period.label)}</h2><div class="cards"><div class="card ${saldoAnterior < 0 ? 'expense' : ''}"><span>Saldo anterior</span><b>${fmtMoney(saldoAnterior)}</b></div><div class="card income"><span>Entrada total</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesa total</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card"><span>Entre caixas selecionados</span><b>${fmtMoney(totalTransferenciasInternas)}</b></div><div class="card income"><span>Recebidas de caixas fora</span><b>${fmtMoney(transferenciasRecebidas)}</b></div><div class="card expense"><span>Enviadas para caixas fora</span><b>${fmtMoney(transferenciasEnviadas)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo total</span><b>${fmtMoney(saldoTotal)}</b></div></div>`,
+      `<div class="kicker">Balanço do período</div><h2>${safeHtml(period.label)}</h2><div class="cards"><div class="card ${saldoAnterior < 0 ? 'expense' : ''}"><span>${safeHtml(saldoAnteriorLabel)}</span><b>${fmtMoney(saldoAnterior)}</b></div><div class="card income"><span>Receitas do período</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesas do período</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card"><span>Transferências internas (informativas)</span><b>${fmtMoney(totalTransferenciasInternas)}</b></div><div class="card income"><span>Recebidas de caixas fora</span><b>${fmtMoney(transferenciasRecebidas)}</b></div><div class="card expense"><span>Enviadas para caixas fora</span><b>${fmtMoney(transferenciasEnviadas)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo final</span><b>${fmtMoney(saldoTotal)}</b></div></div>`,
     );
     add(
       'cofres',
@@ -10722,10 +10736,24 @@ function PrestacaoContasPage() {
         .map(([nome, valor]) => `<tr><td>${safeHtml(nome)}</td><td class="total">${fmtMoney(valor)}</td></tr>`)
         .join('');
       const cashBoxesHtml = (cashBoxes || [])
-        .map((item) => `<tr><td>${safeHtml(item.nome)}</td><td class="${item.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(item.saldoAnterior)}</td><td class="income">${fmtMoney(item.entradas)}</td><td class="expense">${fmtMoney(item.saidas)}</td><td class="${item.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(item.saldoAtual)}</td></tr>`)
+        .map((item) => `<tr><td>${safeHtml(item.nome)}</td><td class="${item.saldoAnterior < 0 ? 'expense' : ''}">${fmtMoney(item.saldoAnterior)}</td><td class="income">${fmtMoney(item.receitas)}</td><td class="income">${fmtMoney(item.transferenciasRecebidas)}</td><td class="expense">${fmtMoney(item.despesas)}</td><td class="expense">${fmtMoney(item.transferenciasEnviadas)}</td><td class="${item.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(item.saldoAtual)}</td></tr>`)
         .join('');
+      const cashBoxesTotals = (cashBoxes || []).reduce(
+        (acc, item) => ({
+          saldoAnterior: acc.saldoAnterior + (Number(item.saldoAnterior) || 0),
+          receitas: acc.receitas + (Number(item.receitas) || 0),
+          transferenciasRecebidas: acc.transferenciasRecebidas + (Number(item.transferenciasRecebidas) || 0),
+          despesas: acc.despesas + (Number(item.despesas) || 0),
+          transferenciasEnviadas: acc.transferenciasEnviadas + (Number(item.transferenciasEnviadas) || 0),
+          saldoAtual: acc.saldoAtual + (Number(item.saldoAtual) || 0),
+        }),
+        { saldoAnterior: 0, receitas: 0, transferenciasRecebidas: 0, despesas: 0, transferenciasEnviadas: 0, saldoAtual: 0 },
+      );
+      const cashBoxesTotalsHtml = cashBoxesHtml
+        ? `<tr class="cashBoxTotals"><td>Consolidado</td><td>${fmtMoney(cashBoxesTotals.saldoAnterior)}</td><td class="income">${fmtMoney(cashBoxesTotals.receitas)}</td><td class="income">${fmtMoney(cashBoxesTotals.transferenciasRecebidas)}</td><td class="expense">${fmtMoney(cashBoxesTotals.despesas)}</td><td class="expense">${fmtMoney(cashBoxesTotals.transferenciasEnviadas)}</td><td class="${cashBoxesTotals.saldoAtual < 0 ? 'expense' : 'total'}">${fmtMoney(cashBoxesTotals.saldoAtual)}</td></tr>`
+        : '';
       const detailHtml = cashBoxesHtml
-        ? `<table class="table"><thead><tr><th>Caixa</th><th>Saldo anterior</th><th>Entradas atuais</th><th>Saídas atuais</th><th>Saldo atual</th></tr></thead><tbody>${cashBoxesHtml}</tbody></table><p style="font-size:14px">Entradas e saídas incluem as transferências recebidas e enviadas por cada caixa.</p>${rowsHtml ? `<div style="height:14px"></div><table class="table"><thead><tr><th>Outras origens</th><th>Valor</th></tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}`
+        ? `<table class="table cashBoxTable"><thead><tr><th>Caixa</th><th>Saldo<br/>anterior</th><th>Receitas</th><th>Transf.<br/>recebidas</th><th>Despesas</th><th>Transf.<br/>enviadas</th><th>Saldo<br/>atual</th></tr></thead><tbody>${cashBoxesHtml}${cashBoxesTotalsHtml}</tbody></table><p class="cashBoxNote">Transferências internas aparecem simultaneamente como saída no caixa de origem e entrada no caixa de destino, sem alterar o saldo consolidado.</p>${rowsHtml ? `<div style="height:14px"></div><table class="table"><thead><tr><th>Outras origens</th><th>Valor</th></tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}`
         : `<table class="table"><thead><tr><th>Grupo</th><th>Valor</th></tr></thead><tbody>${rowsHtml || '<tr><td colspan="2">Nenhum lançamento encontrado nas origens configuradas para o período.</td></tr>'}</tbody></table>`;
       add(
         slideId,
@@ -10753,12 +10781,13 @@ function PrestacaoContasPage() {
       <div className={`prestacaoSlideCover ${saldoTotal < 0 ? 'negativeBalance' : ''}`}>
         <span>Resumo final</span>
         <h2>{fmtMoney(saldoTotal)}</h2>
-        <p>Saldo total ao final do período</p>
+        <p>{saldoAnteriorLabel}: {fmtMoney(saldoAnterior)}</p>
+        <p>Resultado do período: {fmtMoney(saldoPeriodo)}</p>
       </div>,
-      `<div class="kicker">Resumo final</div><h1>${safeHtml(period.label)}</h1><div class="cards"><div class="card income"><span>Entradas</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesas</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo total</span><b>${fmtMoney(saldoTotal)}</b></div></div><div class="footerMsg">Transparência com Responsabilidade</div>`,
+      `<div class="kicker">Resumo final conciliado</div><h1>${safeHtml(period.label)}</h1><div class="cards summaryCards"><div class="card ${saldoAnterior < 0 ? 'expense' : ''}"><span>${safeHtml(saldoAnteriorLabel)}</span><b>${fmtMoney(saldoAnterior)}</b></div><div class="card income"><span>Receitas do período</span><b>${fmtMoney(totalReceitas)}</b></div><div class="card expense"><span>Despesas do período</span><b>${fmtMoney(totalDespesas)}</b></div><div class="card"><span>Transferências internas</span><b>${fmtMoney(totalTransferenciasInternas)}</b></div><div class="card income"><span>Recebidas de caixas fora</span><b>${fmtMoney(transferenciasRecebidas)}</b></div><div class="card expense"><span>Enviadas para caixas fora</span><b>${fmtMoney(transferenciasEnviadas)}</b></div><div class="card ${saldoPeriodo < 0 ? 'expense' : 'income'}"><span>Resultado do período</span><b>${fmtMoney(saldoPeriodo)}</b></div><div class="card ${saldoTotal < 0 ? 'expense' : 'total'}"><span>Saldo final</span><b>${fmtMoney(saldoTotal)}</b></div></div><p class="summaryFormula">Saldo final = saldo anterior + receitas - despesas + transferências recebidas de fora - transferências enviadas para fora. Transferências internas são apenas informativas.</p><div class="footerMsg">Transparência com Responsabilidade</div>`,
     );
     return list;
-  }, [slideEnabled, period, caixaFiltroIds.length, months, saldoAnterior, totalReceitas, totalDespesas, totalTransferenciasInternas, transferenciasRecebidas, transferenciasEnviadas, transferenciasLiquidas, saldoPeriodo, saldoTotal, cofresSlideRows, totalCofresMissionarios, fontesCofres.length, dizimoPorGrupo, mediaEntradaMensal, dizimoIdeal, totalDizimoDistribuido, investimentosPorGrupo, totalInvestimentos, selectedInvestimentos.length, customReportGroups, igrejaNome, igrejaLogo, capaFrase]);
+  }, [slideEnabled, period, caixaFiltroIds.length, months, saldoAnterior, saldoAnteriorLabel, totalReceitas, totalDespesas, totalTransferenciasInternas, transferenciasRecebidas, transferenciasEnviadas, transferenciasLiquidas, saldoPeriodo, saldoTotal, cofresSlideRows, totalCofresMissionarios, fontesCofres.length, dizimoPorGrupo, mediaEntradaMensal, dizimoIdeal, totalDizimoDistribuido, investimentosPorGrupo, totalInvestimentos, selectedInvestimentos.length, customReportGroups, igrejaNome, igrejaLogo, capaFrase]);
   const imprimirSlides = () =>
     abrirImpressaoElemento('prestacao-slides-print-area', `Prestação de contas — ${period.label}`, {
       pageSize: 'landscape',
@@ -10925,6 +10954,10 @@ function PrestacaoContasPage() {
         </div>
       </div>
       <div className="prestacaoKpis">
+        <div className={`miniStat ${saldoAnterior < 0 ? 'expense' : ''}`}>
+          <span>{saldoAnteriorLabel}</span>
+          <b>{fmtMoney(saldoAnterior)}</b>
+        </div>
         <div className="miniStat income">
           <span>Entradas do período</span>
           <b>{fmtMoney(totalReceitas)}</b>
@@ -10934,7 +10967,7 @@ function PrestacaoContasPage() {
           <b>{fmtMoney(totalDespesas)}</b>
         </div>
         <div className="miniStat">
-          <span>Entre caixas selecionados</span>
+          <span>Transferências internas (informativas)</span>
           <b>{fmtMoney(totalTransferenciasInternas)}</b>
         </div>
         {transferenciasRecebidas > 0 && (
@@ -10954,7 +10987,7 @@ function PrestacaoContasPage() {
           <b>{fmtMoney(saldoPeriodo)}</b>
         </div>
         <div className={`miniStat ${saldoTotal < 0 ? 'expense' : 'total'}`}>
-          <span>Saldo total</span>
+          <span>Saldo final</span>
           <b>{fmtMoney(saldoTotal)}</b>
         </div>
       </div>
@@ -10973,6 +11006,11 @@ function PrestacaoContasPage() {
             </button>
           </div>
         </div>
+        {fontesSlideTable.error && (
+          <div className="errorBox">
+            Não foi possível carregar as origens dos slides: {fontesSlideTable.error.message || 'verifique as permissões do módulo Financeiro.'}
+          </div>
+        )}
         <div className="grid cols4 prestacaoInlineForm prestacaoOrigensForm">
           <div className="field prestacaoFieldRelatorio">
             <label>1. Relatório/slide de destino</label>
@@ -11002,7 +11040,7 @@ function PrestacaoContasPage() {
                   ...fonteForm,
                   tipo_origem: e.target.value,
                   origem_id: '',
-                  tipo_movimento: e.target.value === 'categoria_despesa' ? 'despesas' : 'receitas',
+                  tipo_movimento: e.target.value === 'caixa' ? 'ambos' : e.target.value === 'categoria_despesa' ? 'despesas' : 'receitas',
                 })
               }
             >
@@ -11024,10 +11062,17 @@ function PrestacaoContasPage() {
           </div>
           <div className="field prestacaoFieldMovimento">
             <label>4. Movimento considerado</label>
-            <select value={fonteForm.tipo_movimento} disabled={fonteForm.tipo_origem === 'categoria_despesa'} onChange={(e) => setFonteForm({ ...fonteForm, tipo_movimento: e.target.value })}>
-              <option value="receitas">Somente receitas</option>
-              <option value="despesas">Somente despesas</option>
-              <option value="ambos">Receitas e despesas</option>
+            <select value={fonteForm.tipo_movimento} disabled={fonteForm.tipo_origem !== 'tipo_receita'} onChange={(e) => setFonteForm({ ...fonteForm, tipo_movimento: e.target.value })}>
+              {fonteForm.tipo_origem === 'caixa' ? (
+                <option value="ambos">Movimentação completa do caixa</option>
+              ) : fonteForm.tipo_origem === 'categoria_despesa' ? (
+                <option value="despesas">Somente despesas</option>
+              ) : (
+                <>
+                  <option value="receitas">Somente receitas</option>
+                  <option value="ambos">Receitas vinculadas</option>
+                </>
+              )}
             </select>
           </div>
           <div className="field prestacaoGrupoField">
@@ -11065,10 +11110,14 @@ function PrestacaoContasPage() {
                         : f.tipo_origem === 'caixa' ? 'Caixa' : f.tipo_origem === 'tipo_receita' ? 'Tipo de receita' : 'Categoria de despesa'}
                     </small>
                   </td>
-                  <td>{f.tipo_movimento === 'ambos' ? 'Receitas e despesas' : f.tipo_movimento === 'despesas' ? 'Despesas' : 'Receitas'}</td>
+                  <td>{f.tipo_origem === 'caixa' ? 'Movimentação completa' : f.tipo_movimento === 'ambos' ? 'Receitas vinculadas' : f.tipo_movimento === 'despesas' ? 'Despesas' : 'Receitas'}</td>
                   <td>{f.grupo || f.nome_exibicao || '—'}</td>
                   <td>
-                    <b>{resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.count || 0} lançamento(s)</b>
+                    <b>
+                      {resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.cashBoxes?.length
+                        ? `${resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.cashBoxes?.length || 0} caixa(s)`
+                        : `${resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.count || 0} lançamento(s)`}
+                    </b>
                     <small className="muted blockText">{fmtMoney(resultadoPorRelatorio[String(f.prestacao_relatorio_id)]?.total || 0)}</small>
                   </td>
                   <td>

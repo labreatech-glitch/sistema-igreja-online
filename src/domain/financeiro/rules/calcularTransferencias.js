@@ -23,6 +23,9 @@ export function transferenciaResumoPerimetro(rows = [], caixaIds = []) {
       const origemIncluida = ids.size === 0 || ids.has(String(row?.caixa_origem_id || ''));
       const destinoIncluido = ids.size === 0 || ids.has(String(row?.caixa_destino_id || ''));
 
+      if (destinoIncluido) resumo.recebidasMovimentadas += Math.abs(valor);
+      if (origemIncluida) resumo.enviadasMovimentadas += Math.abs(valor);
+
       if (origemIncluida && destinoIncluido) resumo.internas += valor;
       else if (origemIncluida) resumo.enviadas += valor;
       else if (destinoIncluido) resumo.recebidas += valor;
@@ -31,6 +34,6 @@ export function transferenciaResumoPerimetro(rows = [], caixaIds = []) {
       resumo.liquido = resumo.recebidas - resumo.enviadas;
       return resumo;
     },
-    { internas: 0, enviadas: 0, recebidas: 0, movimentadas: 0, liquido: 0 },
+    { internas: 0, enviadas: 0, recebidas: 0, recebidasMovimentadas: 0, enviadasMovimentadas: 0, movimentadas: 0, liquido: 0 },
   );
 }
