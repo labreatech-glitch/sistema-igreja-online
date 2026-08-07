@@ -5750,3 +5750,43 @@ tbody tr:hover td{background:#eef6fb!important}
 }
 /* v2.27.2 — catálogo patrimonial padrão e orientação contábil */
 .patrimonioCategoryGuide{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px}.patrimonioCategoryGuide p{margin:5px 0 4px;max-width:820px}.patrimonioCategoryGuideActions{justify-content:flex-end;flex-shrink:0}.patrimonioCategoryCatalogTable table{min-width:1060px}.patrimonioCategoryCatalogTable td:first-child{min-width:260px;max-width:340px}.patrimonioCategoryCatalogTable td:last-child{min-width:260px}.patrimonioAccountingNotice{margin-bottom:14px}.patrimonioCatalogFooter{justify-content:space-between;margin-top:16px}.patrimonioCatalogFooter .link{max-width:70%}@media(max-width:760px){.patrimonioCategoryGuide{align-items:stretch;flex-direction:column}.patrimonioCategoryGuideActions{justify-content:flex-start}.patrimonioCategoryGuideActions button{flex:1}.patrimonioCatalogFooter{align-items:stretch;flex-direction:column}.patrimonioCatalogFooter .link{max-width:none}.patrimonioCatalogFooter button{width:100%}}
+
+/* Grupos gerenciais: descrição compacta e ações simétricas na mesma linha */
+.groupsManagementTable{overflow-x:hidden}
+.groupsManagementTable table{min-width:0!important;table-layout:fixed}
+.groupsManagementTable th:nth-child(1),.groupsManagementTable td:nth-child(1){width:14%}
+.groupsManagementTable th:nth-child(2),.groupsManagementTable td:nth-child(2){width:38%}
+.groupsManagementTable th:nth-child(3),.groupsManagementTable td:nth-child(3){width:6%;text-align:center}
+.groupsManagementTable th:nth-child(4),.groupsManagementTable td:nth-child(4),
+.groupsManagementTable th:nth-child(5),.groupsManagementTable td:nth-child(5){width:6%;text-align:center}
+.groupsManagementTable th:nth-child(6),.groupsManagementTable td:nth-child(6){width:8%;text-align:center}
+.groupsManagementTable th:nth-child(7),.groupsManagementTable td:nth-child(7){width:22%}
+.groupDescriptionCell{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;line-height:1.35;overflow-wrap:anywhere}
+.groupsManagementTable .actionsCell{padding:8px 10px!important;vertical-align:middle;text-align:center;white-space:normal}
+.groupsManagementTable .actionsInline{
+  display:grid!important;
+  grid-template-columns:repeat(3,minmax(72px,1fr));
+  align-items:center;
+  justify-content:center;
+  gap:6px!important;
+  width:100%;
+  margin:0 auto;
+}
+.groupsManagementTable .actionsInline .smallBtn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:100%!important;
+  min-width:0!important;
+  max-width:none!important;
+  min-height:34px;
+  margin:0!important;
+  padding:6px 7px!important;
+  white-space:nowrap;
+  box-sizing:border-box;
+}
+@media(max-width:1100px){
+  .groupsManagementTable{overflow-x:auto}
+  .groupsManagementTable table{min-width:1080px!important;table-layout:fixed}
+  .groupDescriptionCell{-webkit-line-clamp:2}
+}

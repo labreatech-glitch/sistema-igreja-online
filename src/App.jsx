@@ -4,6 +4,7 @@ import { formatCep, formatCnpj, formatCpf, formatCpfCnpj, formatPhone, isValidCp
 import { transferenciaAtiva, transferenciaImpacto, transferenciaResumoPerimetro } from './domain/financeiro/rules/calcularTransferencias.js';
 import { calcularPosicaoCaixaPrestacao } from './domain/financeiro/rules/calcularPrestacao.js';
 import { calcularResumoFinanceiro } from './domain/financeiro/rules/calcularSaldo.js';
+import { construirPrevisaoDespesas, referenciaAdd, totaisPrevisao } from './domain/financeiro/rules/calcularPrevisaoDespesas.js';
 import { calcularDepreciacaoPatrimonio } from './domain/patrimonio/rules/calcularDepreciacao.js';
 import { codigosEtiquetaRepetidos, normalizarCodigoEtiquetaPatrimonio, patrimonioEstadoFromSheet, patrimonioSheetHeader } from './domain/patrimonio/rules/preCadastro.js';
 import { PATRIMONIO_CATEGORIAS_PADRAO, categoriasPatrimonioPadraoAusentes } from './domain/patrimonio/catalog/categoriasPadrao.js';
@@ -13,7 +14,7 @@ import QRCode from 'qrcode';
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.28.2';
+const APP_VERSION = '2.35.7';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -150,11 +151,11 @@ const DEFAULT_ROLE_DESCRIPTIONS = {
 };
 const USER_ROLE_ENTRIES = Object.entries(DEFAULT_ROLE_LABELS);
 const ROLE_MODULES = {
-  master: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
-  admin: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
-  gerente: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'cadastros'],
+  master: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'contabilidade', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
+  admin: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'contabilidade', 'cadastros', 'usuarios', 'configuracoes', 'auditoria', 'logs', 'tutorial'],
+  gerente: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'contabilidade', 'cadastros'],
   secretario: ['dashboard', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros'],
-  tesoureiro: ['dashboard', 'financeiro', 'cadastros'],
+  tesoureiro: ['dashboard', 'financeiro', 'contabilidade', 'cadastros'],
   operador: ['dashboard', 'financeiro', 'secretaria', 'ebd', 'patrimonio'],
   consulta: ['dashboard'],
   membro: ['portal'],
@@ -165,6 +166,7 @@ const PERMISSION_MENUS = [
   { id: 'secretaria', label: 'Secretaria' },
   { id: 'ebd', label: 'EBD' },
   { id: 'patrimonio', label: 'Patrimônio' },
+  { id: 'contabilidade', label: 'Contabilidade' },
   { id: 'portal', label: 'Portal do Membro' },
   { id: 'cadastros', label: 'Cadastros' },
   { id: 'usuarios', label: 'Usuários' },
@@ -269,6 +271,7 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: true, update: true, delete: false },
     ebd: { view: true, create: true, update: true, delete: false },
     patrimonio: { view: true, create: true, update: true, delete: false },
+    contabilidade: { view: true, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   secretario: {
@@ -287,6 +290,7 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: false, create: false, update: false, delete: false },
     ebd: { view: false, create: false, update: false, delete: false },
     patrimonio: { view: false, create: false, update: false, delete: false },
+    contabilidade: { view: true, create: true, update: true, delete: false },
     cadastros: { view: true, create: true, update: true, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
@@ -296,6 +300,7 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: true, update: false, delete: false },
     ebd: { view: true, create: true, update: false, delete: false },
     patrimonio: { view: true, create: true, update: false, delete: false },
+    contabilidade: { view: false, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   consulta: {
@@ -304,6 +309,7 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: false, update: false, delete: false },
     ebd: { view: true, create: false, update: false, delete: false },
     patrimonio: { view: true, create: false, update: false, delete: false },
+    contabilidade: { view: false, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   membro: {
@@ -313,6 +319,7 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: false },
     ebd: { view: false },
     patrimonio: { view: false },
+    contabilidade: { view: false },
     configuracoes: { view: false },
   },
 };
@@ -363,9 +370,19 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
   },
   membro: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, false])),
 };
-const TENANT_TABLES = new Set(['membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
+const TENANT_TABLES = new Set(['contabil_exercicios', 'contabil_plano_contas', 'contabil_configuracoes', 'contabil_contas_referenciais', 'contabil_lancamentos', 'contabil_partidas', 'membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'grupos_gerenciais_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
 TENANT_TABLES.add('transferencias_agendadas');
 const TenantContext = React.createContext({ empresaId: null, isMaster: false });
+
+// Compatibilidade defensiva para páginas antigas do módulo Contabilidade.
+// Mantém o mesmo contrato do escopo atual sem criar um segundo contexto.
+function useEmpresaScope() {
+  const tenant = React.useContext(TenantContext);
+  return {
+    empresaId: tenant?.empresaId || null,
+    isMaster: Boolean(tenant?.isMaster),
+  };
+}
 const FilterContext = React.createContext({
   referencia: '2026-01',
   caixaId: '',
@@ -484,7 +501,7 @@ const PermissionContext = React.createContext({
 });
 
 const permissionModuleKey = (moduleId = '') => (moduleId === 'logs' ? 'auditoria' : moduleId);
-const moduleRouteIds = () => ['dashboard', 'assinatura', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'cadastros', 'usuarios', 'configuracoes', 'logs', 'tutorial'];
+const moduleRouteIds = () => ['dashboard', 'assinatura', 'financeiro', 'secretaria', 'ebd', 'patrimonio', 'portal', 'contabilidade', 'cadastros', 'usuarios', 'configuracoes', 'logs', 'tutorial'];
 
 function normalizeMenusConfig(rawMenus = {}) {
   const menus = {};
@@ -647,6 +664,12 @@ function tableModuleKey(table) {
     prestacao_relatorios: 'financeiro',
     prestacao_grupos_relatorio: 'financeiro',
     prestacao_fontes_slide: 'financeiro',
+    contabil_exercicios: 'contabilidade',
+    contabil_plano_contas: 'contabilidade',
+    contabil_configuracoes: 'contabilidade',
+    contabil_contas_referenciais: 'contabilidade',
+    contabil_lancamentos: 'contabilidade',
+    contabil_partidas: 'contabilidade',
     membros: 'secretaria',
     membro_historico: 'secretaria',
     filhos_dependentes: 'secretaria',
@@ -1658,6 +1681,11 @@ const AUDIT_TABLE_LABELS = {
   tipos_caixa: 'Caixas',
   tipos_receita: 'Tipos de receita',
   categorias_despesas: 'Categorias de despesa',
+  grupos_gerenciais_despesas: 'Grupos gerenciais de despesas',
+  contabil_exercicios: 'Exercícios contábeis',
+  contabil_plano_contas: 'Plano de contas contábil',
+  contabil_configuracoes: 'Configurações contábeis',
+  contabil_contas_referenciais: 'Contas referenciais ECF',
   formas_pagamento: 'Formas de pagamento',
   centros_custo: 'Centros de custo',
   lancamentos_financeiros: 'Livro caixa',
@@ -2212,6 +2240,15 @@ function EntityForm({ fields, initial, onCancel, onSave, saving, gridClass = 'co
     return base;
   });
   const set = (name, val) => setForm((f) => ({ ...f, [name]: val }));
+  const setFieldValue = (field, value) => {
+    setForm((current) => {
+      const next = { ...current, [field.name]: value };
+      if (typeof field.onChange === 'function') {
+        return field.onChange({ value, form: next, previousForm: current }) || next;
+      }
+      return next;
+    });
+  };
   const persistableForm = () =>
     fields.reduce((acc, f) => {
       if (f.type !== 'custom' && f.name) acc[f.name] = form[f.name];
@@ -2268,7 +2305,7 @@ function EntityForm({ fields, initial, onCancel, onSave, saving, gridClass = 'co
               {f.label}
               {f.required ? ' *' : ''}
             </label>
-            <FieldInput field={f} value={form[f.name]} onChange={(v) => set(f.name, v)} onQuickCreate={setQuickField} onCepFill={onCepFill} form={form} setForm={setForm} initial={initial} />
+            <FieldInput field={f} value={form[f.name]} onChange={(v) => setFieldValue(f, v)} onQuickCreate={setQuickField} onCepFill={onCepFill} form={form} setForm={setForm} initial={initial} />
             {f.help && <div className="muted smallText">{f.help}</div>}
           </div>
         ))}
@@ -2293,7 +2330,7 @@ function EntityForm({ fields, initial, onCancel, onSave, saving, gridClass = 'co
 /* =========================================================
    PÁGINA CRUD GENÉRICA (lista + modal de novo/editar)
 ========================================================= */
-function CrudPage({ table, title, fields, columns, order = 'created_at', ascending = false, onAfterSave, searchKeys = [], extraRows, moduleKey, createLabel, topContent = null, summaryRender = null, rowActions = null, compact = false, softDeleteOnly = false, preparePayload = null }) {
+function CrudPage({ table, title, fields, columns, order = 'created_at', ascending = false, onAfterSave, searchKeys = [], extraRows, moduleKey, createLabel, topContent = null, summaryRender = null, rowActions = null, compact = false, softDeleteOnly = false, showActiveToggle = false, canRemoveRow = null, beforeDelete = null, preparePayload = null, tableClassName = '' }) {
   const tenant = React.useContext(TenantContext);
   const access = usePermissions();
   const subscriptionAccess = useSubscriptionAccess();
@@ -2399,6 +2436,10 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
       push('Seu perfil não tem permissão para excluir neste módulo.', 'error');
       return;
     }
+    if (typeof canRemoveRow === 'function' && !canRemoveRow(row)) {
+      push('Este registro possui vínculos e não pode ser excluído. Inative-o para preservar o histórico.', 'error');
+      return;
+    }
     if (!secureConfirmed && !confirm('Excluir este registro? Esta ação não pode ser desfeita.')) return;
     if (permissionModule === 'financeiro' && !secureConfirmed) {
       setSecureAction({
@@ -2413,6 +2454,19 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
         await ensureFinancePeriodOpen(row);
       } catch (closureError) {
         push(closureError.message, 'error');
+        setSecureAction(null);
+        return;
+      }
+    }
+    if (typeof beforeDelete === 'function') {
+      try {
+        const result = await beforeDelete(row);
+        if (result === false) {
+          setSecureAction(null);
+          return;
+        }
+      } catch (validationError) {
+        push(validationError?.message || 'Não foi possível validar a exclusão.', 'error');
         setSecureAction(null);
         return;
       }
@@ -2491,7 +2545,7 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
         </div>
       </div>
       {typeof summaryRender === 'function' && summaryRender({ filtered, data, rows })}
-      <div className="tablewrap">
+      <div className={`tablewrap ${tableClassName}`.trim()}>
         <table>
           <thead>
             <tr>
@@ -2529,13 +2583,13 @@ function CrudPage({ table, title, fields, columns, order = 'created_at', ascendi
                         Editar
                       </button>
                     )}
-                    {softDeleteOnly && canUpdate && (
+                    {(softDeleteOnly || showActiveToggle) && canUpdate && (
                       <button className={`smallBtn ${r.ativo === false ? 'green' : 'red'}`} onClick={() => toggleActive(r)}>
                         {r.ativo === false ? 'Reativar' : 'Inativar'}
                       </button>
                     )}
                     {!softDeleteOnly && canDelete && (
-                      <button className="smallBtn red" onClick={() => remove(r)}>
+                      <button className="smallBtn red" disabled={typeof canRemoveRow === 'function' && !canRemoveRow(r)} title={typeof canRemoveRow === 'function' && !canRemoveRow(r) ? 'Existem categorias ou despesas vinculadas. Inative o grupo.' : 'Excluir grupo sem vínculos'} onClick={() => remove(r)}>
                         Excluir
                       </button>
                     )}
@@ -3710,9 +3764,77 @@ function PrestacaoGruposRelatorioPage() {
   );
 }
 
+const DESPESA_CLASSIFICACAO_OPTIONS = [
+  { value: 'fixa', label: 'Fixa' },
+  { value: 'variavel', label: 'Variável' },
+  { value: 'mista', label: 'Mista' },
+  { value: 'eventual', label: 'Eventual' },
+];
+const despesaClassificacaoLabel = (value) => DESPESA_CLASSIFICACAO_OPTIONS.find((item) => item.value === value)?.label || 'Não classificada';
+
+function GruposGerenciaisDespesasPage() {
+  const categorias = useTable('categorias_despesas', { order: null, select: 'id,grupo_gerencial_id' });
+  const despesas = useTable('despesas', { order: null, select: 'id,grupo_gerencial_id' });
+  const usoPorGrupo = useMemo(() => {
+    const mapa = {};
+    const contar = (grupoId, campo) => {
+      if (!grupoId) return;
+      const key = String(grupoId);
+      mapa[key] ||= { categorias: 0, despesas: 0 };
+      mapa[key][campo] += 1;
+    };
+    (categorias.rows || []).forEach((row) => contar(row.grupo_gerencial_id, 'categorias'));
+    (despesas.rows || []).forEach((row) => contar(row.grupo_gerencial_id, 'despesas'));
+    return mapa;
+  }, [categorias.rows, despesas.rows]);
+
+  const withUsage = useCallback((rows) => rows.map((row) => {
+    const uso = usoPorGrupo[String(row.id)] || { categorias: 0, despesas: 0 };
+    return { ...row, categorias_vinculadas: uso.categorias, despesas_vinculadas: uso.despesas, total_vinculos: uso.categorias + uso.despesas };
+  }), [usoPorGrupo]);
+
+  const canRemove = useCallback((row) => Number(row.total_vinculos || 0) === 0, []);
+
+  return (
+    <CrudPage
+      table="grupos_gerenciais_despesas"
+      title="Grupos Gerenciais de Despesas"
+      order="ordem"
+      ascending
+      moduleKey="financeiro"
+      createLabel="+ Novo grupo"
+      searchKeys={['nome', 'descricao']}
+      extraRows={withUsage}
+      showActiveToggle
+      canRemoveRow={canRemove}
+      tableClassName="groupsManagementTable"
+      columns={[
+        { key: 'nome', label: 'Nome' },
+        { key: 'descricao', label: 'Descrição', render: (row) => <div className="groupDescriptionCell">{row.descricao || '—'}</div> },
+        { key: 'ordem', label: 'Ordem' },
+        { key: 'categorias_vinculadas', label: 'Categorias', render: (row) => Number(row.categorias_vinculadas || 0) },
+        { key: 'despesas_vinculadas', label: 'Despesas', render: (row) => Number(row.despesas_vinculadas || 0) },
+        { key: 'ativo', label: 'Situação', render: (row) => (row.ativo ? 'Ativo' : 'Inativo') },
+      ]}
+      fields={[
+        { name: 'nome', label: 'Nome do grupo gerencial', required: true, full: true },
+        { name: 'descricao', label: 'Descrição', type: 'textarea', full: true, placeholder: 'Explique quais despesas pertencem a este grupo.' },
+        { name: 'ordem', label: 'Ordem de exibição', type: 'number', defaultValue: 50 },
+        { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+      ]}
+      topContent={
+        <div className="infoBox" style={{ marginBottom: 12 }}>
+          <b>Gerenciamento:</b> crie, edite, ordene e inative grupos. A exclusão só fica disponível quando não existem categorias nem despesas vinculadas. Os grupos da Prestação de Contas continuam independentes.
+        </div>
+      }
+    />
+  );
+}
+
 function CategoriasDespesasPage() {
   const relatorios = useLookup('prestacao_relatorios');
   const grupos = useLookup('prestacao_grupos_relatorio');
+  const gruposGerenciais = useLookup('grupos_gerenciais_despesas');
   const relatorioMap = useMemo(() => Object.fromEntries((relatorios.rows || []).map((r) => [r.id, r])), [relatorios.rows]);
   const grupoMap = useMemo(() => Object.fromEntries((grupos.rows || []).map((g) => [g.id, g])), [grupos.rows]);
   const relatorioOptions = relatorios.options;
@@ -3766,6 +3888,8 @@ function CategoriasDespesasPage() {
       searchKeys={['nome', 'relatorio_prestacao_grupo']}
       columns={[
         { key: 'nome', label: 'Nome' },
+        { key: 'grupo_gerencial_id', label: 'Grupo gerencial', render: (row) => gruposGerenciais.rows.find((grupo) => grupo.id === row.grupo_gerencial_id)?.nome || 'Não definido' },
+        { key: 'classificacao_padrao', label: 'Classificação', render: (row) => despesaClassificacaoLabel(row.classificacao_padrao) },
         {
           key: 'prestacao_relatorio_id',
           label: 'Relatório/slide',
@@ -3796,6 +3920,20 @@ function CategoriasDespesasPage() {
           full: true,
         },
         {
+          name: 'grupo_gerencial_id',
+          label: 'Grupo gerencial',
+          type: 'quickselect',
+          options: gruposGerenciais.options,
+          quickCreate: quickCreate('grupos_gerenciais_despesas', gruposGerenciais.reload, 'id', [
+            { name: 'nome', label: 'Nome do grupo gerencial', required: true },
+            { name: 'descricao', label: 'Descrição', type: 'textarea', full: true },
+            { name: 'ordem', label: 'Ordem', type: 'number', defaultValue: 50 },
+            { name: 'ativo', label: 'Ativo', type: 'checkbox', defaultValue: true },
+          ]),
+          help: 'Organização para análises financeiras. Não interfere nos grupos dos slides.',
+        },
+        { name: 'classificacao_padrao', label: 'Classificação padrão', type: 'select', options: DESPESA_CLASSIFICACAO_OPTIONS, help: 'Será sugerida nos novos lançamentos e poderá ser alterada em cada despesa.' },
+        {
           name: 'prestacao_relatorio_id',
           label: 'Relatório da prestação de contas',
           type: 'quickselect',
@@ -3822,11 +3960,212 @@ function CategoriasDespesasPage() {
       ]}
       topContent={
         <div className="infoBox" style={{ marginBottom: 12 }}>
-          <b>Prestação de contas:</b> agora você pode cadastrar quantos relatórios/slides e grupos quiser. Depois marque cada categoria uma vez; os lançamentos entram automaticamente na prestação de contas.
+          <b>Organização financeira:</b> grupo gerencial e classificação são independentes dos slides. <b>Prestação de contas:</b> agora você pode cadastrar quantos relatórios/slides e grupos quiser. Depois marque cada categoria uma vez; os lançamentos entram automaticamente na prestação de contas.
         </div>
       }
     />
   );
+}
+
+
+const DESPESA_PERIODICIDADE_OPTIONS = [
+  { value: 'mensal', label: 'Mensal' },
+  { value: 'trimestral', label: 'Trimestral' },
+  { value: 'semestral', label: 'Semestral' },
+  { value: 'anual', label: 'Anual' },
+];
+const despesaPeriodicidadeLabel = (value) => DESPESA_PERIODICIDADE_OPTIONS.find((item) => item.value === value)?.label || 'Não definida';
+
+function PlanejamentoDespesasPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const caixas = useLookup('tipos_caixa');
+  const credores = useLookup('credores');
+  const grupos = useLookup('grupos_gerenciais_despesas');
+  const { toasts, push, close } = useToasts();
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState('');
+  const canUpdate = access.can('financeiro', 'update');
+  const caixaMap = useMemo(() => Object.fromEntries((caixas.rows || []).map((row) => [row.id, caixaNomeExibicao(row)])), [caixas.rows]);
+  const credorMap = useMemo(() => Object.fromEntries((credores.rows || []).map((row) => [row.id, row.nome])), [credores.rows]);
+  const grupoMap = useMemo(() => Object.fromEntries((grupos.rows || []).map((row) => [row.id, row.nome])), [grupos.rows]);
+  const rows = useMemo(() => (categorias.rows || []).filter((row) => !search || `${row.nome} ${grupoMap[row.grupo_gerencial_id] || ''}`.toLowerCase().includes(search.toLowerCase())), [categorias.rows, search, grupoMap]);
+  const openEdit = (row) => setEditing({
+    ...row,
+    recorrente_padrao: !!row.recorrente_padrao,
+    incluir_previsao_padrao: !!row.incluir_previsao_padrao,
+    periodicidade_padrao: row.periodicidade_padrao || 'mensal',
+    dia_vencimento_padrao: row.dia_vencimento_padrao || 10,
+    mes_vencimento_padrao: row.mes_vencimento_padrao || 1,
+    valor_previsto_padrao: row.valor_previsto_padrao ?? '',
+    parcela_fixa_prevista: row.parcela_fixa_prevista ?? '',
+    tolerancia_variacao_percentual: row.tolerancia_variacao_percentual ?? 10,
+    tipo_caixa_padrao_id: row.tipo_caixa_padrao_id || '',
+    credor_padrao_id: row.credor_padrao_id || '',
+  });
+  const save = async () => {
+    if (!editing?.id || !canUpdate) return;
+    const day = Number(editing.dia_vencimento_padrao || 0);
+    if (editing.recorrente_padrao && (day < 1 || day > 31)) return push('Informe um dia provável entre 1 e 31.', 'error');
+    setSaving(true);
+    const payload = {
+      recorrente_padrao: !!editing.recorrente_padrao,
+      incluir_previsao_padrao: !!editing.incluir_previsao_padrao,
+      periodicidade_padrao: editing.recorrente_padrao ? (editing.periodicidade_padrao || 'mensal') : null,
+      dia_vencimento_padrao: editing.recorrente_padrao ? day : null,
+      mes_vencimento_padrao: editing.periodicidade_padrao === 'anual' ? Number(editing.mes_vencimento_padrao || 1) : null,
+      valor_previsto_padrao: editing.valor_previsto_padrao === '' ? null : Number(editing.valor_previsto_padrao),
+      parcela_fixa_prevista: editing.parcela_fixa_prevista === '' ? null : Number(editing.parcela_fixa_prevista),
+      tolerancia_variacao_percentual: editing.tolerancia_variacao_percentual === '' ? null : Number(editing.tolerancia_variacao_percentual),
+      tipo_caixa_padrao_id: editing.tipo_caixa_padrao_id || null,
+      credor_padrao_id: editing.credor_padrao_id || null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('categorias_despesas').update(payload).eq('id', editing.id).eq('empresa_id', tenant.empresaId);
+    setSaving(false);
+    if (error) return push(error.message, 'error');
+    push('Planejamento da categoria atualizado. Nenhuma despesa foi gerada.');
+    setEditing(null);
+    categorias.reload();
+  };
+  return <div>
+    <ToastStack toasts={toasts} close={close} />
+    <div className="hero compactHero"><h1>🗓️ Planejamento de despesas</h1><p>Cadastre recorrência, vencimento e valores de referência sem gerar lançamentos no Livro Caixa.</p></div>
+    <div className="infoBox" style={{marginBottom:12}}><b>Fase 2:</b> estes dados servem somente como parâmetros de previsão. O saldo real continua baseado exclusivamente nas despesas confirmadas.</div>
+    <div className="toolbar"><input placeholder="Pesquisar categoria ou grupo..." value={search} onChange={(e)=>setSearch(e.target.value)} /></div>
+    <div className="tablewrap"><table><thead><tr><th>Categoria</th><th>Grupo</th><th>Classificação</th><th>Recorrência</th><th>Vencimento</th><th>Valor base</th><th>Caixa</th><th>Ações</th></tr></thead><tbody>
+      {rows.map((row)=><tr key={row.id}><td><b>{row.nome}</b></td><td>{grupoMap[row.grupo_gerencial_id] || 'Não definido'}</td><td>{despesaClassificacaoLabel(row.classificacao_padrao)}</td><td>{row.recorrente_padrao ? despesaPeriodicidadeLabel(row.periodicidade_padrao) : 'Não recorrente'}</td><td>{row.recorrente_padrao ? `Dia ${row.dia_vencimento_padrao || '—'}${row.periodicidade_padrao === 'anual' ? ` / mês ${row.mes_vencimento_padrao || '—'}` : ''}` : '—'}</td><td>{row.valor_previsto_padrao == null ? 'Histórico' : fmtMoney(row.valor_previsto_padrao)}</td><td>{caixaMap[row.tipo_caixa_padrao_id] || 'Não definido'}</td><td><button className="smallBtn secondary" disabled={!canUpdate} onClick={()=>openEdit(row)}>Configurar</button></td></tr>)}
+      {!rows.length && <tr><td colSpan={8} className="center muted">Nenhuma categoria encontrada.</td></tr>}
+    </tbody></table></div>
+    {editing && <Modal title={`Planejamento — ${editing.nome}`} onClose={()=>!saving&&setEditing(null)} wide><div className="grid cols2">
+      <div className="field"><label>Recorrente</label><select value={editing.recorrente_padrao?'sim':'nao'} onChange={(e)=>setEditing({...editing,recorrente_padrao:e.target.value==='sim'})}><option value="nao">Não</option><option value="sim">Sim</option></select></div>
+      <div className="field"><label>Incluir na previsão padrão</label><select value={editing.incluir_previsao_padrao?'sim':'nao'} onChange={(e)=>setEditing({...editing,incluir_previsao_padrao:e.target.value==='sim'})}><option value="nao">Não</option><option value="sim">Sim</option></select></div>
+      <div className="field"><label>Periodicidade</label><select disabled={!editing.recorrente_padrao} value={editing.periodicidade_padrao} onChange={(e)=>setEditing({...editing,periodicidade_padrao:e.target.value})}>{DESPESA_PERIODICIDADE_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+      <div className="field"><label>Dia provável do vencimento</label><input disabled={!editing.recorrente_padrao} type="number" min="1" max="31" value={editing.dia_vencimento_padrao} onChange={(e)=>setEditing({...editing,dia_vencimento_padrao:e.target.value})}/></div>
+      {editing.periodicidade_padrao==='anual' && <div className="field"><label>Mês do vencimento anual</label><input type="number" min="1" max="12" value={editing.mes_vencimento_padrao} onChange={(e)=>setEditing({...editing,mes_vencimento_padrao:e.target.value})}/></div>}
+      <div className="field"><label>Valor previsto padrão</label><input type="number" min="0" step="0.01" value={editing.valor_previsto_padrao} onChange={(e)=>setEditing({...editing,valor_previsto_padrao:e.target.value})}/><small className="muted">Deixe vazio para usar média histórica nas classes variáveis.</small></div>
+      {editing.classificacao_padrao==='mista' && <div className="field"><label>Parcela fixa prevista</label><input type="number" min="0" step="0.01" value={editing.parcela_fixa_prevista} onChange={(e)=>setEditing({...editing,parcela_fixa_prevista:e.target.value})}/></div>}
+      <div className="field"><label>Tolerância de variação (%)</label><input type="number" min="0" max="999" step="0.01" value={editing.tolerancia_variacao_percentual} onChange={(e)=>setEditing({...editing,tolerancia_variacao_percentual:e.target.value})}/></div>
+      <div className="field"><label>Caixa normalmente utilizado</label><select value={editing.tipo_caixa_padrao_id} onChange={(e)=>setEditing({...editing,tipo_caixa_padrao_id:e.target.value})}><option value="">Não definido</option>{caixas.options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+      <div className="field"><label>Fornecedor/credor padrão</label><select value={editing.credor_padrao_id} onChange={(e)=>setEditing({...editing,credor_padrao_id:e.target.value})}><option value="">Não definido</option>{credores.options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+    </div><div className="row" style={{justifyContent:'flex-end',marginTop:16}}><button className="secondary" disabled={saving} onClick={()=>setEditing(null)}>Cancelar</button><button disabled={saving||!canUpdate} onClick={save}>{saving?'Salvando…':'Salvar planejamento'}</button></div></Modal>}
+  </div>;
+}
+
+
+function PainelPrevisaoFinanceiraPage() {
+  const { referencia } = useGlobalFilters();
+  const [ref, setRef] = useState(() => ensureReferencia(referencia || currentReferencia()));
+  const [mesesHistorico, setMesesHistorico] = useState(6);
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const despesas = useTable('despesas', { order: 'data', ascending: false });
+  const receitas = useTable('lancamentos_financeiros', { order: 'data', ascending: false });
+  const grupos = useLookup('grupos_gerenciais_despesas');
+  const caixas = useLookup('tipos_caixa');
+  const linhas = useMemo(() => construirPrevisaoDespesas({ categorias: categorias.rows, despesas: despesas.rows, referencia: ref, mesesHistorico }), [categorias.rows, despesas.rows, ref, mesesHistorico]);
+  const totais = useMemo(() => totaisPrevisao(linhas), [linhas]);
+  const grupoMap = useMemo(() => Object.fromEntries((grupos.rows || []).map((row)=>[row.id,row.nome])), [grupos.rows]);
+  const caixaMap = useMemo(() => Object.fromEntries((caixas.rows || []).map((row)=>[row.id,caixaNomeExibicao(row)])), [caixas.rows]);
+  const refsHistorico = useMemo(() => new Set(Array.from({length:mesesHistorico},(_,i)=>referenciaAdd(ref,-(i+1)))), [ref,mesesHistorico]);
+  const receitaPrevista = useMemo(() => {
+    const byRef = new Map([...refsHistorico].map((item)=>[item,0]));
+    (receitas.rows || []).forEach((row)=>{ if(byRef.has(row.referencia)) byRef.set(row.referencia, byRef.get(row.referencia)+(Number(row.valor)||0)); });
+    return byRef.size ? [...byRef.values()].reduce((a,b)=>a+b,0)/byRef.size : 0;
+  }, [receitas.rows, refsHistorico]);
+  const saldoAtual = useMemo(() => (receitas.rows || []).reduce((sum,row)=>sum+(Number(row.valor)||0),0) - (despesas.rows || []).reduce((sum,row)=>sum+(Number(row.valor)||0),0), [receitas.rows, despesas.rows]);
+  const despesasRestantes = Math.max(0, totais.previsto - totais.realizado);
+  const receitasRealizadasRef = (receitas.rows || []).filter((row)=>row.referencia===ref).reduce((sum,row)=>sum+(Number(row.valor)||0),0);
+  const receitaRestantePrevista = Math.max(0, receitaPrevista - receitasRealizadasRef);
+  const saldoProjetado = saldoAtual + receitaRestantePrevista - despesasRestantes;
+  const proximas = [...linhas].sort((a,b)=>(a.categoria.dia_vencimento_padrao||31)-(b.categoria.dia_vencimento_padrao||31));
+  return <div>
+    <div className="hero compactHero"><h1>📈 Previsão financeira</h1><p>Previsto versus realizado, próximas despesas e projeção conservadora de saldo.</p></div>
+    <div className="toolbar"><div className="row"><div className="field compact"><label>Referência</label><input type="month" value={ref} onChange={(e)=>setRef(e.target.value)}/></div><div className="field compact"><label>Média histórica</label><select value={mesesHistorico} onChange={(e)=>setMesesHistorico(Number(e.target.value))}><option value={3}>3 meses</option><option value={6}>6 meses</option><option value={12}>12 meses</option></select></div></div></div>
+    <div className="grid auto">
+      <div className="card kpi"><div className="label">Despesas previstas</div><div className="value">{fmtMoney(totais.previsto)}</div></div>
+      <div className="card kpi"><div className="label">Despesas realizadas</div><div className="value">{fmtMoney(totais.realizado)}</div></div>
+      <div className="card kpi"><div className="label">Receitas previstas</div><div className="value">{fmtMoney(receitaPrevista)}</div><small className="muted">Média histórica</small></div>
+      <div className="card kpi"><div className="label">Saldo projetado</div><div className={`value ${saldoProjetado<0?'moneyExpense':'moneyIncome'}`}>{fmtMoney(saldoProjetado)}</div></div>
+    </div>
+    <div className="infoBox" style={{margin:'14px 0'}}><b>Cálculo:</b> saldo atual + receitas históricas ainda não realizadas − despesas previstas ainda não realizadas. Transferências entre caixas não são tratadas como receita ou despesa.</div>
+    <div className="tablewrap"><table><thead><tr><th>Vencimento</th><th>Categoria</th><th>Grupo</th><th>Classificação</th><th>Caixa</th><th>Previsto</th><th>Realizado</th><th>Diferença</th></tr></thead><tbody>
+      {proximas.map((linha)=><tr key={linha.categoria.id}><td>Dia {linha.categoria.dia_vencimento_padrao||'—'}</td><td><b>{linha.categoria.nome}</b></td><td>{grupoMap[linha.categoria.grupo_gerencial_id]||'Não definido'}</td><td>{despesaClassificacaoLabel(linha.categoria.classificacao_padrao)}</td><td>{caixaMap[linha.categoria.tipo_caixa_padrao_id]||'Não definido'}</td><td>{fmtMoney(linha.previsto)}</td><td>{fmtMoney(linha.realizado)}</td><td className={linha.variacao>0?'moneyExpense':'moneyIncome'}>{fmtMoney(linha.variacao)}</td></tr>)}
+      {!proximas.length&&<tr><td colSpan={8} className="center muted">Nenhuma categoria está habilitada para previsão nesta referência.</td></tr>}
+    </tbody><tfoot><tr><td colSpan={5}><b>TOTAIS</b></td><td><b>{fmtMoney(totais.previsto)}</b></td><td><b>{fmtMoney(totais.realizado)}</b></td><td className={totais.variacao>0?'moneyExpense':'moneyIncome'}><b>{fmtMoney(totais.variacao)}</b></td></tr></tfoot></table></div>
+  </div>;
+}
+
+
+function AgendaDespesasPrevistasPage() {
+  const tenant = React.useContext(TenantContext);
+  const access = usePermissions();
+  const { referencia } = useGlobalFilters();
+  const [ref, setRef] = useState(() => ensureReferencia(referencia || currentReferencia()));
+  const [mesesHistorico, setMesesHistorico] = useState(6);
+  const [selected, setSelected] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const despesas = useTable('despesas', { order: 'data', ascending: false });
+  const previstas = useTable('despesas_previstas', { order: 'data_prevista', ascending: true, filters: [{column:'referencia', value:ref}] });
+  const caixas = useLookup('tipos_caixa');
+  const credores = useLookup('credores');
+  const { toasts, push, close } = useToasts();
+  const canCreate = access.can('financeiro','create');
+  const canUpdate = access.can('financeiro','update');
+  const linhas = useMemo(()=>construirPrevisaoDespesas({categorias:categorias.rows,despesas:despesas.rows,referencia:ref,mesesHistorico}),[categorias.rows,despesas.rows,ref,mesesHistorico]);
+  const previstaByCategoria = useMemo(()=>Object.fromEntries((previstas.rows||[]).map(row=>[row.categoria_id,row])),[previstas.rows]);
+  const caixaMap = useMemo(()=>Object.fromEntries((caixas.rows||[]).map(row=>[row.id,caixaNomeExibicao(row)])),[caixas.rows]);
+  const credorMap = useMemo(()=>Object.fromEntries((credores.rows||[]).map(row=>[row.id,row.nome])),[credores.rows]);
+  useEffect(()=>setSelected(new Set()),[ref]);
+  const toggle=(id)=>setSelected(prev=>{const next=new Set(prev);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  const dataPrevista=(categoria)=>{
+    const [ano,mes]=ref.split('-').map(Number); const ultimo=new Date(ano,mes,0).getDate(); const dia=Math.min(Math.max(1,Number(categoria.dia_vencimento_padrao)||1),ultimo); return `${ref}-${String(dia).padStart(2,'0')}`;
+  };
+  const gerar=async()=>{
+    if(!canCreate||!selected.size)return;
+    const escolhidas=linhas.filter(l=>selected.has(l.categoria.id)&&!previstaByCategoria[l.categoria.id]);
+    if(!escolhidas.length)return push('As categorias selecionadas já possuem previsão nesta referência.','warning');
+    setBusy(true);
+    const payload=escolhidas.map(({categoria,previsto})=>({empresa_id:tenant.empresaId,referencia:ref,data_prevista:dataPrevista(categoria),categoria_id:categoria.id,grupo_gerencial_id:categoria.grupo_gerencial_id||null,classificacao:categoria.classificacao_padrao||null,credor_id:categoria.credor_padrao_id||null,tipo_caixa_id:categoria.tipo_caixa_padrao_id||null,descricao:`Previsão — ${categoria.nome}`,valor_previsto:Number(previsto)||0,status:'prevista',origem:'planejamento',created_by:tenant?.user?.id||null}));
+    const {error}=await supabase.from('despesas_previstas').insert(payload);
+    setBusy(false);
+    if(error)return push(error.message,'error');
+    push(`${payload.length} despesa(s) prevista(s) adicionada(s) à agenda. O Livro Caixa não foi alterado.`);
+    setSelected(new Set()); previstas.reload();
+  };
+  const confirmar=async(row)=>{
+    if(!canCreate||row.status!=='prevista')return;
+    if(!row.tipo_caixa_id)return push('Defina o caixa padrão na categoria antes de confirmar.','error');
+    setBusy(true);
+    const payload={empresa_id:tenant.empresaId,data:row.data_prevista,referencia:row.referencia,descricao:row.descricao,categoria_id:row.categoria_id,credor_id:row.credor_id||null,tipo_caixa_id:row.tipo_caixa_id,valor:Number(row.valor_previsto)||0,forma_pagamento:'pix',observacoes:'Gerada a partir da agenda de despesas previstas.',grupo_gerencial_id:row.grupo_gerencial_id||null,classificacao:row.classificacao||null,origem_classificacao:row.classificacao?'categoria':'nao_classificada',despesa_prevista_id:row.id,created_by:tenant?.user?.id||null};
+    const {data,error}=await supabase.from('despesas').insert(payload).select('id').single();
+    if(error){setBusy(false);return push(error.message,'error');}
+    const update=await supabase.from('despesas_previstas').update({status:'realizada',despesa_id:data.id,confirmada_em:new Date().toISOString(),confirmada_por:tenant?.user?.id||null}).eq('id',row.id).eq('empresa_id',tenant.empresaId).eq('status','prevista');
+    setBusy(false);
+    if(update.error)return push(`Despesa criada, mas não foi possível atualizar a agenda: ${update.error.message}`,'warning');
+    push('Despesa confirmada e lançada no Livro Caixa.'); despesas.reload(); previstas.reload();
+  };
+  const cancelar=async(row)=>{
+    if(!canUpdate||row.status!=='prevista')return;
+    setBusy(true); const {error}=await supabase.from('despesas_previstas').update({status:'cancelada',cancelada_em:new Date().toISOString(),cancelada_por:tenant?.user?.id||null}).eq('id',row.id).eq('empresa_id',tenant.empresaId).eq('status','prevista'); setBusy(false);
+    if(error)return push(error.message,'error'); push('Previsão cancelada sem alterar o Livro Caixa.'); previstas.reload();
+  };
+  return <div>
+    <ToastStack toasts={toasts} close={close}/>
+    <div className="hero compactHero"><h1>✅ Agenda de despesas previstas</h1><p>Gere previsões controladas e confirme individualmente antes de afetar o Livro Caixa.</p></div>
+    <div className="alert warn"><b>Proteção:</b> gerar uma previsão não altera saldos. Somente o botão “Confirmar no Livro Caixa” cria uma despesa real.</div>
+    <div className="toolbar"><div className="row"><div className="field compact"><label>Referência</label><input type="month" value={ref} onChange={(e)=>setRef(e.target.value)}/></div><div className="field compact"><label>Média histórica</label><select value={mesesHistorico} onChange={(e)=>setMesesHistorico(Number(e.target.value))}><option value={3}>3 meses</option><option value={6}>6 meses</option><option value={12}>12 meses</option></select></div></div><button disabled={busy||!canCreate||!selected.size} onClick={gerar}>{busy?'Processando…':`Gerar selecionadas (${selected.size})`}</button></div>
+    <section className="card"><h3>Sugestões para {fmtReferencia(ref)}</h3><div className="tablewrap"><table><thead><tr><th></th><th>Data</th><th>Categoria</th><th>Valor sugerido</th><th>Caixa</th><th>Situação</th></tr></thead><tbody>
+      {linhas.map(({categoria,previsto})=>{const existente=previstaByCategoria[categoria.id];return <tr key={categoria.id}><td><input type="checkbox" disabled={!!existente||!canCreate} checked={selected.has(categoria.id)} onChange={()=>toggle(categoria.id)}/></td><td>{fmtDate(dataPrevista(categoria))}</td><td><b>{categoria.nome}</b></td><td>{fmtMoney(previsto)}</td><td>{caixaMap[categoria.tipo_caixa_padrao_id]||'Não definido'}</td><td>{existente?`Já gerada — ${existente.status}`:'Disponível'}</td></tr>})}
+      {!linhas.length&&<tr><td colSpan={6} className="center muted">Nenhuma sugestão disponível para esta referência.</td></tr>}
+    </tbody></table></div></section>
+    <section className="card"><h3>Agenda gerada</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Credor</th><th>Caixa</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+      {(previstas.rows||[]).map(row=><tr key={row.id}><td>{fmtDate(row.data_prevista)}</td><td><b>{row.descricao}</b></td><td>{credorMap[row.credor_id]||'Não definido'}</td><td>{caixaMap[row.tipo_caixa_id]||'Não definido'}</td><td>{fmtMoney(row.valor_previsto)}</td><td><span className={`badge ${row.status==='realizada'?'Ativa':row.status==='cancelada'?'Cancelada':'Pendente'}`}>{row.status}</span></td><td><div className="row"><button className="smallBtn" disabled={busy||row.status!=='prevista'||!canCreate} onClick={()=>confirmar(row)}>Confirmar no Livro Caixa</button><button className="smallBtn secondary" disabled={busy||row.status!=='prevista'||!canUpdate} onClick={()=>cancelar(row)}>Cancelar</button></div></td></tr>)}
+      {!(previstas.rows||[]).length&&<tr><td colSpan={7} className="center muted">Nenhuma despesa prevista gerada.</td></tr>}
+    </tbody></table></div></section>
+  </div>;
 }
 
 const FORMAS_PAGAMENTO = [
@@ -4631,11 +4970,13 @@ function DespesasPage({ financeFilter: externalFilter = null, hideFinanceControl
   const caixas = useLookup('tipos_caixa');
   const categorias = useLookup('categorias_despesas');
   const credores = useLookup('credores');
+  const gruposGerenciais = useLookup('grupos_gerenciais_despesas');
   const formasPagto = useLookupLabels('formas_pagamento');
   const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((c) => [c.id, caixaNomeExibicao(c)])), [caixas.rows]);
   const catMap = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c.nome])), [categorias.rows]);
   const credorMap = useMemo(() => Object.fromEntries(credores.rows.map((c) => [c.id, c.nome || c.razao_social])), [credores.rows]);
   const credorById = useMemo(() => Object.fromEntries(credores.rows.map((c) => [c.id, c])), [credores.rows]);
+  const categoriaById = useMemo(() => Object.fromEntries(categorias.rows.map((c) => [c.id, c])), [categorias.rows]);
   const baixarCodigosCaixas = () => {
     const rows = caixas.rows.filter(caixaEstaAtivo).map((c) => ({
       codigo: c.numero_caixa,
@@ -4753,8 +5094,36 @@ function DespesasPage({ financeFilter: externalFilter = null, hideFinanceControl
           name: 'categoria_id',
           label: 'Categoria',
           type: 'quickselect',
+          required: true,
           options: categorias.options,
           quickCreate: quickCreate('categorias_despesas', categorias.reload, 'id'),
+          onChange: ({ value, form }) => {
+            const categoria = categoriaById[value];
+            return {
+              ...form,
+              categoria_id: value,
+              grupo_gerencial_id: categoria?.grupo_gerencial_id || '',
+              classificacao: categoria?.classificacao_padrao || '',
+              tipo_caixa_id: categoria?.tipo_caixa_padrao_id || form.tipo_caixa_id || '',
+              credor_id: categoria?.credor_padrao_id || form.credor_id || '',
+            };
+          },
+        },
+        {
+          name: 'grupo_gerencial_id',
+          label: 'Grupo gerencial',
+          type: 'select',
+          readOnly: true,
+          placeholder: 'Não definido',
+          options: gruposGerenciais.options,
+          help: 'Definido pela categoria selecionada.',
+        },
+        {
+          name: 'classificacao',
+          label: 'Classificação',
+          type: 'select',
+          placeholder: 'Não classificada',
+          options: DESPESA_CLASSIFICACAO_OPTIONS,
         },
         {
           name: 'tipo_caixa_id',
@@ -4787,6 +5156,17 @@ function DespesasPage({ financeFilter: externalFilter = null, hideFinanceControl
           full: true,
         },
       ]}
+      preparePayload={({ payload, row }) => ({
+        ...payload,
+        origem_classificacao:
+          payload.classificacao
+            ? payload.classificacao === row?.classificacao && payload.categoria_id === row?.categoria_id
+              ? row?.origem_classificacao || 'manual'
+              : payload.classificacao === categoriaById[payload.categoria_id]?.classificacao_padrao
+                ? 'categoria'
+                : 'manual'
+            : 'nao_classificada',
+      })}
     />
   );
 }
@@ -5472,6 +5852,7 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
   });
   const caixas = useLookup('tipos_caixa');
   const categorias = useLookup('categorias_despesas');
+  const gruposGerenciais = useLookup('grupos_gerenciais_despesas');
   const membros = useLookup('membros');
   const dependentes = useLookup('filhos_dependentes');
   const credores = useLookup('credores');
@@ -5479,6 +5860,8 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
   const formasPagamento = useLookupLabels('formas_pagamento');
   const caixaMap = useMemo(() => Object.fromEntries(caixas.rows.map((item) => [item.id, item.nome])), [caixas.rows]);
   const categoriaMap = useMemo(() => Object.fromEntries(categorias.rows.map((item) => [item.id, item.nome])), [categorias.rows]);
+  const categoriaById = useMemo(() => Object.fromEntries(categorias.rows.map((item) => [item.id, item])), [categorias.rows]);
+  const grupoGerencialMap = useMemo(() => Object.fromEntries(gruposGerenciais.rows.map((item) => [item.id, item.nome])), [gruposGerenciais.rows]);
   const membroMap = useMemo(() => Object.fromEntries(membros.rows.map((item) => [item.id, item.nome])), [membros.rows]);
   const dependenteMap = useMemo(() => Object.fromEntries(dependentes.rows.map((d) => [d.id, d])), [dependentes.rows]);
   const dependenteOptions = useMemo(
@@ -5638,6 +6021,9 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
           referencia: editando.referencia,
           descricao: editando.descricao,
           categoria_id: editando.categoria_id,
+          grupo_gerencial_id: editando.grupo_gerencial_id || null,
+          classificacao: editando.classificacao || null,
+          origem_classificacao: editando.origem_classificacao || (editando.classificacao ? 'manual' : 'nao_classificada'),
           credor_id: editando.credor_id || null,
           tipo_caixa_id: editando.tipo_caixa_id,
           valor: Number(editando.valor),
@@ -5709,6 +6095,9 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
         ...basePayload,
         descricao: novoLancamento.descricao,
         categoria_id: novoLancamento.categoria_id,
+        grupo_gerencial_id: novoLancamento.grupo_gerencial_id || null,
+        classificacao: novoLancamento.classificacao || null,
+        origem_classificacao: novoLancamento.origem_classificacao || (novoLancamento.classificacao ? 'categoria' : 'nao_classificada'),
         credor_id: novoLancamento.credor_id || null,
       };
     }
@@ -6015,8 +6404,30 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
                     <input value={novoLancamento.descricao || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, descricao: e.target.value })} />
                   </div>
                   <div className="field">
+                    <label>Credor / prestador de serviço</label>
+                    <select value={novoLancamento.credor_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, credor_id: e.target.value })}>
+                      <option value="">Não vinculado</option>
+                      {credores.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
                     <label>Categoria *</label>
-                    <select value={novoLancamento.categoria_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, categoria_id: e.target.value })}>
+                    <select value={novoLancamento.categoria_id || ''} onChange={(e) => {
+                      const categoria = categoriaById[e.target.value];
+                      setNovoLancamento({
+                        ...novoLancamento,
+                        categoria_id: e.target.value,
+                        grupo_gerencial_id: categoria?.grupo_gerencial_id || '',
+                        classificacao: categoria?.classificacao_padrao || '',
+                        origem_classificacao: categoria?.classificacao_padrao ? 'categoria' : 'nao_classificada',
+                        tipo_caixa_id: categoria?.tipo_caixa_padrao_id || novoLancamento.tipo_caixa_id || '',
+                        credor_id: categoria?.credor_padrao_id || novoLancamento.credor_id || '',
+                      });
+                    }}>
                       <option value="">Selecione</option>
                       {categorias.options.map((o) => (
                         <option key={o.value} value={o.value}>
@@ -6026,14 +6437,15 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
                     </select>
                   </div>
                   <div className="field">
-                    <label>Credor / prestador</label>
-                    <select value={novoLancamento.credor_id || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, credor_id: e.target.value })}>
-                      <option value="">Não vinculado</option>
-                      {credores.options.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
+                    <label>Grupo gerencial</label>
+                    <input value={grupoGerencialMap[novoLancamento.grupo_gerencial_id] || 'Não definido'} readOnly />
+                    <div className="muted smallText">Definido pela categoria selecionada.</div>
+                  </div>
+                  <div className="field">
+                    <label>Classificação</label>
+                    <select value={novoLancamento.classificacao || ''} onChange={(e) => setNovoLancamento({ ...novoLancamento, classificacao: e.target.value, origem_classificacao: e.target.value ? 'manual' : 'nao_classificada' })}>
+                      <option value="">Não classificada</option>
+                      {DESPESA_CLASSIFICACAO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </div>
                   <div className="field">
@@ -6137,6 +6549,9 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
                         setEditando({
                           ...editando,
                           categoria_id: e.target.value,
+                          grupo_gerencial_id: categoriaById[e.target.value]?.grupo_gerencial_id || '',
+                          classificacao: categoriaById[e.target.value]?.classificacao_padrao || '',
+                          origem_classificacao: categoriaById[e.target.value]?.classificacao_padrao ? 'categoria' : 'nao_classificada',
                         })
                       }
                     >
@@ -6146,6 +6561,17 @@ function FinanceiroLivroCaixaPage({ onNovaReceita = null, onNovaDespesa = null }
                           {o.label}
                         </option>
                       ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Grupo gerencial</label>
+                    <input value={grupoGerencialMap[editando.grupo_gerencial_id] || 'Não definido'} readOnly />
+                  </div>
+                  <div className="field">
+                    <label>Classificação</label>
+                    <select value={editando.classificacao || ''} onChange={(e) => setEditando({ ...editando, classificacao: e.target.value, origem_classificacao: e.target.value ? 'manual' : 'nao_classificada' })}>
+                      <option value="">Não classificada</option>
+                      {DESPESA_CLASSIFICACAO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </div>
                   <div className="field">
@@ -6829,6 +7255,7 @@ function ImportacaoBancariaPage({ onHistorico } = {}) {
   const categorias = useLookup('categorias_despesas');
   const membros = useLookup('membros');
   const credores = useLookup('credores');
+  const gruposGerenciais = useLookup('grupos_gerenciais_despesas');
   const formasPagto = useLookupLabels('formas_pagamento');
   const regras = useTable('regras_importacao_bancaria', {
     order: 'padrao',
@@ -7299,6 +7726,9 @@ function ImportacaoBancariaPage({ onHistorico } = {}) {
               data: item.data,
               referencia: ensureReferencia(item.referencia || referencia, item.data),
               categoria_id: categoria.id,
+              grupo_gerencial_id: categoria.grupo_gerencial_id || null,
+              classificacao: categoria.classificacao_padrao || null,
+              origem_classificacao: categoria.classificacao_padrao ? 'importacao' : 'nao_classificada',
               credor_id: credor?.id || null,
               tipo_caixa_id: caixaId,
               descricao: item.historico,
@@ -11456,6 +11886,9 @@ function FinanceiroModule() {
       {page === 'importacao' && <ImportacaoBancariaPage onHistorico={() => setPage('historico_importacoes')} />}
       {page === 'historico_importacoes' && <HistoricoImportacoesBancariasPage />}
       {page === 'fechamento' && <FechamentoPage />}
+      {page === 'planejamento' && <PlanejamentoDespesasPage />}
+      {page === 'previsao' && <PainelPrevisaoFinanceiraPage />}
+      {page === 'agenda_previsoes' && <AgendaDespesasPrevistasPage />}
       {page === 'relatorios' && <RelatoriosFinanceirosPage />}
       {page === 'prestacao' && <PrestacaoContasPage />}
     </div>
@@ -17479,7 +17912,7 @@ function BackupGeralPage() {
   const tenant = React.useContext(TenantContext);
   const { toasts, push, close } = useToasts();
   const [loading, setLoading] = useState(false);
-  const backupTables = ['empresas', 'profiles', 'tipos_caixa', 'categorias_despesas', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'transferencias_agendadas', 'fechamentos_mensais', 'membros', 'turmas_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_manutencoes'];
+  const backupTables = ['empresas', 'profiles', 'tipos_caixa', 'categorias_despesas', 'grupos_gerenciais_despesas', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'transferencias_agendadas', 'fechamentos_mensais', 'membros', 'turmas_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_manutencoes'];
 
   const exportar = async () => {
     if (!tenant?.empresaId) {
@@ -18429,6 +18862,27 @@ const DEFAULT_MENU_HUBS = {
             color: 'blue',
           },
           {
+            id: 'planejamento',
+            icon: '🗓️',
+            title: 'Planejamento de Despesas',
+            desc: 'Recorrência, vencimento e valores previstos sem gerar lançamentos.',
+            color: 'orange',
+          },
+          {
+            id: 'previsao',
+            icon: '📈',
+            title: 'Previsão Financeira',
+            desc: 'Previsto versus realizado, vencimentos e saldo projetado.',
+            color: 'green',
+          },
+          {
+            id: 'agenda_previsoes',
+            icon: '✅',
+            title: 'Agenda de Despesas Previstas',
+            desc: 'Gere previsões e confirme antes de lançar no Livro Caixa.',
+            color: 'purple',
+          },
+          {
             id: 'relatorios',
             icon: '📊',
             title: 'Relatórios',
@@ -18503,6 +18957,25 @@ const DEFAULT_MENU_HUBS = {
             desc: 'Listagens e indicadores da secretaria.',
             color: 'slate',
           },
+        ],
+      },
+    ],
+  },
+  contabilidade: {
+    icon: '📚',
+    title: 'Contabilidade',
+    desc: 'Plano de contas, vínculos, lançamentos e relatórios contábeis.',
+    sections: [
+      {
+        title: 'Contabilidade',
+        items: [
+          { id: 'plano', icon: '📒', title: 'Plano de contas', desc: 'Estrutura hierárquica, natureza, vigência e conta referencial.', color: 'green' },
+          { id: 'exercicios', icon: '📅', title: 'Exercícios contábeis', desc: 'Períodos contábeis anuais e situação de abertura ou fechamento.', color: 'green' },
+          { id: 'vinculos', icon: '🔗', title: 'Vínculos financeiros', desc: 'Relaciona categorias, entradas e caixas às contas contábeis.', color: 'green' },
+          { id: 'lancamentos', icon: '🧮', title: 'Lançamentos contábeis', desc: 'Partidas dobradas, revisão e contabilização protegida.', color: 'green' },
+          { id: 'relatorios', icon: '📊', title: 'Relatórios contábeis', desc: 'Diário, Razão, Balancete e superávit ou déficit.', color: 'green' },
+          { id: 'configuracoes', icon: '🧾', title: 'Dados fiscais', desc: 'Responsável, contador, imunidade ou isenção e indicadores fiscais.', color: 'green' },
+          { id: 'referenciais', icon: '🏛️', title: 'Plano referencial ECF', desc: 'Cadastro versionado das contas referenciais oficiais.', color: 'green' },
         ],
       },
     ],
@@ -18741,6 +19214,13 @@ const DEFAULT_MENU_HUBS = {
             color: 'green',
           },
           {
+            id: 'gruposGerenciais',
+            icon: '📊',
+            title: 'Grupos gerenciais',
+            desc: 'Organização de custos para análises e previsões financeiras.',
+            color: 'green',
+          },
+          {
             id: 'prestacaoRelatorios',
             icon: '🎞️',
             title: 'Relatórios da prestação',
@@ -18961,6 +19441,7 @@ const DEFAULT_SIDE_MENU = [
       { id: 'secretaria', icon: '🗂️', label: 'Comunidade', visible: true },
       { id: 'ebd', icon: '📖', label: 'Ensino / EBD', visible: true },
       { id: 'patrimonio', icon: '🏛️', label: 'Patrimônio', visible: true },
+      { id: 'contabilidade', icon: '📚', label: 'Contabilidade', visible: true },
       { id: 'portal', icon: '◉', label: 'Portal do Membro', visible: true },
     ],
   },
@@ -19508,6 +19989,364 @@ function ConfiguradorMenusPage() {
   );
 }
 
+
+const CONTA_TIPO_OPTIONS = [
+  { value: 'ativo', label: 'Ativo' },
+  { value: 'passivo', label: 'Passivo' },
+  { value: 'patrimonio_social', label: 'Patrimônio social' },
+  { value: 'receita', label: 'Receita' },
+  { value: 'despesa', label: 'Despesa' },
+  { value: 'compensacao', label: 'Compensação' },
+];
+const CONTA_NATUREZA_OPTIONS = [
+  { value: 'devedora', label: 'Devedora' },
+  { value: 'credora', label: 'Credora' },
+];
+
+function PlanoContasContabilPage() {
+  const contas = useLookup('contabil_plano_contas');
+  const referencias = useLookup('contabil_contas_referenciais');
+  return (
+    <CrudPage
+      table="contabil_plano_contas"
+      title="Plano de Contas Contábil"
+      moduleKey="contabilidade"
+      order="codigo"
+      ascending
+      createLabel="+ Nova conta"
+      searchKeys={['codigo', 'nome']}
+      showActiveToggle
+      columns={[
+        { key: 'codigo', label: 'Código' },
+        { key: 'nome', label: 'Conta' },
+        { key: 'tipo', label: 'Grupo', render: (r) => CONTA_TIPO_OPTIONS.find((o) => o.value === r.tipo)?.label || r.tipo },
+        { key: 'natureza', label: 'Natureza', render: (r) => CONTA_NATUREZA_OPTIONS.find((o) => o.value === r.natureza)?.label || r.natureza },
+        { key: 'analitica', label: 'Tipo', render: (r) => r.analitica ? 'Analítica' : 'Sintética' },
+        { key: 'ativo', label: 'Situação', render: (r) => r.ativo !== false ? 'Ativa' : 'Inativa' },
+      ]}
+      fields={[
+        { name: 'codigo', label: 'Código da conta', required: true, placeholder: 'Ex.: 1.1.01.001' },
+        { name: 'nome', label: 'Nome da conta', required: true },
+        { name: 'conta_pai_id', label: 'Conta superior', type: 'select', options: contas.options },
+        { name: 'tipo', label: 'Grupo contábil', type: 'select', options: CONTA_TIPO_OPTIONS, required: true },
+        { name: 'natureza', label: 'Natureza', type: 'select', options: CONTA_NATUREZA_OPTIONS, required: true },
+        { name: 'analitica', label: 'Conta analítica (aceita lançamentos)', type: 'checkbox', defaultValue: true },
+        { name: 'conta_referencial_id', label: 'Conta referencial ECF', type: 'select', options: referencias.options },
+        { name: 'vigencia_inicio', label: 'Início da vigência', type: 'date' },
+        { name: 'vigencia_fim', label: 'Fim da vigência', type: 'date' },
+        { name: 'ativo', label: 'Ativa', type: 'checkbox', defaultValue: true },
+        { name: 'observacoes', label: 'Observações', type: 'textarea', full: true },
+      ]}
+      topContent={<div className="infoBox"><b>Base contábil:</b> grupos gerenciais e categorias continuam sendo gerenciais. As contas deste plano serão usadas na escrituração, nos demonstrativos e, futuramente, na integração ECD/ECF.</div>}
+    />
+  );
+}
+
+function ExerciciosContabeisPage() {
+  return (
+    <CrudPage
+      table="contabil_exercicios"
+      title="Exercícios Contábeis"
+      moduleKey="contabilidade"
+      order="ano"
+      ascending={false}
+      createLabel="+ Novo exercício"
+      searchKeys={['ano', 'descricao']}
+      columns={[
+        { key: 'ano', label: 'Ano-calendário' },
+        { key: 'data_inicio', label: 'Início', render: (r) => formatDate(r.data_inicio) },
+        { key: 'data_fim', label: 'Fim', render: (r) => formatDate(r.data_fim) },
+        { key: 'status', label: 'Situação', render: (r) => r.status === 'fechado' ? 'Fechado' : 'Aberto' },
+      ]}
+      fields={[
+        { name: 'ano', label: 'Ano-calendário', type: 'number', required: true },
+        { name: 'descricao', label: 'Descrição', placeholder: 'Ex.: Exercício 2026' },
+        { name: 'data_inicio', label: 'Data inicial', type: 'date', required: true },
+        { name: 'data_fim', label: 'Data final', type: 'date', required: true },
+        { name: 'status', label: 'Situação', type: 'select', defaultValue: 'aberto', options: [{ value: 'aberto', label: 'Aberto' }, { value: 'fechado', label: 'Fechado' }] },
+      ]}
+    />
+  );
+}
+
+function ContasReferenciaisPage() {
+  return (
+    <CrudPage
+      table="contabil_contas_referenciais"
+      title="Contas Referenciais ECF"
+      moduleKey="contabilidade"
+      order="codigo"
+      ascending
+      createLabel="+ Nova conta referencial"
+      searchKeys={['codigo', 'nome', 'versao_leiaute']}
+      showActiveToggle
+      columns={[
+        { key: 'codigo', label: 'Código' },
+        { key: 'nome', label: 'Descrição oficial' },
+        { key: 'versao_leiaute', label: 'Leiaute' },
+        { key: 'ano_inicio', label: 'Vigência inicial' },
+        { key: 'ano_fim', label: 'Vigência final' },
+      ]}
+      fields={[
+        { name: 'codigo', label: 'Código referencial', required: true },
+        { name: 'nome', label: 'Descrição oficial', required: true, full: true },
+        { name: 'versao_leiaute', label: 'Versão do leiaute', required: true, placeholder: 'Ex.: 12' },
+        { name: 'ano_inicio', label: 'Ano inicial', type: 'number' },
+        { name: 'ano_fim', label: 'Ano final', type: 'number' },
+        { name: 'ativo', label: 'Ativa', type: 'checkbox', defaultValue: true },
+      ]}
+      topContent={<div className="alert warn"><b>Atenção:</b> importe ou cadastre somente códigos publicados oficialmente para o leiaute e ano-calendário aplicáveis. Este cadastro não inventa enquadramento fiscal.</div>}
+    />
+  );
+}
+
+function ConfiguracoesContabeisPage() {
+  return (
+    <CrudPage
+      table="contabil_configuracoes"
+      title="Configurações Contábeis e Fiscais"
+      moduleKey="contabilidade"
+      order="created_at"
+      createLabel="+ Configurar dados contábeis"
+      searchKeys={['natureza_juridica', 'contador_nome', 'contador_crc']}
+      columns={[
+        { key: 'natureza_juridica', label: 'Natureza jurídica' },
+        { key: 'situacao_tributaria', label: 'Situação fiscal' },
+        { key: 'contador_nome', label: 'Contador responsável' },
+        { key: 'contador_crc', label: 'CRC' },
+        { key: 'entrega_ecd', label: 'Entrega ECD', render: (r) => r.entrega_ecd ? 'Sim' : 'Não' },
+      ]}
+      fields={[
+        { name: 'natureza_juridica', label: 'Natureza jurídica', required: true, placeholder: 'Ex.: Organização Religiosa' },
+        { name: 'situacao_tributaria', label: 'Situação tributária', type: 'select', options: [{ value: 'imune', label: 'Imune' }, { value: 'isenta', label: 'Isenta' }, { value: 'outra', label: 'Outra / validar com contador' }] },
+        { name: 'tipo_imunidade_isencao', label: 'Fundamento/tipo de imunidade ou isenção', full: true },
+        { name: 'contador_nome', label: 'Nome do contador' },
+        { name: 'contador_cpf', label: 'CPF do contador', kind: 'cpf' },
+        { name: 'contador_crc', label: 'CRC/UF' },
+        { name: 'escritorio_cnpj', label: 'CNPJ do escritório', kind: 'cnpj' },
+        { name: 'responsavel_legal_nome', label: 'Responsável legal' },
+        { name: 'responsavel_legal_cpf', label: 'CPF do responsável', kind: 'cpf' },
+        { name: 'entrega_ecd', label: 'A entidade entrega ECD', type: 'checkbox', defaultValue: false },
+        { name: 'possui_cebas', label: 'Possui CEBAS', type: 'checkbox', defaultValue: false },
+        { name: 'observacoes', label: 'Observações fiscais', type: 'textarea', full: true },
+      ]}
+      topContent={<div className="infoBox"><b>Responsabilidade profissional:</b> os dados fiscais devem ser conferidos pelo contador responsável antes de qualquer exportação SPED.</div>}
+    />
+  );
+}
+
+function VinculosFinanceirosContabeisPage() {
+  const tenant = React.useContext(TenantContext);
+  const empresaId = tenant?.empresaId || null;
+  const access = usePermissions();
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const receitas = useTable('tipos_receita', { order: 'nome', ascending: true });
+  const caixas = useTable('tipos_caixa', { order: 'nome', ascending: true });
+  const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true, filters: [{ column: 'ativo', value: true }] });
+  const { push, toasts, close } = useToasts();
+  const [savingKey, setSavingKey] = useState('');
+  const options = (contas.rows || []).filter((r) => r.analitica).map((r) => ({ value: r.id, label: `${r.codigo} — ${r.nome}` }));
+  const canUpdate = access.can('contabilidade', 'update');
+  const salvar = async (table, id, conta_contabil_id) => {
+    if (!canUpdate) return push('Seu perfil não tem permissão para alterar vínculos contábeis.', 'error');
+    if (!empresaId) return push('Selecione uma empresa antes de alterar os vínculos.', 'error');
+    const key = `${table}:${id}`;
+    setSavingKey(key);
+    const { error } = await supabase.rpc('salvar_vinculo_contabil', {
+      p_tabela: table,
+      p_registro_id: id,
+      p_conta_contabil_id: conta_contabil_id || null,
+      p_empresa_id: empresaId,
+    });
+    setSavingKey('');
+    if (error) return push(`Não foi possível salvar o vínculo: ${error.message}`, 'error');
+    push('Vínculo contábil atualizado.');
+    if (table === 'categorias_despesas') categorias.reload();
+    if (table === 'tipos_receita') receitas.reload();
+    if (table === 'tipos_caixa') caixas.reload();
+  };
+  const bloco = (titulo, source, table, descricao) => (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3>{titulo}</h3><p className="muted">{descricao}</p>
+      {source.loading && <div className="infoBox">Carregando cadastros…</div>}
+      {!source.loading && source.error && <div className="alert danger"><b>Não foi possível carregar:</b> {source.error.message}</div>}
+      {!source.loading && !source.error && <div className="tablewrap"><table><thead><tr><th>Cadastro financeiro</th><th>Conta contábil vinculada</th><th>Status</th></tr></thead><tbody>
+        {(source.rows || []).map((row) => { const key = `${table}:${row.id}`; return <tr key={row.id}><td>{row.nome}</td><td><SearchableSelect value={row.conta_contabil_id || ''} options={options} onChange={(v) => salvar(table, row.id, v)} placeholder="Selecione uma conta analítica…" disabled={!canUpdate || options.length === 0 || savingKey === key} /></td><td>{savingKey === key ? 'Salvando…' : (row.conta_contabil_id ? 'Vinculado' : 'Não vinculado')}</td></tr>; })}
+        {!source.rows?.length && <tr><td colSpan="3" className="muted">Nenhum registro encontrado.</td></tr>}
+      </tbody></table></div>}
+    </div>
+  );
+  return <div><ToastStack toasts={toasts} close={close} /><div className="pageHeader"><div><h2>Vínculos Financeiro × Contabilidade</h2><p>Mapeie os cadastros atuais para contas contábeis sem alterar o Livro Caixa.</p></div></div>
+    <div className="alert warn"><b>Importante:</b> vincular não contabiliza lançamentos antigos nem gera partidas dobradas. Essa etapa apenas prepara a classificação contábil.</div>
+    {contas.loading && <div className="infoBox">Carregando plano de contas…</div>}
+    {!contas.loading && contas.error && <div className="alert danger"><b>Plano de contas indisponível:</b> {contas.error.message}</div>}
+    {!contas.loading && !contas.error && options.length === 0 && <div className="alert warn"><b>Nenhuma conta analítica disponível.</b> Abra Plano de contas e cadastre ou ative contas analíticas antes de criar vínculos.</div>}
+    {bloco('Categorias de despesas', categorias, 'categorias_despesas', 'Ex.: Energia elétrica → Despesas com energia elétrica.')}
+    {bloco('Tipos de entrada', receitas, 'tipos_receita', 'Ex.: Dízimos → Receita de dízimos.')}
+    {bloco('Caixas e contas bancárias', caixas, 'tipos_caixa', 'Ex.: Banco do Brasil → Banco conta movimento.')}
+  </div>;
+}
+
+
+
+function LancamentosContabeisPage() {
+  const tenant = React.useContext(TenantContext);
+  const empresaId = tenant?.empresaId || null;
+  const access = usePermissions();
+  const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true, filters: [{ column: 'ativo', value: true }] });
+  const lancamentos = useTable('contabil_lancamentos', { order: 'data', ascending: false });
+  const exercicios = useTable('contabil_exercicios', { order: 'ano', ascending: false, filters: [{ column: 'status', value: 'aberto' }] });
+  const { push, toasts, close } = useToasts();
+  const [form, setForm] = useState({ data: todayISO(), historico: '', documento: '', exercicio_id: '', conta_debito_id: '', conta_credito_id: '', valor: '', observacoes: '' });
+  const [saving, setSaving] = useState(false);
+  const contaOptions = (contas.rows || []).filter((r) => r.analitica).map((r) => ({ value: r.id, label: `${r.codigo} — ${r.nome}` }));
+  const exercicioOptions = (exercicios.rows || []).map((r) => ({ value: r.id, label: `${r.ano} — ${r.descricao || 'Exercício aberto'}` }));
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const canCreate = access.can('contabilidade', 'create');
+  const canUpdate = access.can('contabilidade', 'update');
+  const criar = async (status = 'rascunho') => {
+    const valor = Number(String(form.valor || '').replace(/\./g, '').replace(',', '.'));
+    if (!canCreate) return push('Seu perfil não tem permissão para criar lançamentos contábeis.', 'error');
+    if (!empresaId || !form.data || !form.historico.trim() || !form.conta_debito_id || !form.conta_credito_id || !(valor > 0)) return push('Preencha data, histórico, contas de débito/crédito e valor.', 'error');
+    if (!form.exercicio_id) return push('Selecione um exercício contábil aberto.', 'error');
+    if (form.conta_debito_id === form.conta_credito_id) return push('Débito e crédito devem usar contas diferentes.', 'error');
+    setSaving(true);
+    const { error } = await supabase.rpc('criar_lancamento_contabil_simples', {
+      p_exercicio_id: form.exercicio_id,
+      p_data: form.data,
+      p_historico: form.historico.trim(),
+      p_documento: form.documento || null,
+      p_conta_debito_id: form.conta_debito_id,
+      p_conta_credito_id: form.conta_credito_id,
+      p_valor: valor,
+      p_observacoes: form.observacoes || null,
+      p_contabilizar: status === 'contabilizado',
+    });
+    setSaving(false);
+    if (error) return push(error.message, 'error');
+    setForm({ data: todayISO(), historico: '', documento: '', exercicio_id: '', conta_debito_id: '', conta_credito_id: '', valor: '', observacoes: '' });
+    lancamentos.reload();
+    push(status === 'contabilizado' ? 'Lançamento contabilizado.' : 'Rascunho contábil criado.');
+  };
+  const contabilizar = async (id) => { if (!canUpdate) return push('Seu perfil não tem permissão para contabilizar lançamentos.', 'error'); const { error } = await supabase.rpc('contabilizar_lancamento', { p_lancamento_id: id }); if (error) return push(error.message, 'error'); push('Lançamento contabilizado.'); lancamentos.reload(); };
+  const cancelar = async (id) => { if (!canUpdate) return push('Seu perfil não tem permissão para cancelar lançamentos.', 'error'); if (!window.confirm('Cancelar este lançamento contábil?')) return; const { error } = await supabase.from('contabil_lancamentos').update({ status: 'cancelado' }).eq('id', id).neq('status', 'contabilizado'); if (error) return push(error.message, 'error'); push('Lançamento cancelado.'); lancamentos.reload(); };
+  return <div><ToastStack toasts={toasts} close={close} />
+    <div className="pageHeader"><div><h2>Lançamentos Contábeis</h2><p>Partidas dobradas revisáveis, separadas do Livro Caixa.</p></div></div>
+    <div className="alert warn"><b>Controle:</b> contabilizar não altera o saldo financeiro. Débitos e créditos precisam ser iguais; lançamentos contabilizados não podem ser cancelados por esta tela.</div>
+    {!contas.loading && contaOptions.length < 2 && <div className="alert danger"><b>Configuração incompleta:</b> cadastre pelo menos duas contas analíticas ativas no Plano de contas.</div>}
+    {!exercicios.loading && exercicioOptions.length === 0 && <div className="alert danger"><b>Configuração incompleta:</b> crie um exercício contábil aberto antes de lançar.</div>}
+    {(contas.error || exercicios.error || lancamentos.error) && <div className="alert danger"><b>Falha ao carregar a base contábil:</b> {(contas.error || exercicios.error || lancamentos.error)?.message}</div>}
+    <div className="card" style={{ marginBottom: 18 }}><h3>Novo lançamento manual</h3>
+      <div className="formGrid">
+        <label>Data<input type="date" value={form.data} onChange={(e)=>set('data',e.target.value)} /></label>
+        <label>Exercício<SearchableSelect value={form.exercicio_id} options={exercicioOptions} onChange={(v)=>set('exercicio_id',v)} placeholder="Selecione…" /></label>
+        <label className="full">Histórico<input value={form.historico} onChange={(e)=>set('historico',e.target.value)} placeholder="Ex.: Pagamento da fatura de energia elétrica" /></label>
+        <label>Documento<input value={form.documento} onChange={(e)=>set('documento',e.target.value)} placeholder="NF, recibo ou referência" /></label>
+        <label>Valor<input inputMode="decimal" value={form.valor} onChange={(e)=>set('valor',e.target.value)} placeholder="0,00" /></label>
+        <label>Conta de débito<SearchableSelect value={form.conta_debito_id} options={contaOptions} onChange={(v)=>set('conta_debito_id',v)} placeholder="Selecione a conta devedora…" /></label>
+        <label>Conta de crédito<SearchableSelect value={form.conta_credito_id} options={contaOptions} onChange={(v)=>set('conta_credito_id',v)} placeholder="Selecione a conta credora…" /></label>
+        <label className="full">Observações<textarea value={form.observacoes} onChange={(e)=>set('observacoes',e.target.value)} /></label>
+      </div><div className="actions"><button className="secondary" disabled={saving || !canCreate || contaOptions.length < 2 || exercicioOptions.length === 0} onClick={()=>criar('rascunho')}>Salvar rascunho</button><button disabled={saving || !canCreate || contaOptions.length < 2 || exercicioOptions.length === 0} onClick={()=>criar('contabilizado')}>Salvar e contabilizar</button></div>
+    </div>
+    <div className="card"><h3>Histórico de lançamentos</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Nº</th><th>Histórico</th><th>Origem</th><th>Status</th><th>Ações</th></tr></thead><tbody>
+      {(lancamentos.rows||[]).map((r)=><tr key={r.id}><td>{formatDate(r.data)}</td><td>{r.numero||'—'}</td><td>{r.historico}</td><td>{r.origem_tipo}</td><td><span className={`badge ${r.status==='contabilizado'?'success':r.status==='cancelado'?'danger':'warn'}`}>{r.status}</span></td><td><div className="actions inline">{canUpdate&&r.status==='rascunho'&&<button className="smallBtn" onClick={()=>contabilizar(r.id)}>Contabilizar</button>}{canUpdate&&r.status!=='contabilizado'&&r.status!=='cancelado'&&<button className="secondary smallBtn" onClick={()=>cancelar(r.id)}>Cancelar</button>}</div></td></tr>)}
+      {!lancamentos.rows?.length&&<tr><td colSpan="6" className="muted">Nenhum lançamento contábil.</td></tr>}
+    </tbody></table></div></div>
+  </div>;
+}
+
+
+function RelatoriosContabeisPage() {
+  const lancamentos = useTable('contabil_lancamentos', { order: 'data', ascending: true, filters: [{ column: 'status', value: 'contabilizado' }] });
+  const partidas = useTable('contabil_partidas', { order: 'ordem', ascending: true });
+  const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true });
+  const exercicios = useTable('contabil_exercicios', { order: 'ano', ascending: false });
+  const [relatorio, setRelatorio] = useState('diario');
+  const [exercicioId, setExercicioId] = useState('');
+  const [inicio, setInicio] = useState('');
+  const [fim, setFim] = useState('');
+  const [contaId, setContaId] = useState('');
+
+  const contaMap = Object.fromEntries((contas.rows || []).map((c) => [c.id, c]));
+  const lancMap = Object.fromEntries((lancamentos.rows || []).map((l) => [l.id, l]));
+  const exercicioOptions = (exercicios.rows || []).map((e) => ({ value: e.id, label: `${e.ano} — ${e.descricao || e.status}` }));
+  const contaOptions = (contas.rows || []).filter((c) => c.analitica).map((c) => ({ value: c.id, label: `${c.codigo} — ${c.nome}` }));
+  const lancFiltrados = (lancamentos.rows || []).filter((l) => (!exercicioId || l.exercicio_id === exercicioId) && (!inicio || l.data >= inicio) && (!fim || l.data <= fim));
+  const lancIds = new Set(lancFiltrados.map((l) => l.id));
+  const partidasFiltradas = (partidas.rows || []).filter((p) => lancIds.has(p.lancamento_id) && (!contaId || p.conta_contabil_id === contaId));
+  const totais = partidasFiltradas.reduce((a,p) => { a[p.tipo] += Number(p.valor||0); return a; }, { debito:0, credito:0 });
+
+  const diario = lancFiltrados.map((l) => ({ ...l, partidas: partidasFiltradas.filter((p) => p.lancamento_id === l.id) })).filter((l) => l.partidas.length);
+  let saldoRazao = 0;
+  const razao = partidasFiltradas.slice().sort((a,b) => String(lancMap[a.lancamento_id]?.data||'').localeCompare(String(lancMap[b.lancamento_id]?.data||'')) || Number(a.ordem||0)-Number(b.ordem||0)).map((p) => {
+    const conta = contaMap[p.conta_contabil_id];
+    const sinal = p.tipo === 'debito' ? 1 : -1;
+    saldoRazao += sinal * Number(p.valor||0);
+    return { ...p, lancamento:lancMap[p.lancamento_id], conta, saldo:saldoRazao };
+  });
+  const balanceteMap = {};
+  partidasFiltradas.forEach((p) => {
+    const c=contaMap[p.conta_contabil_id]; if(!c) return;
+    const item=balanceteMap[c.id] ||= { conta:c, debitos:0, creditos:0 };
+    item[p.tipo==='debito'?'debitos':'creditos'] += Number(p.valor||0);
+  });
+  const balancete = Object.values(balanceteMap).sort((a,b)=>String(a.conta.codigo).localeCompare(String(b.conta.codigo))).map((i)=>({ ...i, saldo:i.debitos-i.creditos }));
+  const resultado = balancete.filter((i)=>['receita','despesa'].includes(i.conta.tipo));
+  const totalReceitas = resultado.filter((i)=>i.conta.tipo==='receita').reduce((s,i)=>s+Math.abs(i.saldo),0);
+  const totalDespesas = resultado.filter((i)=>i.conta.tipo==='despesa').reduce((s,i)=>s+Math.abs(i.saldo),0);
+  const superavit = totalReceitas-totalDespesas;
+
+  const csvEscape=(v)=>`"${String(v??'').replaceAll('"','""')}"`;
+  const baixarCsv=()=>{
+    let linhas=[];
+    if(relatorio==='diario') { linhas=[['Data','Número','Histórico','Documento','Conta','Tipo','Valor']]; diario.forEach(l=>l.partidas.forEach(p=>linhas.push([l.data,l.numero,l.historico,l.documento||'',`${contaMap[p.conta_contabil_id]?.codigo||''} - ${contaMap[p.conta_contabil_id]?.nome||''}`,p.tipo,p.valor]))); }
+    if(relatorio==='razao') { linhas=[['Data','Conta','Histórico','Débito','Crédito','Saldo']]; razao.forEach(r=>linhas.push([r.lancamento?.data,`${r.conta?.codigo||''} - ${r.conta?.nome||''}`,r.lancamento?.historico,r.tipo==='debito'?r.valor:'',r.tipo==='credito'?r.valor:'',r.saldo])); }
+    if(relatorio==='balancete') { linhas=[['Código','Conta','Débitos','Créditos','Saldo']]; balancete.forEach(r=>linhas.push([r.conta.codigo,r.conta.nome,r.debitos,r.creditos,r.saldo])); }
+    if(relatorio==='resultado') { linhas=[['Grupo','Código','Conta','Valor']]; resultado.forEach(r=>linhas.push([r.conta.tipo,r.conta.codigo,r.conta.nome,Math.abs(r.saldo)])); linhas.push(['Resultado','','',superavit]); }
+    const blob=new Blob(['\ufeff'+linhas.map(l=>l.map(csvEscape).join(';')).join('\n')],{type:'text/csv;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`${relatorio}-contabil.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+
+  return <div className="accountingReportPage">
+    <div className="pageHeader"><div><h2>Relatórios Contábeis</h2><p>Diário, Razão, Balancete e Demonstração do Superávit ou Déficit.</p></div><div className="actions"><button className="secondary" onClick={baixarCsv}>Exportar CSV</button><button onClick={()=>window.print()}>Imprimir</button></div></div>
+    <div className="alert warn"><b>Escopo:</b> somente lançamentos com status contabilizado entram nos relatórios. Os demonstrativos devem ser revisados pelo contador responsável.</div>
+    <div className="card noPrint" style={{marginBottom:16}}><div className="formGrid">
+      <label>Relatório<select value={relatorio} onChange={(e)=>setRelatorio(e.target.value)}><option value="diario">Diário</option><option value="razao">Razão</option><option value="balancete">Balancete</option><option value="resultado">Superávit ou déficit</option></select></label>
+      <label>Exercício<SearchableSelect value={exercicioId} options={exercicioOptions} onChange={setExercicioId} placeholder="Todos" /></label>
+      <label>Data inicial<input type="date" value={inicio} onChange={(e)=>setInicio(e.target.value)} /></label>
+      <label>Data final<input type="date" value={fim} onChange={(e)=>setFim(e.target.value)} /></label>
+      {relatorio==='razao'&&<label className="full">Conta contábil<SearchableSelect value={contaId} options={contaOptions} onChange={setContaId} placeholder="Todas as contas" /></label>}
+    </div></div>
+    <div className="grid cols3 reportSummary"><div className="card kpi"><div className="label">Débitos</div><div className="value">{fmtMoney(totais.debito)}</div></div><div className="card kpi"><div className="label">Créditos</div><div className="value">{fmtMoney(totais.credito)}</div></div><div className="card kpi"><div className="label">Diferença</div><div className={`value ${Math.abs(totais.debito-totais.credito)>0.009?'moneyExpense':'moneyIncome'}`}>{fmtMoney(totais.debito-totais.credito)}</div></div></div>
+    {relatorio==='diario'&&<div className="card"><h3>Livro Diário</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Nº</th><th>Histórico/documento</th><th>Conta</th><th>Débito</th><th>Crédito</th></tr></thead><tbody>{diario.flatMap(l=>l.partidas.map((p,i)=><tr key={p.id}><td>{i===0?formatDate(l.data):''}</td><td>{i===0?(l.numero||'—'):''}</td><td>{i===0?<><b>{l.historico}</b><br/><span className="muted">{l.documento||''}</span></>:''}</td><td>{contaMap[p.conta_contabil_id]?.codigo} — {contaMap[p.conta_contabil_id]?.nome}</td><td>{p.tipo==='debito'?fmtMoney(p.valor):''}</td><td>{p.tipo==='credito'?fmtMoney(p.valor):''}</td></tr>))}{!diario.length&&<tr><td colSpan="6" className="muted">Nenhum lançamento contabilizado no período.</td></tr>}</tbody></table></div></div>}
+    {relatorio==='razao'&&<div className="card"><h3>Livro Razão</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Conta</th><th>Histórico</th><th>Débito</th><th>Crédito</th><th>Saldo</th></tr></thead><tbody>{razao.map(r=><tr key={r.id}><td>{formatDate(r.lancamento?.data)}</td><td>{r.conta?.codigo} — {r.conta?.nome}</td><td>{r.lancamento?.historico}</td><td>{r.tipo==='debito'?fmtMoney(r.valor):''}</td><td>{r.tipo==='credito'?fmtMoney(r.valor):''}</td><td>{fmtMoney(r.saldo)}</td></tr>)}{!razao.length&&<tr><td colSpan="6" className="muted">Nenhuma partida encontrada.</td></tr>}</tbody></table></div></div>}
+    {relatorio==='balancete'&&<div className="card"><h3>Balancete de Verificação</h3><div className="tablewrap"><table><thead><tr><th>Código</th><th>Conta</th><th>Débitos</th><th>Créditos</th><th>Saldo devedor</th><th>Saldo credor</th></tr></thead><tbody>{balancete.map(r=><tr key={r.conta.id}><td>{r.conta.codigo}</td><td>{r.conta.nome}</td><td>{fmtMoney(r.debitos)}</td><td>{fmtMoney(r.creditos)}</td><td>{r.saldo>0?fmtMoney(r.saldo):''}</td><td>{r.saldo<0?fmtMoney(Math.abs(r.saldo)):''}</td></tr>)}{!balancete.length&&<tr><td colSpan="6" className="muted">Nenhuma movimentação encontrada.</td></tr>}</tbody><tfoot><tr><td colSpan="2"><b>TOTAIS</b></td><td><b>{fmtMoney(totais.debito)}</b></td><td><b>{fmtMoney(totais.credito)}</b></td><td></td><td></td></tr></tfoot></table></div></div>}
+    {relatorio==='resultado'&&<div className="card"><h3>Demonstração do Superávit ou Déficit</h3><div className="tablewrap"><table><thead><tr><th>Grupo</th><th>Código</th><th>Conta</th><th>Valor</th></tr></thead><tbody>{resultado.map(r=><tr key={r.conta.id}><td>{r.conta.tipo==='receita'?'Receita':'Despesa'}</td><td>{r.conta.codigo}</td><td>{r.conta.nome}</td><td>{fmtMoney(Math.abs(r.saldo))}</td></tr>)}{!resultado.length&&<tr><td colSpan="4" className="muted">Nenhuma conta de receita ou despesa movimentada.</td></tr>}</tbody><tfoot><tr><td colSpan="3"><b>Total de receitas</b></td><td><b>{fmtMoney(totalReceitas)}</b></td></tr><tr><td colSpan="3"><b>Total de despesas</b></td><td><b>{fmtMoney(totalDespesas)}</b></td></tr><tr><td colSpan="3"><b>{superavit>=0?'SUPERÁVIT':'DÉFICIT'}</b></td><td className={superavit>=0?'moneyIncome':'moneyExpense'}><b>{fmtMoney(Math.abs(superavit))}</b></td></tr></tfoot></table></div></div>}
+  </div>;
+}
+
+function ContabilidadeModule() {
+  const [page, setPage] = usePersistentPage('contabilidade');
+  if (page === 'home') {
+    return (
+      <div>
+        <ModuleHubHome moduleKey="contabilidade" setPage={setPage} />
+        <div className="alert warn" style={{ marginTop: 16 }}>
+          <b>Etapa preparatória:</b> esta versão não gera nem transmite ECF. Estruture o plano de contas e valide os vínculos com o contador responsável.
+        </div>
+      </div>
+    );
+  }
+  return <div><button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>← Voltar para Contabilidade</button>
+    {page === 'plano' && <PlanoContasContabilPage />}
+    {page === 'exercicios' && <ExerciciosContabeisPage />}
+    {page === 'vinculos' && <VinculosFinanceirosContabeisPage />}
+    {page === 'lancamentos' && <LancamentosContabeisPage />}
+    {page === 'relatorios' && <RelatoriosContabeisPage />}
+    {page === 'configuracoes' && <ConfiguracoesContabeisPage />}
+    {page === 'referenciais' && <ContasReferenciaisPage />}
+  </div>;
+}
+
 function CadastrosModule() {
   const [page, setPage] = usePersistentPage('cadastros');
   const cards = [
@@ -19529,6 +20368,7 @@ function CadastrosModule() {
         ['caixas', '💼 Caixas', 'Caixas financeiros e contas internas.'],
         ['tiposReceita', '💚 Tipos de entrada', 'Dízimos, ofertas, doações e outras entradas.'],
         ['categorias', '💸 Categorias de despesas', 'Água, energia, tarifas, manutenção e outras despesas.'],
+        ['gruposGerenciais', '📊 Grupos gerenciais', 'Organização de custos para análises e previsões financeiras.'],
         ['prestacaoRelatorios', '🎞️ Relatórios da prestação', 'Slides/blocos usados na prestação de contas.'],
         ['prestacaoGrupos', '🧩 Grupos dos slides', 'Agrupamentos exibidos dentro dos slides.'],
         ['formas', '💳 Formas de pagamento', 'Dinheiro, Pix, cartão, transferência e cheque.'],
@@ -19565,6 +20405,7 @@ function CadastrosModule() {
       {page === 'caixas' && <TiposCaixaPage />}
       {page === 'tiposReceita' && <TiposReceitaPage />}
       {page === 'categorias' && <CategoriasDespesasPage />}
+      {page === 'gruposGerenciais' && <GruposGerenciaisDespesasPage />}
       {page === 'prestacaoRelatorios' && <PrestacaoRelatoriosPage />}
       {page === 'prestacaoGrupos' && <PrestacaoGruposRelatorioPage />}
       {page === 'formas' && <FormasPagamentoPage />}
@@ -21758,6 +22599,7 @@ function Layout({ profile, onLogout, activeModule, setActiveModule, selectedEmpr
     secretaria: { icon: '🗂️', label: 'Secretaria' },
     ebd: { icon: '📖', label: 'EBD' },
     patrimonio: { icon: '🏛️', label: 'Patrimônio' },
+    contabilidade: { icon: '📚', label: 'Contabilidade' },
     portal: { icon: '◉', label: 'Portal do Membro' },
     cadastros: { icon: '⚙️', label: 'Cadastros' },
     usuarios: { icon: '🔐', label: 'Usuários' },
@@ -22018,6 +22860,7 @@ function AccessDenied({ moduleKey }) {
     secretaria: 'Comunidade',
     ebd: 'Ensino / EBD',
     patrimonio: 'Patrimônio',
+    contabilidade: 'Contabilidade',
     portal: 'Portal do Membro',
     cadastros: 'Cadastros',
     usuarios: 'Usuários',
@@ -22105,6 +22948,7 @@ function ModuleRouter({ activeModule, profile, selectedEmpresaId, setSelectedEmp
       {activeModule === 'secretaria' && (subscriptionAccess.readOnlyRestrictedModules ? <RestrictedReadOnly moduleLabel="Secretaria" onRegularize={() => setActiveModule('assinatura')}><SecretariaModule /></RestrictedReadOnly> : <SecretariaModule />)}
       {activeModule === 'ebd' && <EbdModule />}
       {activeModule === 'patrimonio' && <PatrimonioModule />}
+      {activeModule === 'contabilidade' && <ContabilidadeModule />}
       {activeModule === 'portal' && <PortalMembroModule profile={profile} />}
       {activeModule === 'cadastros' && <CadastrosModule />}
       {activeModule === 'usuarios' && (subscriptionAccess.readOnlyRestrictedModules ? <RestrictedReadOnly moduleLabel="Usuários" onRegularize={() => setActiveModule('assinatura')}><UsuariosPermissoesPage /></RestrictedReadOnly> : <UsuariosPermissoesPage />)}
