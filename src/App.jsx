@@ -14,7 +14,7 @@ import QRCode from 'qrcode';
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.35.7';
+const APP_VERSION = '2.40.1';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -271,7 +271,6 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: true, update: true, delete: false },
     ebd: { view: true, create: true, update: true, delete: false },
     patrimonio: { view: true, create: true, update: true, delete: false },
-    contabilidade: { view: true, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   secretario: {
@@ -290,7 +289,6 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: false, create: false, update: false, delete: false },
     ebd: { view: false, create: false, update: false, delete: false },
     patrimonio: { view: false, create: false, update: false, delete: false },
-    contabilidade: { view: true, create: true, update: true, delete: false },
     cadastros: { view: true, create: true, update: true, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
@@ -300,7 +298,6 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: true, update: false, delete: false },
     ebd: { view: true, create: true, update: false, delete: false },
     patrimonio: { view: true, create: true, update: false, delete: false },
-    contabilidade: { view: false, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   consulta: {
@@ -309,7 +306,6 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: true, create: false, update: false, delete: false },
     ebd: { view: true, create: false, update: false, delete: false },
     patrimonio: { view: true, create: false, update: false, delete: false },
-    contabilidade: { view: false, create: false, update: false, delete: false },
     configuracoes: { view: false, create: false, update: false, delete: false },
   },
   membro: {
@@ -319,7 +315,6 @@ const DEFAULT_PERMISSIONS = {
     secretaria: { view: false },
     ebd: { view: false },
     patrimonio: { view: false },
-    contabilidade: { view: false },
     configuracoes: { view: false },
   },
 };
@@ -370,19 +365,9 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
   },
   membro: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, false])),
 };
-const TENANT_TABLES = new Set(['contabil_exercicios', 'contabil_plano_contas', 'contabil_configuracoes', 'contabil_contas_referenciais', 'contabil_lancamentos', 'contabil_partidas', 'membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'grupos_gerenciais_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
+const TENANT_TABLES = new Set(['contabil_exercicios', 'contabil_plano_contas', 'contabil_configuracoes', 'contabil_contas_referenciais', 'contabil_lancamentos', 'contabil_partidas', 'contabil_exportacoes', 'membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'grupos_gerenciais_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
 TENANT_TABLES.add('transferencias_agendadas');
 const TenantContext = React.createContext({ empresaId: null, isMaster: false });
-
-// Compatibilidade defensiva para páginas antigas do módulo Contabilidade.
-// Mantém o mesmo contrato do escopo atual sem criar um segundo contexto.
-function useEmpresaScope() {
-  const tenant = React.useContext(TenantContext);
-  return {
-    empresaId: tenant?.empresaId || null,
-    isMaster: Boolean(tenant?.isMaster),
-  };
-}
 const FilterContext = React.createContext({
   referencia: '2026-01',
   caixaId: '',
@@ -664,12 +649,6 @@ function tableModuleKey(table) {
     prestacao_relatorios: 'financeiro',
     prestacao_grupos_relatorio: 'financeiro',
     prestacao_fontes_slide: 'financeiro',
-    contabil_exercicios: 'contabilidade',
-    contabil_plano_contas: 'contabilidade',
-    contabil_configuracoes: 'contabilidade',
-    contabil_contas_referenciais: 'contabilidade',
-    contabil_lancamentos: 'contabilidade',
-    contabil_partidas: 'contabilidade',
     membros: 'secretaria',
     membro_historico: 'secretaria',
     filhos_dependentes: 'secretaria',
@@ -1686,6 +1665,7 @@ const AUDIT_TABLE_LABELS = {
   contabil_plano_contas: 'Plano de contas contábil',
   contabil_configuracoes: 'Configurações contábeis',
   contabil_contas_referenciais: 'Contas referenciais ECF',
+  contabil_exportacoes: 'Exportações contábeis',
   formas_pagamento: 'Formas de pagamento',
   centros_custo: 'Centros de custo',
   lancamentos_financeiros: 'Livro caixa',
@@ -18961,25 +18941,6 @@ const DEFAULT_MENU_HUBS = {
       },
     ],
   },
-  contabilidade: {
-    icon: '📚',
-    title: 'Contabilidade',
-    desc: 'Plano de contas, vínculos, lançamentos e relatórios contábeis.',
-    sections: [
-      {
-        title: 'Contabilidade',
-        items: [
-          { id: 'plano', icon: '📒', title: 'Plano de contas', desc: 'Estrutura hierárquica, natureza, vigência e conta referencial.', color: 'green' },
-          { id: 'exercicios', icon: '📅', title: 'Exercícios contábeis', desc: 'Períodos contábeis anuais e situação de abertura ou fechamento.', color: 'green' },
-          { id: 'vinculos', icon: '🔗', title: 'Vínculos financeiros', desc: 'Relaciona categorias, entradas e caixas às contas contábeis.', color: 'green' },
-          { id: 'lancamentos', icon: '🧮', title: 'Lançamentos contábeis', desc: 'Partidas dobradas, revisão e contabilização protegida.', color: 'green' },
-          { id: 'relatorios', icon: '📊', title: 'Relatórios contábeis', desc: 'Diário, Razão, Balancete e superávit ou déficit.', color: 'green' },
-          { id: 'configuracoes', icon: '🧾', title: 'Dados fiscais', desc: 'Responsável, contador, imunidade ou isenção e indicadores fiscais.', color: 'green' },
-          { id: 'referenciais', icon: '🏛️', title: 'Plano referencial ECF', desc: 'Cadastro versionado das contas referenciais oficiais.', color: 'green' },
-        ],
-      },
-    ],
-  },
   ebd: {
     icon: '📖',
     title: 'EBD — Escola Bíblica Dominical',
@@ -20054,8 +20015,8 @@ function ExerciciosContabeisPage() {
       searchKeys={['ano', 'descricao']}
       columns={[
         { key: 'ano', label: 'Ano-calendário' },
-        { key: 'data_inicio', label: 'Início', render: (r) => formatDate(r.data_inicio) },
-        { key: 'data_fim', label: 'Fim', render: (r) => formatDate(r.data_fim) },
+        { key: 'data_inicio', label: 'Início', render: (r) => fmtDate(r.data_inicio) },
+        { key: 'data_fim', label: 'Fim', render: (r) => fmtDate(r.data_fim) },
         { key: 'status', label: 'Situação', render: (r) => r.status === 'fechado' ? 'Fechado' : 'Aberto' },
       ]}
       fields={[
@@ -20136,63 +20097,41 @@ function ConfiguracoesContabeisPage() {
 }
 
 function VinculosFinanceirosContabeisPage() {
-  const tenant = React.useContext(TenantContext);
-  const empresaId = tenant?.empresaId || null;
-  const access = usePermissions();
   const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
   const receitas = useTable('tipos_receita', { order: 'nome', ascending: true });
   const caixas = useTable('tipos_caixa', { order: 'nome', ascending: true });
   const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true, filters: [{ column: 'ativo', value: true }] });
   const { push, toasts, close } = useToasts();
-  const [savingKey, setSavingKey] = useState('');
   const options = (contas.rows || []).filter((r) => r.analitica).map((r) => ({ value: r.id, label: `${r.codigo} — ${r.nome}` }));
-  const canUpdate = access.can('contabilidade', 'update');
   const salvar = async (table, id, conta_contabil_id) => {
-    if (!canUpdate) return push('Seu perfil não tem permissão para alterar vínculos contábeis.', 'error');
-    if (!empresaId) return push('Selecione uma empresa antes de alterar os vínculos.', 'error');
-    const key = `${table}:${id}`;
-    setSavingKey(key);
-    const { error } = await supabase.rpc('salvar_vinculo_contabil', {
-      p_tabela: table,
-      p_registro_id: id,
-      p_conta_contabil_id: conta_contabil_id || null,
-      p_empresa_id: empresaId,
-    });
-    setSavingKey('');
-    if (error) return push(`Não foi possível salvar o vínculo: ${error.message}`, 'error');
+    const { error } = await supabase.from(table).update({ conta_contabil_id: conta_contabil_id || null }).eq('id', id);
+    if (error) return push(error.message, 'error');
     push('Vínculo contábil atualizado.');
     if (table === 'categorias_despesas') categorias.reload();
     if (table === 'tipos_receita') receitas.reload();
     if (table === 'tipos_caixa') caixas.reload();
   };
-  const bloco = (titulo, source, table, descricao) => (
+  const bloco = (titulo, rows, table, descricao) => (
     <div className="card" style={{ marginBottom: 16 }}>
       <h3>{titulo}</h3><p className="muted">{descricao}</p>
-      {source.loading && <div className="infoBox">Carregando cadastros…</div>}
-      {!source.loading && source.error && <div className="alert danger"><b>Não foi possível carregar:</b> {source.error.message}</div>}
-      {!source.loading && !source.error && <div className="tablewrap"><table><thead><tr><th>Cadastro financeiro</th><th>Conta contábil vinculada</th><th>Status</th></tr></thead><tbody>
-        {(source.rows || []).map((row) => { const key = `${table}:${row.id}`; return <tr key={row.id}><td>{row.nome}</td><td><SearchableSelect value={row.conta_contabil_id || ''} options={options} onChange={(v) => salvar(table, row.id, v)} placeholder="Selecione uma conta analítica…" disabled={!canUpdate || options.length === 0 || savingKey === key} /></td><td>{savingKey === key ? 'Salvando…' : (row.conta_contabil_id ? 'Vinculado' : 'Não vinculado')}</td></tr>; })}
-        {!source.rows?.length && <tr><td colSpan="3" className="muted">Nenhum registro encontrado.</td></tr>}
-      </tbody></table></div>}
+      <div className="tablewrap"><table><thead><tr><th>Cadastro financeiro</th><th>Conta contábil vinculada</th></tr></thead><tbody>
+        {(rows || []).map((row) => <tr key={row.id}><td>{row.nome}</td><td><SearchableSelect value={row.conta_contabil_id || ''} options={options} onChange={(v) => salvar(table, row.id, v)} placeholder="Selecione uma conta analítica…" /></td></tr>)}
+        {!rows?.length && <tr><td colSpan="2" className="muted">Nenhum registro encontrado.</td></tr>}
+      </tbody></table></div>
     </div>
   );
   return <div><ToastStack toasts={toasts} close={close} /><div className="pageHeader"><div><h2>Vínculos Financeiro × Contabilidade</h2><p>Mapeie os cadastros atuais para contas contábeis sem alterar o Livro Caixa.</p></div></div>
     <div className="alert warn"><b>Importante:</b> vincular não contabiliza lançamentos antigos nem gera partidas dobradas. Essa etapa apenas prepara a classificação contábil.</div>
-    {contas.loading && <div className="infoBox">Carregando plano de contas…</div>}
-    {!contas.loading && contas.error && <div className="alert danger"><b>Plano de contas indisponível:</b> {contas.error.message}</div>}
-    {!contas.loading && !contas.error && options.length === 0 && <div className="alert warn"><b>Nenhuma conta analítica disponível.</b> Abra Plano de contas e cadastre ou ative contas analíticas antes de criar vínculos.</div>}
-    {bloco('Categorias de despesas', categorias, 'categorias_despesas', 'Ex.: Energia elétrica → Despesas com energia elétrica.')}
-    {bloco('Tipos de entrada', receitas, 'tipos_receita', 'Ex.: Dízimos → Receita de dízimos.')}
-    {bloco('Caixas e contas bancárias', caixas, 'tipos_caixa', 'Ex.: Banco do Brasil → Banco conta movimento.')}
+    {bloco('Categorias de despesas', categorias.rows, 'categorias_despesas', 'Ex.: Energia elétrica → Despesas com energia elétrica.')}
+    {bloco('Tipos de entrada', receitas.rows, 'tipos_receita', 'Ex.: Dízimos → Receita de dízimos.')}
+    {bloco('Caixas e contas bancárias', caixas.rows, 'tipos_caixa', 'Ex.: Banco do Brasil → Banco conta movimento.')}
   </div>;
 }
 
 
 
 function LancamentosContabeisPage() {
-  const tenant = React.useContext(TenantContext);
-  const empresaId = tenant?.empresaId || null;
-  const access = usePermissions();
+  const { empresaId } = React.useContext(TenantContext);
   const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true, filters: [{ column: 'ativo', value: true }] });
   const lancamentos = useTable('contabil_lancamentos', { order: 'data', ascending: false });
   const exercicios = useTable('contabil_exercicios', { order: 'ano', ascending: false, filters: [{ column: 'status', value: 'aberto' }] });
@@ -20202,40 +20141,31 @@ function LancamentosContabeisPage() {
   const contaOptions = (contas.rows || []).filter((r) => r.analitica).map((r) => ({ value: r.id, label: `${r.codigo} — ${r.nome}` }));
   const exercicioOptions = (exercicios.rows || []).map((r) => ({ value: r.id, label: `${r.ano} — ${r.descricao || 'Exercício aberto'}` }));
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const canCreate = access.can('contabilidade', 'create');
-  const canUpdate = access.can('contabilidade', 'update');
   const criar = async (status = 'rascunho') => {
-    const valor = Number(String(form.valor || '').replace(/\./g, '').replace(',', '.'));
-    if (!canCreate) return push('Seu perfil não tem permissão para criar lançamentos contábeis.', 'error');
+    const valor = Number(String(form.valor || '').replace(',', '.'));
     if (!empresaId || !form.data || !form.historico.trim() || !form.conta_debito_id || !form.conta_credito_id || !(valor > 0)) return push('Preencha data, histórico, contas de débito/crédito e valor.', 'error');
-    if (!form.exercicio_id) return push('Selecione um exercício contábil aberto.', 'error');
     if (form.conta_debito_id === form.conta_credito_id) return push('Débito e crédito devem usar contas diferentes.', 'error');
     setSaving(true);
-    const { error } = await supabase.rpc('criar_lancamento_contabil_simples', {
-      p_exercicio_id: form.exercicio_id,
-      p_data: form.data,
-      p_historico: form.historico.trim(),
-      p_documento: form.documento || null,
-      p_conta_debito_id: form.conta_debito_id,
-      p_conta_credito_id: form.conta_credito_id,
-      p_valor: valor,
-      p_observacoes: form.observacoes || null,
-      p_contabilizar: status === 'contabilizado',
-    });
-    setSaving(false);
-    if (error) return push(error.message, 'error');
+    const referencia = form.data.slice(0, 7);
+    const { data: lanc, error } = await supabase.from('contabil_lancamentos').insert({ empresa_id: empresaId, exercicio_id: form.exercicio_id || null, data: form.data, referencia, historico: form.historico.trim(), documento: form.documento || null, origem_tipo: 'manual', status: 'rascunho', observacoes: form.observacoes || null }).select('id').single();
+    if (error) { setSaving(false); return push(error.message, 'error'); }
+    const { error: partErr } = await supabase.from('contabil_partidas').insert([
+      { empresa_id: empresaId, lancamento_id: lanc.id, conta_contabil_id: form.conta_debito_id, tipo: 'debito', valor, ordem: 1 },
+      { empresa_id: empresaId, lancamento_id: lanc.id, conta_contabil_id: form.conta_credito_id, tipo: 'credito', valor, ordem: 2 },
+    ]);
+    if (partErr) { await supabase.from('contabil_lancamentos').delete().eq('id', lanc.id); setSaving(false); return push(partErr.message, 'error'); }
+    if (status === 'contabilizado') {
+      const { error: rpcErr } = await supabase.rpc('contabilizar_lancamento', { p_lancamento_id: lanc.id });
+      if (rpcErr) { setSaving(false); lancamentos.reload(); return push(`Rascunho criado, mas não contabilizado: ${rpcErr.message}`, 'error'); }
+    }
     setForm({ data: todayISO(), historico: '', documento: '', exercicio_id: '', conta_debito_id: '', conta_credito_id: '', valor: '', observacoes: '' });
-    lancamentos.reload();
-    push(status === 'contabilizado' ? 'Lançamento contabilizado.' : 'Rascunho contábil criado.');
+    setSaving(false); lancamentos.reload(); push(status === 'contabilizado' ? 'Lançamento contabilizado.' : 'Rascunho contábil criado.');
   };
-  const contabilizar = async (id) => { if (!canUpdate) return push('Seu perfil não tem permissão para contabilizar lançamentos.', 'error'); const { error } = await supabase.rpc('contabilizar_lancamento', { p_lancamento_id: id }); if (error) return push(error.message, 'error'); push('Lançamento contabilizado.'); lancamentos.reload(); };
-  const cancelar = async (id) => { if (!canUpdate) return push('Seu perfil não tem permissão para cancelar lançamentos.', 'error'); if (!window.confirm('Cancelar este lançamento contábil?')) return; const { error } = await supabase.from('contabil_lancamentos').update({ status: 'cancelado' }).eq('id', id).neq('status', 'contabilizado'); if (error) return push(error.message, 'error'); push('Lançamento cancelado.'); lancamentos.reload(); };
+  const contabilizar = async (id) => { const { error } = await supabase.rpc('contabilizar_lancamento', { p_lancamento_id: id }); if (error) return push(error.message, 'error'); push('Lançamento contabilizado.'); lancamentos.reload(); };
+  const cancelar = async (id) => { if (!window.confirm('Cancelar este lançamento contábil?')) return; const { error } = await supabase.from('contabil_lancamentos').update({ status: 'cancelado' }).eq('id', id).neq('status', 'contabilizado'); if (error) return push(error.message, 'error'); push('Lançamento cancelado.'); lancamentos.reload(); };
   return <div><ToastStack toasts={toasts} close={close} />
     <div className="pageHeader"><div><h2>Lançamentos Contábeis</h2><p>Partidas dobradas revisáveis, separadas do Livro Caixa.</p></div></div>
     <div className="alert warn"><b>Controle:</b> contabilizar não altera o saldo financeiro. Débitos e créditos precisam ser iguais; lançamentos contabilizados não podem ser cancelados por esta tela.</div>
-    {!contas.loading && contaOptions.length < 2 && <div className="alert danger"><b>Configuração incompleta:</b> cadastre pelo menos duas contas analíticas ativas no Plano de contas.</div>}
-    {!exercicios.loading && exercicioOptions.length === 0 && <div className="alert danger"><b>Configuração incompleta:</b> crie um exercício contábil aberto antes de lançar.</div>}
-    {(contas.error || exercicios.error || lancamentos.error) && <div className="alert danger"><b>Falha ao carregar a base contábil:</b> {(contas.error || exercicios.error || lancamentos.error)?.message}</div>}
     <div className="card" style={{ marginBottom: 18 }}><h3>Novo lançamento manual</h3>
       <div className="formGrid">
         <label>Data<input type="date" value={form.data} onChange={(e)=>set('data',e.target.value)} /></label>
@@ -20246,10 +20176,10 @@ function LancamentosContabeisPage() {
         <label>Conta de débito<SearchableSelect value={form.conta_debito_id} options={contaOptions} onChange={(v)=>set('conta_debito_id',v)} placeholder="Selecione a conta devedora…" /></label>
         <label>Conta de crédito<SearchableSelect value={form.conta_credito_id} options={contaOptions} onChange={(v)=>set('conta_credito_id',v)} placeholder="Selecione a conta credora…" /></label>
         <label className="full">Observações<textarea value={form.observacoes} onChange={(e)=>set('observacoes',e.target.value)} /></label>
-      </div><div className="actions"><button className="secondary" disabled={saving || !canCreate || contaOptions.length < 2 || exercicioOptions.length === 0} onClick={()=>criar('rascunho')}>Salvar rascunho</button><button disabled={saving || !canCreate || contaOptions.length < 2 || exercicioOptions.length === 0} onClick={()=>criar('contabilizado')}>Salvar e contabilizar</button></div>
+      </div><div className="actions"><button className="secondary" disabled={saving} onClick={()=>criar('rascunho')}>Salvar rascunho</button><button disabled={saving} onClick={()=>criar('contabilizado')}>Salvar e contabilizar</button></div>
     </div>
     <div className="card"><h3>Histórico de lançamentos</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Nº</th><th>Histórico</th><th>Origem</th><th>Status</th><th>Ações</th></tr></thead><tbody>
-      {(lancamentos.rows||[]).map((r)=><tr key={r.id}><td>{formatDate(r.data)}</td><td>{r.numero||'—'}</td><td>{r.historico}</td><td>{r.origem_tipo}</td><td><span className={`badge ${r.status==='contabilizado'?'success':r.status==='cancelado'?'danger':'warn'}`}>{r.status}</span></td><td><div className="actions inline">{canUpdate&&r.status==='rascunho'&&<button className="smallBtn" onClick={()=>contabilizar(r.id)}>Contabilizar</button>}{canUpdate&&r.status!=='contabilizado'&&r.status!=='cancelado'&&<button className="secondary smallBtn" onClick={()=>cancelar(r.id)}>Cancelar</button>}</div></td></tr>)}
+      {(lancamentos.rows||[]).map((r)=><tr key={r.id}><td>{fmtDate(r.data)}</td><td>{r.numero||'—'}</td><td>{r.historico}</td><td>{r.origem_tipo}</td><td><span className={`badge ${r.status==='contabilizado'?'success':r.status==='cancelado'?'danger':'warn'}`}>{r.status}</span></td><td><div className="actions inline">{r.status==='rascunho'&&<button className="smallBtn" onClick={()=>contabilizar(r.id)}>Contabilizar</button>}{r.status!=='contabilizado'&&r.status!=='cancelado'&&<button className="secondary smallBtn" onClick={()=>cancelar(r.id)}>Cancelar</button>}</div></td></tr>)}
       {!lancamentos.rows?.length&&<tr><td colSpan="6" className="muted">Nenhum lançamento contábil.</td></tr>}
     </tbody></table></div></div>
   </div>;
@@ -20292,6 +20222,10 @@ function RelatoriosContabeisPage() {
   });
   const balancete = Object.values(balanceteMap).sort((a,b)=>String(a.conta.codigo).localeCompare(String(b.conta.codigo))).map((i)=>({ ...i, saldo:i.debitos-i.creditos }));
   const resultado = balancete.filter((i)=>['receita','despesa'].includes(i.conta.tipo));
+  const balanco = balancete.filter((i)=>['ativo','passivo','patrimonio_social'].includes(i.conta.tipo));
+  const totalAtivo = balanco.filter((i)=>i.conta.tipo==='ativo').reduce((s,i)=>s+Math.abs(i.saldo),0);
+  const totalPassivo = balanco.filter((i)=>i.conta.tipo==='passivo').reduce((s,i)=>s+Math.abs(i.saldo),0);
+  const totalPatrimonio = balanco.filter((i)=>i.conta.tipo==='patrimonio_social').reduce((s,i)=>s+Math.abs(i.saldo),0);
   const totalReceitas = resultado.filter((i)=>i.conta.tipo==='receita').reduce((s,i)=>s+Math.abs(i.saldo),0);
   const totalDespesas = resultado.filter((i)=>i.conta.tipo==='despesa').reduce((s,i)=>s+Math.abs(i.saldo),0);
   const superavit = totalReceitas-totalDespesas;
@@ -20302,6 +20236,7 @@ function RelatoriosContabeisPage() {
     if(relatorio==='diario') { linhas=[['Data','Número','Histórico','Documento','Conta','Tipo','Valor']]; diario.forEach(l=>l.partidas.forEach(p=>linhas.push([l.data,l.numero,l.historico,l.documento||'',`${contaMap[p.conta_contabil_id]?.codigo||''} - ${contaMap[p.conta_contabil_id]?.nome||''}`,p.tipo,p.valor]))); }
     if(relatorio==='razao') { linhas=[['Data','Conta','Histórico','Débito','Crédito','Saldo']]; razao.forEach(r=>linhas.push([r.lancamento?.data,`${r.conta?.codigo||''} - ${r.conta?.nome||''}`,r.lancamento?.historico,r.tipo==='debito'?r.valor:'',r.tipo==='credito'?r.valor:'',r.saldo])); }
     if(relatorio==='balancete') { linhas=[['Código','Conta','Débitos','Créditos','Saldo']]; balancete.forEach(r=>linhas.push([r.conta.codigo,r.conta.nome,r.debitos,r.creditos,r.saldo])); }
+    if(relatorio==='balanco') { linhas=[['Grupo','Código','Conta','Valor']]; balanco.forEach(r=>linhas.push([r.conta.tipo,r.conta.codigo,r.conta.nome,Math.abs(r.saldo)])); linhas.push(['TOTAL ATIVO','','',totalAtivo],['TOTAL PASSIVO','','',totalPassivo],['PATRIMÔNIO SOCIAL','','',totalPatrimonio]); }
     if(relatorio==='resultado') { linhas=[['Grupo','Código','Conta','Valor']]; resultado.forEach(r=>linhas.push([r.conta.tipo,r.conta.codigo,r.conta.nome,Math.abs(r.saldo)])); linhas.push(['Resultado','','',superavit]); }
     const blob=new Blob(['\ufeff'+linhas.map(l=>l.map(csvEscape).join(';')).join('\n')],{type:'text/csv;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`${relatorio}-contabil.csv`; a.click(); URL.revokeObjectURL(url);
   };
@@ -20310,40 +20245,163 @@ function RelatoriosContabeisPage() {
     <div className="pageHeader"><div><h2>Relatórios Contábeis</h2><p>Diário, Razão, Balancete e Demonstração do Superávit ou Déficit.</p></div><div className="actions"><button className="secondary" onClick={baixarCsv}>Exportar CSV</button><button onClick={()=>window.print()}>Imprimir</button></div></div>
     <div className="alert warn"><b>Escopo:</b> somente lançamentos com status contabilizado entram nos relatórios. Os demonstrativos devem ser revisados pelo contador responsável.</div>
     <div className="card noPrint" style={{marginBottom:16}}><div className="formGrid">
-      <label>Relatório<select value={relatorio} onChange={(e)=>setRelatorio(e.target.value)}><option value="diario">Diário</option><option value="razao">Razão</option><option value="balancete">Balancete</option><option value="resultado">Superávit ou déficit</option></select></label>
+      <label>Relatório<select value={relatorio} onChange={(e)=>setRelatorio(e.target.value)}><option value="diario">Diário</option><option value="razao">Razão</option><option value="balancete">Balancete</option><option value="balanco">Balanço patrimonial</option><option value="resultado">Superávit ou déficit</option></select></label>
       <label>Exercício<SearchableSelect value={exercicioId} options={exercicioOptions} onChange={setExercicioId} placeholder="Todos" /></label>
       <label>Data inicial<input type="date" value={inicio} onChange={(e)=>setInicio(e.target.value)} /></label>
       <label>Data final<input type="date" value={fim} onChange={(e)=>setFim(e.target.value)} /></label>
       {relatorio==='razao'&&<label className="full">Conta contábil<SearchableSelect value={contaId} options={contaOptions} onChange={setContaId} placeholder="Todas as contas" /></label>}
     </div></div>
     <div className="grid cols3 reportSummary"><div className="card kpi"><div className="label">Débitos</div><div className="value">{fmtMoney(totais.debito)}</div></div><div className="card kpi"><div className="label">Créditos</div><div className="value">{fmtMoney(totais.credito)}</div></div><div className="card kpi"><div className="label">Diferença</div><div className={`value ${Math.abs(totais.debito-totais.credito)>0.009?'moneyExpense':'moneyIncome'}`}>{fmtMoney(totais.debito-totais.credito)}</div></div></div>
-    {relatorio==='diario'&&<div className="card"><h3>Livro Diário</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Nº</th><th>Histórico/documento</th><th>Conta</th><th>Débito</th><th>Crédito</th></tr></thead><tbody>{diario.flatMap(l=>l.partidas.map((p,i)=><tr key={p.id}><td>{i===0?formatDate(l.data):''}</td><td>{i===0?(l.numero||'—'):''}</td><td>{i===0?<><b>{l.historico}</b><br/><span className="muted">{l.documento||''}</span></>:''}</td><td>{contaMap[p.conta_contabil_id]?.codigo} — {contaMap[p.conta_contabil_id]?.nome}</td><td>{p.tipo==='debito'?fmtMoney(p.valor):''}</td><td>{p.tipo==='credito'?fmtMoney(p.valor):''}</td></tr>))}{!diario.length&&<tr><td colSpan="6" className="muted">Nenhum lançamento contabilizado no período.</td></tr>}</tbody></table></div></div>}
-    {relatorio==='razao'&&<div className="card"><h3>Livro Razão</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Conta</th><th>Histórico</th><th>Débito</th><th>Crédito</th><th>Saldo</th></tr></thead><tbody>{razao.map(r=><tr key={r.id}><td>{formatDate(r.lancamento?.data)}</td><td>{r.conta?.codigo} — {r.conta?.nome}</td><td>{r.lancamento?.historico}</td><td>{r.tipo==='debito'?fmtMoney(r.valor):''}</td><td>{r.tipo==='credito'?fmtMoney(r.valor):''}</td><td>{fmtMoney(r.saldo)}</td></tr>)}{!razao.length&&<tr><td colSpan="6" className="muted">Nenhuma partida encontrada.</td></tr>}</tbody></table></div></div>}
+    {relatorio==='diario'&&<div className="card"><h3>Livro Diário</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Nº</th><th>Histórico/documento</th><th>Conta</th><th>Débito</th><th>Crédito</th></tr></thead><tbody>{diario.flatMap(l=>l.partidas.map((p,i)=><tr key={p.id}><td>{i===0?fmtDate(l.data):''}</td><td>{i===0?(l.numero||'—'):''}</td><td>{i===0?<><b>{l.historico}</b><br/><span className="muted">{l.documento||''}</span></>:''}</td><td>{contaMap[p.conta_contabil_id]?.codigo} — {contaMap[p.conta_contabil_id]?.nome}</td><td>{p.tipo==='debito'?fmtMoney(p.valor):''}</td><td>{p.tipo==='credito'?fmtMoney(p.valor):''}</td></tr>))}{!diario.length&&<tr><td colSpan="6" className="muted">Nenhum lançamento contabilizado no período.</td></tr>}</tbody></table></div></div>}
+    {relatorio==='razao'&&<div className="card"><h3>Livro Razão</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Conta</th><th>Histórico</th><th>Débito</th><th>Crédito</th><th>Saldo</th></tr></thead><tbody>{razao.map(r=><tr key={r.id}><td>{fmtDate(r.lancamento?.data)}</td><td>{r.conta?.codigo} — {r.conta?.nome}</td><td>{r.lancamento?.historico}</td><td>{r.tipo==='debito'?fmtMoney(r.valor):''}</td><td>{r.tipo==='credito'?fmtMoney(r.valor):''}</td><td>{fmtMoney(r.saldo)}</td></tr>)}{!razao.length&&<tr><td colSpan="6" className="muted">Nenhuma partida encontrada.</td></tr>}</tbody></table></div></div>}
     {relatorio==='balancete'&&<div className="card"><h3>Balancete de Verificação</h3><div className="tablewrap"><table><thead><tr><th>Código</th><th>Conta</th><th>Débitos</th><th>Créditos</th><th>Saldo devedor</th><th>Saldo credor</th></tr></thead><tbody>{balancete.map(r=><tr key={r.conta.id}><td>{r.conta.codigo}</td><td>{r.conta.nome}</td><td>{fmtMoney(r.debitos)}</td><td>{fmtMoney(r.creditos)}</td><td>{r.saldo>0?fmtMoney(r.saldo):''}</td><td>{r.saldo<0?fmtMoney(Math.abs(r.saldo)):''}</td></tr>)}{!balancete.length&&<tr><td colSpan="6" className="muted">Nenhuma movimentação encontrada.</td></tr>}</tbody><tfoot><tr><td colSpan="2"><b>TOTAIS</b></td><td><b>{fmtMoney(totais.debito)}</b></td><td><b>{fmtMoney(totais.credito)}</b></td><td></td><td></td></tr></tfoot></table></div></div>}
+    {relatorio==='balanco'&&<div className="card"><h3>Balanço Patrimonial</h3><div className="tablewrap"><table><thead><tr><th>Grupo</th><th>Código</th><th>Conta</th><th>Saldo</th></tr></thead><tbody>{balanco.map(r=><tr key={r.conta.id}><td>{r.conta.tipo==='patrimonio_social'?'Patrimônio social':r.conta.tipo}</td><td>{r.conta.codigo}</td><td>{r.conta.nome}</td><td>{fmtMoney(Math.abs(r.saldo))}</td></tr>)}{!balanco.length&&<tr><td colSpan="4" className="muted">Nenhuma conta patrimonial movimentada.</td></tr>}</tbody><tfoot><tr><td colSpan="3"><b>Total do ativo</b></td><td><b>{fmtMoney(totalAtivo)}</b></td></tr><tr><td colSpan="3"><b>Total do passivo</b></td><td><b>{fmtMoney(totalPassivo)}</b></td></tr><tr><td colSpan="3"><b>Patrimônio social</b></td><td><b>{fmtMoney(totalPatrimonio)}</b></td></tr><tr><td colSpan="3"><b>Diferença patrimonial</b></td><td className={Math.abs(totalAtivo-totalPassivo-totalPatrimonio)>0.009?'moneyExpense':'moneyIncome'}><b>{fmtMoney(totalAtivo-totalPassivo-totalPatrimonio)}</b></td></tr></tfoot></table></div></div>}
     {relatorio==='resultado'&&<div className="card"><h3>Demonstração do Superávit ou Déficit</h3><div className="tablewrap"><table><thead><tr><th>Grupo</th><th>Código</th><th>Conta</th><th>Valor</th></tr></thead><tbody>{resultado.map(r=><tr key={r.conta.id}><td>{r.conta.tipo==='receita'?'Receita':'Despesa'}</td><td>{r.conta.codigo}</td><td>{r.conta.nome}</td><td>{fmtMoney(Math.abs(r.saldo))}</td></tr>)}{!resultado.length&&<tr><td colSpan="4" className="muted">Nenhuma conta de receita ou despesa movimentada.</td></tr>}</tbody><tfoot><tr><td colSpan="3"><b>Total de receitas</b></td><td><b>{fmtMoney(totalReceitas)}</b></td></tr><tr><td colSpan="3"><b>Total de despesas</b></td><td><b>{fmtMoney(totalDespesas)}</b></td></tr><tr><td colSpan="3"><b>{superavit>=0?'SUPERÁVIT':'DÉFICIT'}</b></td><td className={superavit>=0?'moneyIncome':'moneyExpense'}><b>{fmtMoney(Math.abs(superavit))}</b></td></tr></tfoot></table></div></div>}
   </div>;
 }
 
+
+function ContabilidadeVisaoGeralPage() {
+  const contas = useTable('contabil_plano_contas', { order: 'codigo', ascending: true });
+  const exercicios = useTable('contabil_exercicios', { order: 'ano', ascending: false });
+  const lancamentos = useTable('contabil_lancamentos', { order: 'data', ascending: false });
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const tipos = useTable('tipos_receita', { order: 'nome', ascending: true });
+  const caixas = useTable('tipos_caixa', { order: 'nome', ascending: true });
+  const analiticas = (contas.rows || []).filter((r) => r.analitica);
+  const semReferencial = analiticas.filter((r) => !r.conta_referencial_id).length;
+  const pendentes = (lancamentos.rows || []).filter((r) => ['rascunho','revisao'].includes(r.status)).length;
+  const semVinculo = [...(categorias.rows||[]), ...(tipos.rows||[]), ...(caixas.rows||[])].filter((r)=>!r.conta_contabil_id).length;
+  return <div>
+    <div className="pageHeader"><div><h2>Visão geral contábil</h2><p>Acompanhe a preparação da escrituração, vínculos e fechamento.</p></div></div>
+    <div className="grid cols4 reportSummary">
+      <div className="card kpi"><div className="label">Contas analíticas</div><div className="value">{analiticas.length}</div></div>
+      <div className="card kpi"><div className="label">Lançamentos pendentes</div><div className="value">{pendentes}</div></div>
+      <div className="card kpi"><div className="label">Cadastros sem vínculo</div><div className="value">{semVinculo}</div></div>
+      <div className="card kpi"><div className="label">Contas sem referencial</div><div className="value">{semReferencial}</div></div>
+    </div>
+    <div className="card"><h3>Exercícios contábeis</h3><div className="tablewrap"><table><thead><tr><th>Ano</th><th>Período</th><th>Situação</th><th>Lançamentos</th></tr></thead><tbody>{(exercicios.rows||[]).map((e)=><tr key={e.id}><td>{e.ano}</td><td>{fmtDate(e.data_inicio)} a {fmtDate(e.data_fim)}</td><td><span className={`badge ${e.status==='fechado'?'success':'warn'}`}>{e.status}</span></td><td>{(lancamentos.rows||[]).filter((l)=>l.exercicio_id===e.id).length}</td></tr>)}{!exercicios.rows?.length&&<tr><td colSpan="4" className="muted">Cadastre o primeiro exercício contábil.</td></tr>}</tbody></table></div></div>
+  </div>;
+}
+
+function IntegracaoFinanceiroContabilPage() {
+  const { empresaId } = React.useContext(TenantContext);
+  const receitas = useTable('lancamentos_financeiros', { order: 'data', ascending: false });
+  const despesas = useTable('despesas', { order: 'data', ascending: false });
+  const transferencias = useTable('transferencias_caixas', { order: 'data', ascending: false });
+  const lancamentos = useTable('contabil_lancamentos', { order: 'data', ascending: false });
+  const categorias = useTable('categorias_despesas', { order: 'nome', ascending: true });
+  const tipos = useTable('tipos_receita', { order: 'nome', ascending: true });
+  const caixas = useTable('tipos_caixa', { order: 'nome', ascending: true });
+  const exercicios = useTable('contabil_exercicios', { order: 'ano', ascending: false, filters:[{column:'status',value:'aberto'}] });
+  const { push, toasts, close } = useToasts();
+  const [tipoFiltro,setTipoFiltro]=useState('todos');
+  const [saving,setSaving]=useState('');
+  const catMap=Object.fromEntries((categorias.rows||[]).map(r=>[r.id,r]));
+  const caixaMap=Object.fromEntries((caixas.rows||[]).map(r=>[r.id,r]));
+  const tipoMap=Object.fromEntries((tipos.rows||[]).map(r=>[String(r.nome||'').toLowerCase(),r]));
+  const existentes=new Set((lancamentos.rows||[]).filter(r=>r.origem_id).map(r=>`${r.origem_tipo}:${r.origem_id}`));
+  const rows=[
+    ...(receitas.rows||[]).map(r=>({...r,origem_tipo:'receita',titulo:`Receita — ${r.tipo||'Entrada'}`})),
+    ...(despesas.rows||[]).map(r=>({...r,origem_tipo:'despesa',titulo:`Despesa — ${r.descricao||catMap[r.categoria_id]?.nome||'Despesa'}`})),
+    ...(transferencias.rows||[]).filter(r=>r.status!=='estornada').map(r=>({...r,origem_tipo:'transferencia',titulo:`Transferência — ${caixaMap[r.caixa_origem_id]?.nome||'Origem'} → ${caixaMap[r.caixa_destino_id]?.nome||'Destino'}`})),
+  ].filter(r=>!existentes.has(`${r.origem_tipo}:${r.id}`)).filter(r=>tipoFiltro==='todos'||r.origem_tipo===tipoFiltro).sort((a,b)=>String(b.data||'').localeCompare(String(a.data||'')));
+  const gerar=async(r)=>{
+    let debito='',credito='';
+    if(r.origem_tipo==='despesa'){ debito=catMap[r.categoria_id]?.conta_contabil_id; credito=caixaMap[r.tipo_caixa_id]?.conta_contabil_id; }
+    if(r.origem_tipo==='receita'){ debito=caixaMap[r.tipo_caixa_id]?.conta_contabil_id; credito=tipoMap[String(r.tipo||'').toLowerCase()]?.conta_contabil_id; }
+    if(r.origem_tipo==='transferencia'){ debito=caixaMap[r.caixa_destino_id]?.conta_contabil_id; credito=caixaMap[r.caixa_origem_id]?.conta_contabil_id; }
+    if(!debito||!credito) return push('Faltam vínculos contábeis na categoria, tipo de entrada ou caixa.', 'error');
+    const exercicio=(exercicios.rows||[]).find(e=>r.data>=e.data_inicio&&r.data<=e.data_fim);
+    if(!exercicio) return push('Não existe exercício aberto abrangendo a data do movimento.', 'error');
+    setSaving(r.id);
+    const {data:lanc,error}=await supabase.from('contabil_lancamentos').insert({empresa_id:empresaId,exercicio_id:exercicio.id,data:r.data,referencia:r.referencia||r.data.slice(0,7),historico:r.titulo,documento:r.documento||null,origem_tipo:r.origem_tipo,origem_id:r.id,status:'rascunho',observacoes:'Gerado pela integração financeiro-contábil.'}).select('id').single();
+    if(error){setSaving('');return push(error.message,'error');}
+    const {error:pe}=await supabase.from('contabil_partidas').insert([{empresa_id:empresaId,lancamento_id:lanc.id,conta_contabil_id:debito,tipo:'debito',valor:Number(r.valor||0),ordem:1},{empresa_id:empresaId,lancamento_id:lanc.id,conta_contabil_id:credito,tipo:'credito',valor:Number(r.valor||0),ordem:2}]);
+    if(pe){await supabase.from('contabil_lancamentos').delete().eq('id',lanc.id);setSaving('');return push(pe.message,'error');}
+    setSaving('');lancamentos.reload();push('Rascunho contábil criado para revisão.');
+  };
+  return <div><ToastStack toasts={toasts} close={close}/><div className="pageHeader"><div><h2>Integração financeira-contábil</h2><p>Transforme movimentos financeiros em rascunhos contábeis revisáveis.</p></div></div>
+    <div className="alert info"><b>Segurança:</b> nenhum movimento é contabilizado automaticamente. A integração cria um rascunho com débito e crédito sugeridos pelos vínculos cadastrados.</div>
+    <div className="card" style={{marginBottom:16}}><label>Origem<select value={tipoFiltro} onChange={e=>setTipoFiltro(e.target.value)}><option value="todos">Todas</option><option value="receita">Receitas</option><option value="despesa">Despesas</option><option value="transferencia">Transferências</option></select></label></div>
+    <div className="card"><div className="tablewrap"><table><thead><tr><th>Data</th><th>Origem</th><th>Descrição</th><th>Valor</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{rows.slice(0,300).map(r=>{let ok=true;if(r.origem_tipo==='despesa')ok=!!catMap[r.categoria_id]?.conta_contabil_id&&!!caixaMap[r.tipo_caixa_id]?.conta_contabil_id;if(r.origem_tipo==='receita')ok=!!caixaMap[r.tipo_caixa_id]?.conta_contabil_id&&!!tipoMap[String(r.tipo||'').toLowerCase()]?.conta_contabil_id;if(r.origem_tipo==='transferencia')ok=!!caixaMap[r.caixa_origem_id]?.conta_contabil_id&&!!caixaMap[r.caixa_destino_id]?.conta_contabil_id;return <tr key={`${r.origem_tipo}-${r.id}`}><td>{fmtDate(r.data)}</td><td>{r.origem_tipo}</td><td>{r.titulo}</td><td>{fmtMoney(r.valor)}</td><td><span className={`badge ${ok?'success':'warn'}`}>{ok?'Pronto':'Vínculo pendente'}</span></td><td><button className="smallBtn" disabled={!ok||saving===r.id} onClick={()=>gerar(r)}>{saving===r.id?'Gerando…':'Gerar rascunho'}</button></td></tr>})}{!rows.length&&<tr><td colSpan="6" className="muted">Nenhum movimento pendente de integração.</td></tr>}</tbody></table></div></div>
+  </div>;
+}
+
+function FechamentoContabilPage() {
+  const exercicios=useTable('contabil_exercicios',{order:'ano',ascending:false});
+  const lancamentos=useTable('contabil_lancamentos',{order:'data',ascending:false});
+  const {push,toasts,close}=useToasts();
+  const executar=async(e)=>{const fn=e.status==='fechado'?'reabrir_exercicio_contabil':'fechar_exercicio_contabil';const msg=e.status==='fechado'?'Reabrir este exercício?':'Fechar este exercício? Lançamentos pendentes impedirão o fechamento.';if(!window.confirm(msg))return;const {error}=await supabase.rpc(fn,{p_exercicio_id:e.id});if(error)return push(error.message,'error');push(e.status==='fechado'?'Exercício reaberto.':'Exercício fechado.');exercicios.reload();};
+  return <div><ToastStack toasts={toasts} close={close}/><div className="pageHeader"><div><h2>Fechamento contábil</h2><p>Valide pendências, equilíbrio e bloqueie o exercício concluído.</p></div></div><div className="card"><div className="tablewrap"><table><thead><tr><th>Ano</th><th>Período</th><th>Rascunhos/revisão</th><th>Contabilizados</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{(exercicios.rows||[]).map(e=>{const ls=(lancamentos.rows||[]).filter(l=>l.exercicio_id===e.id);const pend=ls.filter(l=>['rascunho','revisao'].includes(l.status)).length;return <tr key={e.id}><td>{e.ano}</td><td>{fmtDate(e.data_inicio)} a {fmtDate(e.data_fim)}</td><td>{pend}</td><td>{ls.filter(l=>l.status==='contabilizado').length}</td><td><span className={`badge ${e.status==='fechado'?'success':'warn'}`}>{e.status}</span></td><td><button className={e.status==='fechado'?'secondary smallBtn':'smallBtn'} onClick={()=>executar(e)}>{e.status==='fechado'?'Reabrir':'Fechar exercício'}</button></td></tr>})}</tbody></table></div></div></div>;
+}
+
+function PreValidacaoEcfPage() {
+  const contas=useTable('contabil_plano_contas',{order:'codigo',ascending:true});
+  const lancamentos=useTable('contabil_lancamentos',{order:'data',ascending:false});
+  const partidas=useTable('contabil_partidas',{order:'ordem',ascending:true});
+  const configuracoes=useTable('contabil_configuracoes',{order:'created_at',ascending:false});
+  const categorias=useTable('categorias_despesas',{order:'nome',ascending:true});
+  const tipos=useTable('tipos_receita',{order:'nome',ascending:true});
+  const caixas=useTable('tipos_caixa',{order:'nome',ascending:true});
+  const problemas=[];
+  const analiticas=(contas.rows||[]).filter(c=>c.analitica&&c.ativo!==false);
+  const semRef=analiticas.filter(c=>!c.conta_referencial_id);if(semRef.length)problemas.push({nivel:'alto',item:`${semRef.length} contas analíticas sem conta referencial`,acao:'Vincule as contas no Plano de Contas.'});
+  const pend=(lancamentos.rows||[]).filter(l=>['rascunho','revisao'].includes(l.status));if(pend.length)problemas.push({nivel:'alto',item:`${pend.length} lançamentos ainda não contabilizados`,acao:'Revise ou cancele os rascunhos.'});
+  const ids=new Set((lancamentos.rows||[]).filter(l=>l.status==='contabilizado').map(l=>l.id));const dif=(partidas.rows||[]).filter(p=>ids.has(p.lancamento_id)).reduce((s,p)=>s+(p.tipo==='debito'?1:-1)*Number(p.valor||0),0);if(Math.abs(dif)>0.009)problemas.push({nivel:'critico',item:`Diferença contábil de ${fmtMoney(dif)}`,acao:'Corrija os lançamentos desequilibrados.'});
+  const semV=[...(categorias.rows||[]),...(tipos.rows||[]),...(caixas.rows||[])].filter(r=>!r.conta_contabil_id);if(semV.length)problemas.push({nivel:'medio',item:`${semV.length} cadastros financeiros sem vínculo contábil`,acao:'Complete os Vínculos Financeiros.'});
+  if(!configuracoes.rows?.length)problemas.push({nivel:'alto',item:'Dados fiscais e do contador não cadastrados',acao:'Preencha Dados fiscais.'});
+  if(!problemas.length)problemas.push({nivel:'ok',item:'Nenhuma inconsistência estrutural encontrada',acao:'Ainda é necessária validação no PVA e revisão do contador.'});
+  return <div><div className="pageHeader"><div><h2>Pré-validação ECF</h2><p>Checklist interno antes da exportação e validação no programa oficial.</p></div></div><div className="alert warn"><b>Importante:</b> esta validação não substitui o PVA da Receita Federal nem a responsabilidade técnica do contador.</div><div className="card"><div className="tablewrap"><table><thead><tr><th>Nível</th><th>Verificação</th><th>Ação recomendada</th></tr></thead><tbody>{problemas.map((p,i)=><tr key={i}><td><span className={`badge ${p.nivel==='ok'?'success':p.nivel==='critico'?'danger':'warn'}`}>{p.nivel}</span></td><td>{p.item}</td><td>{p.acao}</td></tr>)}</tbody></table></div></div></div>;
+}
+
+function ExportacoesContabeisPage() {
+  const {empresaId}=React.useContext(TenantContext);
+  const contas=useTable('contabil_plano_contas',{order:'codigo',ascending:true});
+  const lancamentos=useTable('contabil_lancamentos',{order:'data',ascending:true,filters:[{column:'status',value:'contabilizado'}]});
+  const partidas=useTable('contabil_partidas',{order:'ordem',ascending:true});
+  const exercicios=useTable('contabil_exercicios',{order:'ano',ascending:false});
+  const historico=useTable('contabil_exportacoes',{order:'created_at',ascending:false});
+  const {push,toasts,close}=useToasts();const [exercicioId,setExercicioId]=useState('');
+  const baixar=(tipo)=>{const ex=(exercicios.rows||[]).find(e=>e.id===exercicioId);if(!ex)return push('Selecione o exercício.','error');const ls=(lancamentos.rows||[]).filter(l=>l.exercicio_id===ex.id);const ids=new Set(ls.map(l=>l.id));let linhas=[];if(tipo==='plano_contas')linhas=[['Código','Conta','Tipo','Natureza','Analítica','Conta referencial'],...(contas.rows||[]).map(c=>[c.codigo,c.nome,c.tipo,c.natureza,c.analitica?'S':'N',c.conta_referencial_id||''])];else linhas=[['Data','Número','Histórico','Documento','Conta','Tipo','Valor'],...ls.flatMap(l=>(partidas.rows||[]).filter(p=>ids.has(p.lancamento_id)&&p.lancamento_id===l.id).map(p=>{const c=(contas.rows||[]).find(x=>x.id===p.conta_contabil_id);return[l.data,l.numero,l.historico,l.documento||'',`${c?.codigo||''} - ${c?.nome||''}`,p.tipo,p.valor]}))];const csv='\ufeff'+linhas.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(';')).join('\n');const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const nome=`${tipo}-${ex.ano}.csv`;const a=document.createElement('a');a.href=url;a.download=nome;a.click();URL.revokeObjectURL(url);supabase.from('contabil_exportacoes').insert({empresa_id:empresaId,exercicio_id:ex.id,tipo:tipo==='plano_contas'?'plano_contas':'lancamentos',nome_arquivo:nome,parametros:{ano:ex.ano}}).then(()=>historico.reload());push('Arquivo gerado.');};
+  const opts=(exercicios.rows||[]).map(e=>({value:e.id,label:`${e.ano} — ${e.status}`}));
+  return <div><ToastStack toasts={toasts} close={close}/><div className="pageHeader"><div><h2>Exportações contábeis e ECF</h2><p>Arquivos de conferência para o contador e preparação da obrigação fiscal.</p></div></div><div className="alert warn"><b>Escopo:</b> os CSVs são arquivos de apoio. O arquivo textual ECF somente deve ser produzido após importação das tabelas oficiais, validação do enquadramento e conferência no PVA.</div><div className="card" style={{marginBottom:16}}><div className="formGrid"><label>Exercício<SearchableSelect value={exercicioId} options={opts} onChange={setExercicioId} placeholder="Selecione…"/></label></div><div className="actions"><button onClick={()=>baixar('plano_contas')}>Exportar plano de contas</button><button onClick={()=>baixar('lancamentos')}>Exportar lançamentos</button></div></div><div className="card"><h3>Histórico</h3><div className="tablewrap"><table><thead><tr><th>Data</th><th>Arquivo</th><th>Tipo</th></tr></thead><tbody>{(historico.rows||[]).map(r=><tr key={r.id}><td>{new Date(r.created_at).toLocaleString('pt-BR')}</td><td>{r.nome_arquivo}</td><td>{r.tipo}</td></tr>)}{!historico.rows?.length&&<tr><td colSpan="3" className="muted">Nenhuma exportação registrada.</td></tr>}</tbody></table></div></div></div>;
+}
+
 function ContabilidadeModule() {
   const [page, setPage] = usePersistentPage('contabilidade');
-  if (page === 'home') {
-    return (
-      <div>
-        <ModuleHubHome moduleKey="contabilidade" setPage={setPage} />
-        <div className="alert warn" style={{ marginTop: 16 }}>
-          <b>Etapa preparatória:</b> esta versão não gera nem transmite ECF. Estruture o plano de contas e valide os vínculos com o contador responsável.
-        </div>
-      </div>
-    );
-  }
-  return <div><button className="secondary" style={{ marginBottom: 14 }} onClick={() => setPage('home')}>← Voltar para Contabilidade</button>
-    {page === 'plano' && <PlanoContasContabilPage />}
-    {page === 'exercicios' && <ExerciciosContabeisPage />}
-    {page === 'vinculos' && <VinculosFinanceirosContabeisPage />}
-    {page === 'lancamentos' && <LancamentosContabeisPage />}
-    {page === 'relatorios' && <RelatoriosContabeisPage />}
-    {page === 'configuracoes' && <ConfiguracoesContabeisPage />}
-    {page === 'referenciais' && <ContasReferenciaisPage />}
+  const cards = [
+    ['visao','📈','Visão geral','Indicadores de preparação, pendências e exercícios.','blue'],
+    ['plano','📒','Plano de contas','Estrutura hierárquica, natureza, vigência e conta referencial.','purple'],
+    ['exercicios','📅','Exercícios contábeis','Períodos anuais e situação de abertura ou fechamento.','orange'],
+    ['vinculos','🔗','Vínculos financeiros','Relaciona categorias, entradas e caixas às contas contábeis.','teal'],
+    ['integracao','⚙️','Integração financeira','Gera rascunhos contábeis a partir do Livro Caixa.','green'],
+    ['lancamentos','🧮','Lançamentos contábeis','Partidas dobradas, revisão e contabilização protegida.','blue'],
+    ['relatorios','📊','Relatórios contábeis','Diário, Razão, Balancete, Balanço e resultado.','purple'],
+    ['fechamento','🔒','Fechamento contábil','Validação e bloqueio controlado dos exercícios.','orange'],
+    ['configuracoes','🧾','Dados fiscais','Responsável, contador, imunidade/isencão e indicadores.','slate'],
+    ['referenciais','🏛️','Plano referencial ECF','Cadastro versionado das contas referenciais oficiais.','teal'],
+    ['validacao','✅','Pré-validação ECF','Checklist de vínculos, equilíbrio e dados obrigatórios.','green'],
+    ['exportacoes','📤','Exportações','Plano, lançamentos e arquivos de apoio para o contador.','blue'],
+  ];
+  if (page === 'home') return <div>
+    <div className="pageHeader"><div><h2>📚 Contabilidade</h2><p>Escrituração, demonstrações, fechamento e preparação fiscal em módulo separado do Financeiro.</p></div></div>
+    <div className="alert info"><b>Fluxo recomendado:</b> configure o plano e os vínculos, integre os movimentos, revise os lançamentos, emita relatórios, feche o exercício e execute a pré-validação.</div>
+    <div className="shortcutGrid accountingModuleGrid">{cards.map(([id,icon,title,desc,color])=><LTModuleCard key={id} icon={icon} title={title} desc={desc} color={color} onClick={()=>setPage(id)}/>)}</div>
+  </div>;
+  return <div><button className="secondary" style={{marginBottom:14}} onClick={()=>setPage('home')}>← Voltar para Contabilidade</button>
+    {page==='visao'&&<ContabilidadeVisaoGeralPage/>}
+    {page==='plano'&&<PlanoContasContabilPage/>}
+    {page==='exercicios'&&<ExerciciosContabeisPage/>}
+    {page==='vinculos'&&<VinculosFinanceirosContabeisPage/>}
+    {page==='integracao'&&<IntegracaoFinanceiroContabilPage/>}
+    {page==='lancamentos'&&<LancamentosContabeisPage/>}
+    {page==='relatorios'&&<RelatoriosContabeisPage/>}
+    {page==='fechamento'&&<FechamentoContabilPage/>}
+    {page==='configuracoes'&&<ConfiguracoesContabeisPage/>}
+    {page==='referenciais'&&<ContasReferenciaisPage/>}
+    {page==='validacao'&&<PreValidacaoEcfPage/>}
+    {page==='exportacoes'&&<ExportacoesContabeisPage/>}
   </div>;
 }
 
@@ -22860,7 +22918,6 @@ function AccessDenied({ moduleKey }) {
     secretaria: 'Comunidade',
     ebd: 'Ensino / EBD',
     patrimonio: 'Patrimônio',
-    contabilidade: 'Contabilidade',
     portal: 'Portal do Membro',
     cadastros: 'Cadastros',
     usuarios: 'Usuários',

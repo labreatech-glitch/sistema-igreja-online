@@ -5790,3 +5790,8 @@ tbody tr:hover td{background:#eef6fb!important}
   .groupsManagementTable table{min-width:1080px!important;table-layout:fixed}
   .groupDescriptionCell{-webkit-line-clamp:2}
 }
+
+/* v2.40.0 — módulo contábil finalizado e cards no design system */
+.accountingModuleGrid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;align-items:stretch}
+.accountingModuleGrid .ltModuleCard{min-height:92px!important}
+@media(max-width:720px){.accountingModuleGrid{grid-template-columns:1fr}}
