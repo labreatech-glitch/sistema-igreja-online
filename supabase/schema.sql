@@ -57,6 +57,7 @@ create table public.profiles (
   email text not null default '',
   role text not null default 'secretario' check (role in ('master','admin','gerente','operador','consulta','tesoureiro','secretario','membro')),
   ativo boolean not null default false,
+  ultimo_acesso_em timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -103,6 +104,21 @@ create table public.logs_auditoria (
   registro_id uuid,
   detalhes jsonb default '{}'::jsonb,
   created_at timestamptz not null default now()
+);
+
+create table public.usuarios_acessos (
+  id uuid primary key default gen_random_uuid(),
+  empresa_id uuid references public.empresas(id) on delete set null,
+  user_id uuid references auth.users(id) on delete set null,
+  usuario_nome text not null default '',
+  usuario_email text not null default '',
+  perfil text not null default '',
+  auth_session_id text not null,
+  origem text not null default 'web',
+  plataforma text,
+  user_agent text,
+  acessado_em timestamptz not null default now(),
+  unique (user_id, auth_session_id)
 );
 
 -- =========================================================
@@ -530,12 +546,40 @@ create trigger set_patrimonio_manutencoes_updated_at before update on public.pat
 -- =========================================================
 -- RLS
 -- =========================================================
+create or replace function public.registrar_acesso_usuario(p_plataforma text default null, p_user_agent text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_profile public.profiles%rowtype;
+  v_session_id text;
+  v_acesso_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Sessão autenticada não encontrada.'; end if;
+  select * into v_profile from public.profiles where id = auth.uid();
+  if not found or not coalesce(v_profile.ativo, false) then raise exception 'Perfil ativo não encontrado para registrar o acesso.'; end if;
+  v_session_id := coalesce(nullif(auth.jwt() ->> 'session_id', ''), auth.uid()::text || ':' || coalesce(auth.jwt() ->> 'iat', extract(epoch from now())::bigint::text));
+  insert into public.usuarios_acessos (empresa_id,user_id,usuario_nome,usuario_email,perfil,auth_session_id,plataforma,user_agent)
+  values (v_profile.empresa_id,auth.uid(),coalesce(v_profile.nome,''),coalesce(v_profile.email,''),coalesce(v_profile.role,''),v_session_id,nullif(left(coalesce(p_plataforma,''),120),''),nullif(left(coalesce(p_user_agent,''),500),''))
+  on conflict (user_id, auth_session_id) do nothing returning id into v_acesso_id;
+  if v_acesso_id is null then
+    select id into v_acesso_id from public.usuarios_acessos where user_id = auth.uid() and auth_session_id = v_session_id;
+  else
+    update public.profiles set ultimo_acesso_em = now() where id = auth.uid();
+  end if;
+  return v_acesso_id;
+end;
+$$;
+
 alter table public.empresas enable row level security;
 alter table public.profiles enable row level security;
 alter table public.assinaturas_planos enable row level security;
 alter table public.assinaturas enable row level security;
 alter table public.app_configuracoes enable row level security;
 alter table public.logs_auditoria enable row level security;
+alter table public.usuarios_acessos enable row level security;
 alter table public.membros enable row level security;
 alter table public.turmas_ebd enable row level security;
 alter table public.matriculas_ebd enable row level security;
@@ -575,6 +619,10 @@ create policy assinaturas_planos_master on public.assinaturas_planos for all usi
 create policy assinaturas_select on public.assinaturas for select using (public.is_master() or (public.is_ativo() and empresa_id = public.current_empresa_id()));
 create policy assinaturas_master on public.assinaturas for all using (public.is_master()) with check (public.is_master());
 create policy logs_select_master on public.logs_auditoria for select using (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id()));
+create policy usuarios_acessos_select on public.usuarios_acessos for select using (public.is_master() or (public.is_admin() and empresa_id = public.current_empresa_id()));
+revoke all on function public.registrar_acesso_usuario(text,text) from public, anon;
+grant execute on function public.registrar_acesso_usuario(text,text) to authenticated;
+grant select on public.usuarios_acessos to authenticated;
 create policy app_config_select on public.app_configuracoes
 for select using (
   public.is_master()

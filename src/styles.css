@@ -214,6 +214,7 @@ body{overflow-x:hidden}.page{width:min(var(--page-max),calc(100vw - 28px));max-w
 /* Auditoria v41 */
 .compactAuditFilters { margin-bottom: 16px; }
 .auditTable td { vertical-align: top; }
+.auditViewTabs{display:flex;gap:10px;margin:-6px 0 18px;flex-wrap:wrap}.auditViewTabs button{min-width:190px}.auditViewTabs button.active{background:var(--blue);border-color:var(--blue);color:#fff}.auditModulePage{min-width:0}.auditHero{margin-bottom:16px}.auditTable{width:100%;max-width:100%;overflow:hidden}.auditTable table{width:100%;min-width:0;table-layout:fixed}.auditTable th,.auditTable td{white-space:normal;overflow-wrap:anywhere}.auditTable th:nth-child(1){width:145px}.auditTable th:nth-child(2){width:94px}.auditTable th:nth-child(3){width:19%}.auditTable th:nth-child(4){width:18%}.auditTable th:nth-child(6){width:118px}.auditTable td:last-child button{width:100%;padding-left:8px;padding-right:8px}
 .card.soft { background: #f8fbff; box-shadow: none; }
 .codeBlock { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 12px; overflow:auto; max-height: 360px; font-size: 12px; }
 .badge.warning { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
@@ -432,6 +433,7 @@ tr:nth-child(even) td{background:#f8fbff!important}tr:hover td{background:#eef7f
 @media(max-width:560px){
   html{font-size:14px}.page,.shellPage{padding:12px 10px 22px!important}.card,.menuBtn{padding:16px!important}.modalBackdrop{padding:8px!important}.modalHeader{padding:14px 16px!important}.modalBody{padding:16px!important}button,.btn,.buttonLike{width:auto}.toolbar .row{width:100%;justify-content:flex-start}.toolbar .row button{flex:1}.tablewrap{border-radius:14px!important}th,td{padding:10px!important}.toastStack{width:calc(100vw - 18px)!important}
 }
+@media(max-width:760px){.auditViewTabs{display:grid;grid-template-columns:1fr}.auditViewTabs button{width:100%;min-width:0}.auditTable{overflow-x:auto}.auditTable table{min-width:860px;table-layout:auto}}
 
 /* v43 — redesign visual real: layout, tipografia e proporção refeitos */
 :root{
@@ -2965,6 +2967,7 @@ html,body,#root,.appShell,.sidebar{
 .forgotPasswordLink{display:block!important;width:auto!important;min-height:32px!important;height:auto!important;margin:-2px 0 2px auto!important;padding:4px 0!important;border:0!important;background:transparent!important;color:#1769d2!important;box-shadow:none!important;font-size:13px!important;font-weight:700!important}.forgotPasswordLink:hover{background:transparent!important;color:#4038b8!important;text-decoration:underline;transform:none!important}
 
 /* v79 — Usuários: confirmação de exclusão/remover acesso */
+.userAccessPanel{margin:16px 0}.userAccessPanel .toolbar{margin-bottom:12px}.accessSummaryBox{display:flex;flex-direction:column;justify-content:center;min-height:76px;border:1px solid var(--border);border-left:5px solid var(--blue);border-radius:10px;padding:10px 14px;background:#f8fafc}.accessSummaryBox small{font-weight:900;color:var(--slate);text-transform:uppercase;letter-spacing:.05em}.accessSummaryBox b{font-size:22px}.accessSummaryBox span{font-size:12px;color:var(--slate)}.accessUserAgent{padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#f8fafc;overflow-wrap:anywhere;font-size:13px}
 .usersPanel .actionsCell{min-width:330px!important;}
 .dangerConfirmBox{display:flex;gap:14px;align-items:flex-start;padding:16px;border:1px solid #fecaca;background:#fff5f5;border-radius:16px;color:#7f1d1d;}
 .dangerConfirmBox h3{margin:0 0 8px;font-size:20px;color:#7f1d1d;}
@@ -5795,3 +5798,198 @@ tbody tr:hover td{background:#eef6fb!important}
 .accountingModuleGrid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;align-items:stretch}
 .accountingModuleGrid .ltModuleCard{min-height:92px!important}
 @media(max-width:720px){.accountingModuleGrid{grid-template-columns:1fr}}
+
+/* v2.41.0 — tema leve e unificado
+   A cor da igreja passa a funcionar como identidade/acento. Superfícies grandes,
+   filtros, cards, tabelas e modais usam uma base neutra e clara para reduzir peso visual. */
+.appShell:not(.darkMode){
+  --ui-canvas:color-mix(in srgb,var(--theme-bg,#f7f9fc) 42%,#f8fafc);
+  --ui-surface:color-mix(in srgb,var(--theme-card,#fff) 96%,#f8fafc);
+  --ui-surface-soft:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 3.5%,#fff);
+  --ui-border:#e2e9f0;
+  --ui-border-strong:#d4dee8;
+  --ui-text:#172033;
+  --ui-muted:#66758a;
+  --ui-shadow:0 1px 3px rgba(15,23,42,.045),0 8px 22px rgba(15,23,42,.035);
+  --ui-shadow-hover:0 3px 8px rgba(15,23,42,.06),0 12px 28px rgba(15,23,42,.055);
+  background:var(--ui-canvas)!important;
+}
+.appShell:not(.darkMode) .shellMain,
+.appShell:not(.darkMode) .shellPage{background:transparent!important}
+.appShell:not(.darkMode) .appTopbar{
+  background:rgba(255,255,255,.97)!important;
+  border-bottom:1px solid var(--ui-border)!important;
+  box-shadow:0 2px 10px rgba(15,23,42,.035)!important;
+  backdrop-filter:blur(12px);
+}
+.appShell:not(.darkMode) .crumb{color:#6b7788!important}
+.appShell:not(.darkMode) .userPill{
+  background:#fff!important;border-color:var(--ui-border)!important;
+  box-shadow:none!important;
+}
+
+/* Sidebar continua identificando o tema, mas com saturação e sombra reduzidas. */
+.appShell:not(.darkMode) .sidebar{
+  background:linear-gradient(180deg,
+    color-mix(in srgb,var(--theme-base,#24415f) 76%,#26384a) 0%,
+    color-mix(in srgb,var(--theme-dark,#20384f) 84%,#1f2937) 58%,
+    color-mix(in srgb,var(--theme-darker,#172a3d) 88%,#111827) 100%)!important;
+  box-shadow:5px 0 18px rgba(15,23,42,.075)!important;
+}
+.appShell:not(.darkMode) .sidebar .sidebarNav .ltSideNavItem.isActive{
+  background:rgba(255,255,255,.14)!important;
+  border-color:rgba(255,255,255,.12)!important;
+  box-shadow:inset 3px 0 0 rgba(255,255,255,.9)!important;
+}
+.appShell:not(.darkMode) .sidebar .sidebarNav .ltSideNavItem:not(.isActive):hover{
+  background:rgba(255,255,255,.065)!important;
+}
+
+/* Grandes áreas claras: identidade pela borda/acento, não pelo preenchimento. */
+.appShell:not(.darkMode) .hero,
+.appShell:not(.darkMode) .homeHero{
+  background:linear-gradient(135deg,
+    color-mix(in srgb,var(--theme-secondary,#2f6fa3) 7%,#fff),
+    color-mix(in srgb,var(--theme-base,#24415f) 3%,#fff))!important;
+  border:1px solid color-mix(in srgb,var(--theme-secondary,#2f6fa3) 15%,#e5e7eb)!important;
+  box-shadow:var(--ui-shadow)!important;
+  color:var(--ui-text)!important;
+}
+.appShell:not(.darkMode) .hero h1,
+.appShell:not(.darkMode) .hero h2,
+.appShell:not(.darkMode) .hero h3,
+.appShell:not(.darkMode) .homeHero h1,
+.appShell:not(.darkMode) .homeHero h2{color:var(--theme-title,var(--ui-text))!important}
+.appShell:not(.darkMode) .hero p,
+.appShell:not(.darkMode) .homeHero p{color:var(--ui-muted)!important}
+
+.appShell:not(.darkMode) .card,
+.appShell:not(.darkMode) .modernPanel,
+.appShell:not(.darkMode) .menuBtn,
+.appShell:not(.darkMode) .ltModuleCard,
+.appShell:not(.darkMode) .tablewrap,
+.appShell:not(.darkMode) .modal,
+.appShell:not(.darkMode) .profileCard,
+.appShell:not(.darkMode) .permAccordion,
+.appShell:not(.darkMode) .usersPanel,
+.appShell:not(.darkMode) .permissionsPanel,
+.appShell:not(.darkMode) .masterQuickBox{
+  background:var(--ui-surface)!important;
+  border-color:var(--ui-border)!important;
+  box-shadow:var(--ui-shadow)!important;
+}
+.appShell:not(.darkMode) .card:hover,
+.appShell:not(.darkMode) .menuBtn:hover,
+.appShell:not(.darkMode) .ltModuleCard:hover{
+  border-color:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 26%,var(--ui-border))!important;
+  box-shadow:var(--ui-shadow-hover)!important;
+}
+.appShell:not(.darkMode) .ltModuleCard{transform:none!important}
+.appShell:not(.darkMode) .ltModuleCard:hover{transform:translateY(-1px)!important}
+.appShell:not(.darkMode) .ltModuleCard__accent{opacity:.78!important}
+.appShell:not(.darkMode) .ltModuleCard__icon{
+  background:color-mix(in srgb,var(--theme-icon,#2f6fa3) 7%,#fff)!important;
+  box-shadow:none!important;
+}
+
+/* Filtros ficam integrados à página, sem aparência de bloco pesado. */
+.appShell:not(.darkMode) .globalFilterBar,
+.appShell:not(.darkMode) .globalFilterBarMulti,
+.appShell:not(.darkMode) .filterPanel,
+.appShell:not(.darkMode) .filters.card{
+  background:rgba(255,255,255,.86)!important;
+  border-color:var(--ui-border)!important;
+  box-shadow:0 1px 4px rgba(15,23,42,.035)!important;
+}
+.appShell:not(.darkMode) .presetChip,
+.appShell:not(.darkMode) .chip{
+  background:var(--ui-surface-soft)!important;
+  border-color:var(--ui-border)!important;
+  color:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 80%,#263244)!important;
+}
+
+/* Formulários: fundo branco, borda neutra e foco suave. */
+.appShell:not(.darkMode) input,
+.appShell:not(.darkMode) select,
+.appShell:not(.darkMode) textarea{
+  background:#fff!important;
+  border-color:var(--ui-border-strong)!important;
+  box-shadow:none!important;
+}
+.appShell:not(.darkMode) input:hover,
+.appShell:not(.darkMode) select:hover,
+.appShell:not(.darkMode) textarea:hover{border-color:#bcc9d6!important}
+.appShell:not(.darkMode) input:focus,
+.appShell:not(.darkMode) select:focus,
+.appShell:not(.darkMode) textarea:focus{
+  outline:none!important;
+  border-color:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 62%,#94a3b8)!important;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--theme-secondary,#2f6fa3) 11%,transparent)!important;
+}
+
+/* Botões usam cor forte só nas ações principais. */
+.appShell:not(.darkMode) button,
+.appShell:not(.darkMode) .btn,
+.appShell:not(.darkMode) .buttonLike{box-shadow:none!important}
+.appShell:not(.darkMode) button:hover:not(:disabled),
+.appShell:not(.darkMode) .btn:hover:not(:disabled),
+.appShell:not(.darkMode) .buttonLike:hover:not(:disabled){
+  transform:translateY(-1px)!important;
+  box-shadow:0 4px 10px rgba(15,23,42,.07)!important;
+}
+.appShell:not(.darkMode) button.secondary{
+  background:#fff!important;
+  border-color:var(--ui-border-strong)!important;
+  color:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 88%,#1f2937)!important;
+}
+.appShell:not(.darkMode) button.secondary:hover{
+  background:var(--ui-surface-soft)!important;
+  border-color:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 28%,var(--ui-border))!important;
+}
+
+/* Tabelas claras: cabeçalho neutro e linhas quase brancas. */
+.appShell:not(.darkMode) .tablewrap th,
+.appShell:not(.darkMode) table th{
+  background:#eef3f7!important;
+  color:#334155!important;
+  border-bottom:1px solid var(--ui-border-strong)!important;
+  box-shadow:none!important;
+}
+.appShell:not(.darkMode) .tablewrap td,
+.appShell:not(.darkMode) table td{border-bottom-color:#edf1f5!important}
+.appShell:not(.darkMode) tbody tr:nth-child(even) td{background:#fbfcfd!important}
+.appShell:not(.darkMode) tbody tr:hover td{background:color-mix(in srgb,var(--theme-secondary,#2f6fa3) 4%,#fff)!important}
+
+/* Modais e feedback visual menos pesados. */
+.appShell:not(.darkMode) .modalBackdrop{background:rgba(30,41,59,.34)!important;backdrop-filter:blur(2px)}
+.appShell:not(.darkMode) .modalHeader{background:#fff!important;border-bottom-color:var(--ui-border)!important}
+.appShell:not(.darkMode) .toastBox{box-shadow:0 10px 30px rgba(15,23,42,.12)!important}
+.appShell:not(.darkMode) .emptyState,
+.appShell:not(.darkMode) .scannerResult,
+.appShell:not(.darkMode) .paymentPermBox,
+.appShell:not(.darkMode) .patrimonioDetailGrid>div{background:#fafbfd!important;border-color:var(--ui-border)!important}
+
+/* Tela de tema acompanha exatamente o novo comportamento leve. */
+.appShell:not(.darkMode) .themeSystemCard{background:#fff!important}
+.appShell:not(.darkMode) .themeLivePreview{background:var(--ui-canvas)!important;border-color:var(--ui-border)!important}
+.appShell:not(.darkMode) .themeLivePreview aside{
+  background:linear-gradient(180deg,
+    color-mix(in srgb,var(--theme-base,#24415f) 76%,#26384a),
+    color-mix(in srgb,var(--theme-dark,#20384f) 86%,#1f2937))!important;
+}
+.appShell:not(.darkMode) .themePreviewTopbar,
+.appShell:not(.darkMode) .themePreviewCard,
+.appShell:not(.darkMode) .themePreviewStat,
+.appShell:not(.darkMode) .themePreviewTable{box-shadow:none!important;border-color:var(--ui-border)!important}
+
+/* Acessibilidade: foco visível e redução de movimento quando solicitada pelo SO. */
+.appShell :focus-visible{outline:3px solid color-mix(in srgb,var(--theme-secondary,#2f6fa3) 28%,transparent)!important;outline-offset:2px}
+@media(prefers-reduced-motion:reduce){
+  .appShell *, .appShell *::before, .appShell *::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
+}
+
+/* Impressões seguem neutras e independentes do tema visual. */
+@media print{
+  .appShell,.shellMain,.shellPage,.card,.tablewrap{background:#fff!important;box-shadow:none!important}
+  table th{background:#f1f5f9!important;color:#111827!important}
+}

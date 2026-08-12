@@ -14,7 +14,7 @@ import QRCode from 'qrcode';
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.40.1';
+const APP_VERSION = '2.42.1';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -365,7 +365,7 @@ const DEFAULT_DASHBOARD_PERMISSIONS = {
   },
   membro: Object.fromEntries(DASHBOARD_BLOCKS.map((b) => [b.id, false])),
 };
-const TENANT_TABLES = new Set(['contabil_exercicios', 'contabil_plano_contas', 'contabil_configuracoes', 'contabil_contas_referenciais', 'contabil_lancamentos', 'contabil_partidas', 'contabil_exportacoes', 'membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'grupos_gerenciais_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'auditoria_logs']);
+const TENANT_TABLES = new Set(['contabil_exercicios', 'contabil_plano_contas', 'contabil_configuracoes', 'contabil_contas_referenciais', 'contabil_lancamentos', 'contabil_partidas', 'contabil_exportacoes', 'membros', 'membro_historico', 'familias', 'filhos_dependentes', 'congregacoes', 'ministerios', 'cargos', 'setores', 'profissoes', 'escolaridades', 'turmas_ebd', 'salas_ebd', 'professores_ebd', 'turma_professores_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'tipos_caixa', 'tipos_receita', 'categorias_despesas', 'grupos_gerenciais_despesas', 'formas_pagamento', 'centros_custo', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'fechamentos_mensais', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_fornecedores', 'patrimonio_manutencoes', 'patrimonio_contadores', 'patrimonio_historico', 'patrimonio_documentos', 'patrimonio_movimentacoes', 'patrimonio_depreciacoes', 'patrimonio_inventarios', 'patrimonio_inventario_itens', 'bancos', 'regras_importacao_bancaria', 'importacoes_bancarias', 'importacao_bancaria_itens', 'financeiro_importacoes_planilha', 'financeiro_importacao_planilha_itens', 'credores', 'prestacao_cofres_missionarios', 'prestacao_relatorios', 'prestacao_grupos_relatorio', 'prestacao_fontes_slide', 'portal_publicacoes', 'portal_publicacao_arquivos', 'portal_eventos', 'portal_checkins', 'portal_jornadas', 'portal_jornada_progresso', 'portal_contribuicoes_preferencias', 'portal_chaves_pix', 'usuarios_acessos', 'auditoria_logs']);
 TENANT_TABLES.add('transferencias_agendadas');
 const TenantContext = React.createContext({ empresaId: null, isMaster: false });
 const FilterContext = React.createContext({
@@ -995,18 +995,18 @@ const fmtReferencia = (ref) => {
 const DEFAULT_THEME_COLOR = '#1e2a4a';
 const DEFAULT_SECONDARY_COLOR = '#2563eb';
 const DEFAULT_CARD_COLOR = '#ffffff';
-const DEFAULT_BACKGROUND_COLOR = '#f4f1ea';
+const DEFAULT_BACKGROUND_COLOR = '#f7f9fc';
 const DEFAULT_TITLE_COLOR = '#0f172a';
 const DEFAULT_ICON_COLOR = '#2563eb';
 const THEME_PRESETS = {
   labrea: {
-    label: 'Padrão Lábrea Tech',
-    principal: '#1e2a4a',
-    secundaria: '#2563eb',
+    label: 'Lábrea Tech — Leve',
+    principal: '#24415f',
+    secundaria: '#2f6fa3',
     cards: '#ffffff',
-    icones: '#2563eb',
-    titulos: '#0f172a',
-    fundo: '#f4f1ea',
+    icones: '#2f6fa3',
+    titulos: '#172033',
+    fundo: '#f7f9fc',
   },
   azul: {
     label: 'Azul',
@@ -1046,12 +1046,30 @@ const THEME_PRESETS = {
   },
   claro: {
     label: 'Claro',
-    principal: '#334155',
-    secundaria: '#0ea5e9',
+    principal: '#475569',
+    secundaria: '#3b82b8',
     cards: '#ffffff',
-    icones: '#0ea5e9',
-    titulos: '#0f172a',
+    icones: '#3b82b8',
+    titulos: '#172033',
     fundo: '#f8fafc',
+  },
+  suave: {
+    label: 'Suave',
+    principal: '#3f5f73',
+    secundaria: '#4f8aa8',
+    cards: '#ffffff',
+    icones: '#4f8aa8',
+    titulos: '#243244',
+    fundo: '#f6f9fb',
+  },
+  contraste: {
+    label: 'Alto contraste',
+    principal: '#172033',
+    secundaria: '#005ea8',
+    cards: '#ffffff',
+    icones: '#005ea8',
+    titulos: '#0b1220',
+    fundo: '#ffffff',
   },
   escuro: {
     label: 'Escuro',
@@ -1069,7 +1087,7 @@ const THEME_PRESETS = {
     cards: '#ffffff',
     icones: '#2563eb',
     titulos: '#0f172a',
-    fundo: '#f4f1ea',
+    fundo: '#f7f9fc',
   },
 };
 const THEME_QUICK_COLORS = ['#1e2a4a', '#2563eb', '#0ea5e9', '#0f766e', '#16a34a', '#84cc16', '#f59e0b', '#ea580c', '#dc2626', '#db2777', '#7c3aed', '#334155', '#020617', '#ffffff', '#f8fafc', '#f4f1ea'];
@@ -1647,6 +1665,7 @@ const uid = () => Math.random().toString(36).slice(2);
 
 const AUDIT_TABLE_LABELS = {
   profiles: 'Usuários',
+  usuarios_acessos: 'Acessos de usuários',
   empresas: 'Empresas/Igrejas',
   membros: 'Membros',
   filhos_dependentes: 'Filhos/dependentes',
@@ -17751,13 +17770,13 @@ function TemaSistemaPage() {
       <ToastStack toasts={toasts} close={close} />
       <div className="hero compactHero">
         <h1>🎨 Tema do sistema</h1>
-        <p>Personalize somente as cores internas da igreja. Dados cadastrais e logo ficam em Dados gerais da igreja.</p>
+        <p>Use a cor da igreja como identidade e destaque, com fundos e superfícies mais leves para melhorar a leitura no uso diário.</p>
       </div>
       <div className="card themeSystemCard compactThemeSystem" style={previewTheme}>
         <div className="toolbar compactThemeHeader">
           <div>
             <h3>Preferências de tema</h3>
-            <p className="muted">Selecione uma cor na lista, arraste no seletor e veja a prévia ao lado em tempo real.</p>
+            <p className="muted">Os temas agora priorizam superfícies claras, contraste confortável e uso moderado da cor principal. Escolha um preset ou personalize.</p>
           </div>
           <div className="themeHeaderActions">
             <button type="button" className="secondary" onClick={resetarTemaPadrao} disabled={saving}>
@@ -17892,7 +17911,7 @@ function BackupGeralPage() {
   const tenant = React.useContext(TenantContext);
   const { toasts, push, close } = useToasts();
   const [loading, setLoading] = useState(false);
-  const backupTables = ['empresas', 'profiles', 'tipos_caixa', 'categorias_despesas', 'grupos_gerenciais_despesas', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'transferencias_agendadas', 'fechamentos_mensais', 'membros', 'turmas_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_manutencoes'];
+  const backupTables = ['empresas', 'profiles', 'usuarios_acessos', 'tipos_caixa', 'categorias_despesas', 'grupos_gerenciais_despesas', 'lancamentos_financeiros', 'despesas', 'transferencias_caixas', 'transferencias_agendadas', 'fechamentos_mensais', 'membros', 'turmas_ebd', 'matriculas_ebd', 'aulas_ebd', 'frequencia_ebd', 'patrimonio', 'patrimonio_categorias', 'patrimonio_locais', 'patrimonio_manutencoes'];
 
   const exportar = async () => {
     if (!tenant?.empresaId) {
@@ -20585,6 +20604,122 @@ function badgeLabel(value) {
   return String(value || '').replace(/\s+/g, '');
 }
 
+function UsuariosAcessosPanel({ users = [], roleLabels = {} }) {
+  const acessos = useTable('usuarios_acessos', { order: 'acessado_em', ascending: false });
+  const [busca, setBusca] = useState('');
+  const [periodo, setPeriodo] = useState('30');
+  const [selected, setSelected] = useState(null);
+  const agora = Date.now();
+  const userMap = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users]);
+  const filtrados = useMemo(() => {
+    const limite = periodo === 'todos' ? 0 : agora - Number(periodo) * 86400000;
+    const termo = busca.trim().toLowerCase();
+    return acessos.rows.filter((item) => {
+      const dataOk = !limite || new Date(item.acessado_em).getTime() >= limite;
+      const usuario = userMap[item.user_id] || {};
+      const texto = [item.usuario_nome, item.usuario_email, usuario.nome, usuario.email, item.perfil, item.plataforma].join(' ').toLowerCase();
+      return dataOk && (!termo || texto.includes(termo));
+    });
+  }, [acessos.rows, agora, busca, periodo, userMap]);
+  const resumo = useMemo(() => {
+    const porUsuario = new Map();
+    filtrados.forEach((item) => {
+      const atual = porUsuario.get(item.user_id) || { primeiro: item.acessado_em, ultimo: item.acessado_em, total: 0 };
+      atual.total += 1;
+      if (item.acessado_em < atual.primeiro) atual.primeiro = item.acessado_em;
+      if (item.acessado_em > atual.ultimo) atual.ultimo = item.acessado_em;
+      porUsuario.set(item.user_id, atual);
+    });
+    return porUsuario;
+  }, [filtrados]);
+  const exportar = () => {
+    const csv = rowsToCsv(
+      filtrados.map((item) => ({
+        data_hora: new Date(item.acessado_em).toLocaleString('pt-BR'),
+        nome: item.usuario_nome || userMap[item.user_id]?.nome || '',
+        email: item.usuario_email || userMap[item.user_id]?.email || '',
+        perfil: roleLabels[item.perfil] || ROLE_LABEL[item.perfil] || item.perfil || '',
+        plataforma: item.plataforma || '',
+      })),
+      [
+        { key: 'data_hora', label: 'Data/Hora' },
+        { key: 'nome', label: 'Usuário' },
+        { key: 'email', label: 'E-mail' },
+        { key: 'perfil', label: 'Perfil' },
+        { key: 'plataforma', label: 'Plataforma' },
+      ],
+    );
+    downloadTextFile('historico_acessos_usuarios.csv', csv);
+  };
+
+  return (
+    <section className="card userAccessPanel">
+      <div className="toolbar">
+        <div>
+          <h3 style={{ margin: 0 }}>Histórico de acessos</h3>
+          <p className="muted">Registra uma entrada por sessão autenticada. Atualizar a página não cria um novo acesso.</p>
+        </div>
+        <div className="row">
+          <button className="smallBtn secondary" onClick={acessos.reload}>Atualizar</button>
+          <button className="smallBtn" onClick={exportar} disabled={!filtrados.length}>Exportar CSV</button>
+        </div>
+      </div>
+      <div className="grid cols3 compactFilters">
+        <div className="field">
+          <label>Usuário</label>
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Nome, e-mail ou perfil" />
+        </div>
+        <div className="field">
+          <label>Período</label>
+          <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
+            <option value="7">Últimos 7 dias</option>
+            <option value="30">Últimos 30 dias</option>
+            <option value="90">Últimos 90 dias</option>
+            <option value="todos">Todo o histórico</option>
+          </select>
+        </div>
+        <div className="accessSummaryBox">
+          <small>Acessos no filtro</small>
+          <b>{filtrados.length}</b>
+          <span>{resumo.size} usuário(s)</span>
+        </div>
+      </div>
+      <div className="tablewrap">
+        <table>
+          <thead><tr><th>Data/Hora</th><th>Usuário</th><th>Perfil</th><th>Plataforma</th><th>Ação</th></tr></thead>
+          <tbody>
+            {acessos.loading && <tr><td colSpan="5" className="center">Carregando acessos…</td></tr>}
+            {!acessos.loading && !filtrados.length && <tr><td colSpan="5" className="center muted">Nenhum acesso registrado neste período. A migration 77 precisa estar aplicada para iniciar o histórico.</td></tr>}
+            {filtrados.map((item) => (
+              <tr key={item.id}>
+                <td>{new Date(item.acessado_em).toLocaleString('pt-BR')}</td>
+                <td><b>{item.usuario_nome || userMap[item.user_id]?.nome || '—'}</b><br/><span className="muted smallText">{item.usuario_email || userMap[item.user_id]?.email || '—'}</span></td>
+                <td>{roleLabels[item.perfil] || ROLE_LABEL[item.perfil] || item.perfil || '—'}</td>
+                <td>{item.plataforma || 'Navegador web'}</td>
+                <td><button className="smallBtn secondary" onClick={() => setSelected(item)}>Detalhes</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <Modal title="Detalhes do acesso" onClose={() => setSelected(null)}>
+          <div className="grid cols2">
+            <div className="field"><label>Data e hora</label><b>{new Date(selected.acessado_em).toLocaleString('pt-BR')}</b></div>
+            <div className="field"><label>Origem</label><b>{selected.origem || 'web'}</b></div>
+            <div className="field"><label>Usuário</label><b>{selected.usuario_nome || '—'}</b></div>
+            <div className="field"><label>E-mail</label><b>{selected.usuario_email || '—'}</b></div>
+            <div className="field"><label>Perfil no acesso</label><b>{roleLabels[selected.perfil] || ROLE_LABEL[selected.perfil] || selected.perfil || '—'}</b></div>
+            <div className="field"><label>Plataforma</label><b>{selected.plataforma || '—'}</b></div>
+          </div>
+          <div className="field" style={{ marginTop: 14 }}><label>Navegador identificado</label><div className="accessUserAgent">{selected.user_agent || 'Não informado'}</div></div>
+          <div className="infoBox" style={{ marginTop: 14 }}>Por segurança, este histórico não armazena senha, token de sessão ou conteúdo acessado.</div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
 function UsuariosPermissoesPage() {
   const tenant = React.useContext(TenantContext);
   const { rows, loading, reload } = useTable('profiles', {
@@ -20994,6 +21129,7 @@ function UsuariosPermissoesPage() {
           <b>{modoAvancado ? 'Avançado' : 'Simples'}</b>
         </div>
       </div>
+      <UsuariosAcessosPanel users={users} roleLabels={roleLabels} />
       <div className="usersLayout">
         <section className="card usersPanel">
           <h3>Usuários cadastrados</h3>
@@ -21031,6 +21167,7 @@ function UsuariosPermissoesPage() {
                   <th>Email</th>
                   <th>Perfil</th>
                   <th>Ativo</th>
+                  <th>Último acesso</th>
                   <th>Convite</th>
                   <th>Ação</th>
                 </tr>
@@ -21038,14 +21175,14 @@ function UsuariosPermissoesPage() {
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan="6" className="center">
+                    <td colSpan="7" className="center">
                       Carregando…
                     </td>
                   </tr>
                 )}
                 {!loading && filtered.length === 0 && (
                   <tr>
-                    <td colSpan="6" className="center muted">
+                    <td colSpan="7" className="center muted">
                       Nenhum usuário encontrado.
                     </td>
                   </tr>
@@ -21062,6 +21199,7 @@ function UsuariosPermissoesPage() {
                     <td>
                       <span className={`badge ${u.ativo ? 'Ativo' : 'Inativo'}`}>{u.ativo ? 'Ativo' : 'Inativo'}</span>
                     </td>
+                    <td>{u.ultimo_acesso_em ? new Date(u.ultimo_acesso_em).toLocaleString('pt-BR') : <span className="muted">Nunca registrado</span>}</td>
                     <td>{u.convite_enviado_em ? <span className="inviteStatus sent">Enviado {new Date(u.convite_enviado_em).toLocaleDateString('pt-BR')}</span> : <span className="inviteStatus pending">Pendente</span>}</td>
                     <td className="actionsCell">
                       <div className="actionsInline">
@@ -22184,6 +22322,7 @@ function GlobalFilterBar({ activeModule }) {
 
 function AuditoriaModule() {
   const tenant = React.useContext(TenantContext);
+  const profiles = useTable('profiles', { order: 'nome', ascending: true });
   const logs = useTable('auditoria_logs', {
     order: 'created_at',
     ascending: false,
@@ -22199,6 +22338,7 @@ function AuditoriaModule() {
   const [dataFim, setDataFim] = useState('');
   const [selected, setSelected] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [auditView, setAuditView] = useState('eventos');
 
   const refIni = `${referencia || currentReferencia()}-01`;
   const refFim = (() => {
@@ -22269,12 +22409,38 @@ function AuditoriaModule() {
     setDataFim('');
   };
 
-  return (
-    <div>
-      <div className="hero">
-        <h1>🧾 Auditoria do Sistema</h1>
-        <p>Rastreia criações, alterações e exclusões em todos os módulos da igreja, com filtros e exportação.</p>
+  const visibleUsers = profiles.rows.filter((u) => !isMasterProfile(u) && (tenant?.isMaster || !tenant?.empresaId || u.empresa_id === tenant.empresaId));
+  const auditHeader = (
+    <>
+      <div className="hero auditHero">
+        <div>
+          <h1>🧾 Auditoria do Sistema</h1>
+          <p>Consulte alterações operacionais e entradas dos usuários em relatórios separados.</p>
+        </div>
       </div>
+      <div className="auditViewTabs" role="tablist" aria-label="Tipos de auditoria">
+        <button type="button" role="tab" aria-selected={auditView === 'eventos'} className={auditView === 'eventos' ? 'active' : 'secondary'} onClick={() => setAuditView('eventos')}>
+          Eventos do sistema
+        </button>
+        <button type="button" role="tab" aria-selected={auditView === 'acessos'} className={auditView === 'acessos' ? 'active' : 'secondary'} onClick={() => setAuditView('acessos')}>
+          Acessos de usuários
+        </button>
+      </div>
+    </>
+  );
+
+  if (auditView === 'acessos') {
+    return (
+      <div className="auditModulePage">
+        {auditHeader}
+        <UsuariosAcessosPanel users={visibleUsers} roleLabels={DEFAULT_ROLE_LABELS} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="auditModulePage">
+      {auditHeader}
       <div className="grid cols4">
         <div className="stat blue">
           <small>Eventos filtrados</small>
@@ -23026,6 +23192,7 @@ export default function App() {
   const [activeModule, setActiveModuleState] = useState(() => storageGet('igreja:activeModule', ''));
   const [selectedEmpresaId, setSelectedEmpresaIdState] = useState(() => storageGet('igreja:selectedEmpresaId', ''));
   const profileUserIdRef = useRef('');
+  const accessLogAttemptRef = useRef('');
   const setActiveModule = useCallback((value) => {
     setActiveModuleState(value);
     storageSet('igreja:activeModule', value);
@@ -23115,6 +23282,20 @@ export default function App() {
       setActiveModule('dashboard');
     }
   }, [profile, selectedEmpresaId, activeModule, setActiveModule]);
+
+  useEffect(() => {
+    const user = session?.user;
+    if (!user?.id || !profile?.id || profile.id !== user.id || !profile.ativo) return;
+    const loginReference = user.last_sign_in_at || user.updated_at || session.expires_at || 'session';
+    const attemptKey = `${user.id}:${loginReference}`;
+    if (accessLogAttemptRef.current === attemptKey) return;
+    accessLogAttemptRef.current = attemptKey;
+    const plataforma = typeof navigator === 'undefined' ? 'web' : navigator.userAgentData?.platform || navigator.platform || 'web';
+    const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
+    supabase.rpc('registrar_acesso_usuario', { p_plataforma: plataforma, p_user_agent: userAgent }).then(({ error }) => {
+      if (error) console.warn('Histórico de acessos indisponível. Aplique a migration 77 no Supabase.', error.message);
+    });
+  }, [session, profile]);
 
   if (!isSupabaseConfigured) {
     return (
