@@ -9,12 +9,13 @@ import { calcularDepreciacaoPatrimonio } from './domain/patrimonio/rules/calcula
 import { codigosEtiquetaRepetidos, normalizarCodigoEtiquetaPatrimonio, patrimonioEstadoFromSheet, patrimonioSheetHeader } from './domain/patrimonio/rules/preCadastro.js';
 import { PATRIMONIO_CATEGORIAS_PADRAO, categoriasPatrimonioPadraoAusentes } from './domain/patrimonio/catalog/categoriasPadrao.js';
 import QRCode from 'qrcode';
+import readXlsxFile from 'read-excel-file';
 
 /* =========================================================
    CONSTANTES
 ========================================================= */
 const MASTER_EMAILS = ['labreatech@gmail.com', 'labreatech@hotmail.com'];
-const APP_VERSION = '2.42.1';
+const APP_VERSION = '2.42.2';
 const LOGO_ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const LOGO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const LOGO_TARGET_MAX_BYTES = 600 * 1024;
@@ -19983,44 +19984,267 @@ const CONTA_NATUREZA_OPTIONS = [
   { value: 'credora', label: 'Credora' },
 ];
 
-function PlanoContasContabilPage() {
-  const contas = useLookup('contabil_plano_contas');
-  const referencias = useLookup('contabil_contas_referenciais');
-  return (
-    <CrudPage
-      table="contabil_plano_contas"
-      title="Plano de Contas Contábil"
-      moduleKey="contabilidade"
-      order="codigo"
-      ascending
-      createLabel="+ Nova conta"
-      searchKeys={['codigo', 'nome']}
-      showActiveToggle
-      columns={[
-        { key: 'codigo', label: 'Código' },
-        { key: 'nome', label: 'Conta' },
-        { key: 'tipo', label: 'Grupo', render: (r) => CONTA_TIPO_OPTIONS.find((o) => o.value === r.tipo)?.label || r.tipo },
-        { key: 'natureza', label: 'Natureza', render: (r) => CONTA_NATUREZA_OPTIONS.find((o) => o.value === r.natureza)?.label || r.natureza },
-        { key: 'analitica', label: 'Tipo', render: (r) => r.analitica ? 'Analítica' : 'Sintética' },
-        { key: 'ativo', label: 'Situação', render: (r) => r.ativo !== false ? 'Ativa' : 'Inativa' },
-      ]}
-      fields={[
-        { name: 'codigo', label: 'Código da conta', required: true, placeholder: 'Ex.: 1.1.01.001' },
-        { name: 'nome', label: 'Nome da conta', required: true },
-        { name: 'conta_pai_id', label: 'Conta superior', type: 'select', options: contas.options },
-        { name: 'tipo', label: 'Grupo contábil', type: 'select', options: CONTA_TIPO_OPTIONS, required: true },
-        { name: 'natureza', label: 'Natureza', type: 'select', options: CONTA_NATUREZA_OPTIONS, required: true },
-        { name: 'analitica', label: 'Conta analítica (aceita lançamentos)', type: 'checkbox', defaultValue: true },
-        { name: 'conta_referencial_id', label: 'Conta referencial ECF', type: 'select', options: referencias.options },
-        { name: 'vigencia_inicio', label: 'Início da vigência', type: 'date' },
-        { name: 'vigencia_fim', label: 'Fim da vigência', type: 'date' },
-        { name: 'ativo', label: 'Ativa', type: 'checkbox', defaultValue: true },
-        { name: 'observacoes', label: 'Observações', type: 'textarea', full: true },
-      ]}
-      topContent={<div className="infoBox"><b>Base contábil:</b> grupos gerenciais e categorias continuam sendo gerenciais. As contas deste plano serão usadas na escrituração, nos demonstrativos e, futuramente, na integração ECD/ECF.</div>}
-    />
-  );
+const planoConta = (codigo, nome, conta_pai_codigo, tipo, natureza, analitica = false, observacoes = '') => ({ codigo, nome, conta_pai_codigo: conta_pai_codigo || '', tipo, natureza, analitica, observacoes });
+
+function modeloPlanoIgrejaEssencial() {
+  return [
+    planoConta('1','ATIVO','', 'ativo','devedora'),
+    planoConta('1.1','Ativo Circulante','1','ativo','devedora'),
+    planoConta('1.1.01','Caixa','1.1','ativo','devedora',true,'Numerário mantido em caixa.'),
+    planoConta('1.1.02','Bancos conta movimento','1.1','ativo','devedora',true,'Saldos em contas bancárias de livre movimentação.'),
+    planoConta('1.1.03','Aplicações financeiras','1.1','ativo','devedora',true),
+    planoConta('1.1.04','Adiantamentos','1.1','ativo','devedora',true),
+    planoConta('1.2','Ativo Não Circulante','1','ativo','devedora'),
+    planoConta('1.2.01','Imobilizado','1.2','ativo','devedora',true,'Bens de uso da entidade.'),
+    planoConta('2','PASSIVO','', 'passivo','credora'),
+    planoConta('2.1','Passivo Circulante','2','passivo','credora'),
+    planoConta('2.1.01','Fornecedores','2.1','passivo','credora',true),
+    planoConta('2.1.02','Obrigações trabalhistas','2.1','passivo','credora',true),
+    planoConta('2.1.03','Obrigações sociais','2.1','passivo','credora',true),
+    planoConta('2.1.04','Outras obrigações','2.1','passivo','credora',true),
+    planoConta('3','PATRIMÔNIO SOCIAL','', 'patrimonio_social','credora'),
+    planoConta('3.1','Patrimônio Social','3','patrimonio_social','credora',true),
+    planoConta('3.2','Superávit ou Déficit Acumulado','3','patrimonio_social','credora',true),
+    planoConta('4','RECEITAS','', 'receita','credora'),
+    planoConta('4.1','Dízimos','4','receita','credora',true),
+    planoConta('4.2','Ofertas','4','receita','credora',true),
+    planoConta('4.3','Ofertas Missionárias','4','receita','credora',true),
+    planoConta('4.4','Doações','4','receita','credora',true),
+    planoConta('4.5','Receitas de Eventos','4','receita','credora',true),
+    planoConta('4.6','Receitas Financeiras','4','receita','credora',true),
+    planoConta('4.9','Outras Receitas','4','receita','credora',true),
+    planoConta('5','DESPESAS','', 'despesa','devedora'),
+    planoConta('5.1','Administrativas','5','despesa','devedora',true),
+    planoConta('5.2','Pessoal e encargos','5','despesa','devedora',true),
+    planoConta('5.3','Cultos e liturgia','5','despesa','devedora',true),
+    planoConta('5.4','Missões','5','despesa','devedora',true),
+    planoConta('5.5','Assistência social','5','despesa','devedora',true),
+    planoConta('5.6','Manutenção','5','despesa','devedora',true),
+    planoConta('5.7','Instalações e utilidades','5','despesa','devedora',true),
+    planoConta('5.8','Patrimônio','5','despesa','devedora',true),
+    planoConta('5.9','Despesas financeiras','5','despesa','devedora',true),
+    planoConta('5.99','Outras despesas','5','despesa','devedora',true),
+    planoConta('9','CONTAS DE COMPENSAÇÃO','', 'compensacao','devedora'),
+  ];
 }
+
+function modeloPlanoIgrejaCompleto(incluirPatrimonioDetalhado = false) {
+  const rows = [
+    planoConta('1','ATIVO','', 'ativo','devedora'),
+    planoConta('1.1','Ativo Circulante','1','ativo','devedora'),
+    planoConta('1.1.01','Disponibilidades','1.1','ativo','devedora'),
+    planoConta('1.1.01.001','Caixa Geral','1.1.01','ativo','devedora',true),
+    planoConta('1.1.01.002','Bancos conta movimento','1.1.01','ativo','devedora',true),
+    planoConta('1.1.01.003','Aplicações financeiras','1.1.01','ativo','devedora',true),
+    planoConta('1.1.02','Créditos e adiantamentos','1.1','ativo','devedora'),
+    planoConta('1.1.02.001','Adiantamentos a empregados','1.1.02','ativo','devedora',true),
+    planoConta('1.1.02.002','Adiantamentos a fornecedores','1.1.02','ativo','devedora',true),
+    planoConta('1.2','Ativo Não Circulante','1','ativo','devedora'),
+    planoConta('1.2.01','Imobilizado','1.2','ativo','devedora'),
+    planoConta('1.2.01.001','Imóveis','1.2.01','ativo','devedora',true),
+    planoConta('1.2.01.002','Móveis e utensílios','1.2.01','ativo','devedora',true),
+    planoConta('1.2.01.003','Máquinas e equipamentos','1.2.01','ativo','devedora',true),
+    planoConta('1.2.01.004','Veículos','1.2.01','ativo','devedora',true),
+    planoConta('1.2.01.005','Equipamentos de informática','1.2.01','ativo','devedora',true),
+    planoConta('1.2.02','Depreciação acumulada','1.2','ativo','credora'),
+    planoConta('1.2.02.001','(-) Depreciação acumulada','1.2.02','ativo','credora',true),
+    planoConta('2','PASSIVO','', 'passivo','credora'),
+    planoConta('2.1','Passivo Circulante','2','passivo','credora'),
+    planoConta('2.1.01','Fornecedores','2.1','passivo','credora',true),
+    planoConta('2.1.02','Obrigações trabalhistas','2.1','passivo','credora'),
+    planoConta('2.1.02.001','Salários a pagar','2.1.02','passivo','credora',true),
+    planoConta('2.1.02.002','Férias a pagar','2.1.02','passivo','credora',true),
+    planoConta('2.1.02.003','13º salário a pagar','2.1.02','passivo','credora',true),
+    planoConta('2.1.03','Obrigações sociais','2.1','passivo','credora'),
+    planoConta('2.1.03.001','INSS a recolher','2.1.03','passivo','credora',true),
+    planoConta('2.1.03.002','FGTS a recolher','2.1.03','passivo','credora',true),
+    planoConta('2.1.04','Outras obrigações','2.1','passivo','credora',true),
+    planoConta('2.2','Passivo Não Circulante','2','passivo','credora'),
+    planoConta('2.2.01','Empréstimos e financiamentos','2.2','passivo','credora',true),
+    planoConta('3','PATRIMÔNIO SOCIAL','', 'patrimonio_social','credora'),
+    planoConta('3.1','Patrimônio Social','3','patrimonio_social','credora',true),
+    planoConta('3.2','Superávit ou Déficit Acumulado','3','patrimonio_social','credora',true),
+    planoConta('3.3','Ajustes de exercícios anteriores','3','patrimonio_social','credora',true),
+    planoConta('4','RECEITAS','', 'receita','credora'),
+    planoConta('4.1','Receitas de contribuições','4','receita','credora'),
+    planoConta('4.1.01','Dízimos','4.1','receita','credora',true),
+    planoConta('4.1.02','Ofertas gerais','4.1','receita','credora',true),
+    planoConta('4.1.03','Ofertas missionárias','4.1','receita','credora',true),
+    planoConta('4.1.04','Ofertas para construção e patrimônio','4.1','receita','credora',true),
+    planoConta('4.2','Doações e subvenções','4','receita','credora'),
+    planoConta('4.2.01','Doações de pessoas físicas','4.2','receita','credora',true),
+    planoConta('4.2.02','Doações de pessoas jurídicas','4.2','receita','credora',true),
+    planoConta('4.3','Receitas de atividades','4','receita','credora'),
+    planoConta('4.3.01','Receitas de eventos','4.3','receita','credora',true),
+    planoConta('4.3.02','Receitas de publicações e materiais','4.3','receita','credora',true),
+    planoConta('4.4','Receitas financeiras','4','receita','credora',true),
+    planoConta('4.9','Outras receitas','4','receita','credora',true),
+    planoConta('5','DESPESAS','', 'despesa','devedora'),
+    planoConta('5.1','Despesas administrativas','5','despesa','devedora'),
+    planoConta('5.1.01','Material de escritório','5.1','despesa','devedora',true),
+    planoConta('5.1.02','Serviços contábeis','5.1','despesa','devedora',true),
+    planoConta('5.1.03','Serviços jurídicos','5.1','despesa','devedora',true),
+    planoConta('5.1.04','Cartório, correios e autenticações','5.1','despesa','devedora',true),
+    planoConta('5.1.05','Material de expediente','5.1','despesa','devedora',true),
+    planoConta('5.2','Pessoal e encargos','5','despesa','devedora'),
+    planoConta('5.2.01','Salários e ordenados','5.2','despesa','devedora',true),
+    planoConta('5.2.02','INSS','5.2','despesa','devedora',true),
+    planoConta('5.2.03','FGTS','5.2','despesa','devedora',true),
+    planoConta('5.2.04','Férias','5.2','despesa','devedora',true),
+    planoConta('5.2.05','13º salário','5.2','despesa','devedora',true),
+    planoConta('5.3','Instalações e utilidades','5','despesa','devedora'),
+    planoConta('5.3.01','Energia elétrica','5.3','despesa','devedora',true),
+    planoConta('5.3.02','Água e esgoto','5.3','despesa','devedora',true),
+    planoConta('5.3.03','Internet e telefonia','5.3','despesa','devedora',true),
+    planoConta('5.3.04','Aluguéis','5.3','despesa','devedora',true),
+    planoConta('5.3.05','Limpeza e conservação','5.3','despesa','devedora',true),
+    planoConta('5.4','Cultos, liturgia e música','5','despesa','devedora'),
+    planoConta('5.4.01','Material para cultos','5.4','despesa','devedora',true),
+    planoConta('5.4.02','Louvor e música','5.4','despesa','devedora',true),
+    planoConta('5.4.03','Santa Ceia e ordenanças','5.4','despesa','devedora',true),
+    planoConta('5.5','Educação cristã e ministérios','5','despesa','devedora'),
+    planoConta('5.5.01','Escola Bíblica Dominical','5.5','despesa','devedora',true),
+    planoConta('5.5.02','Ministérios e departamentos','5.5','despesa','devedora',true),
+    planoConta('5.5.03','Treinamentos e discipulado','5.5','despesa','devedora',true),
+    planoConta('5.6','Missões e evangelismo','5','despesa','devedora'),
+    planoConta('5.6.01','Sustento missionário','5.6','despesa','devedora',true),
+    planoConta('5.6.02','Viagens missionárias','5.6','despesa','devedora',true),
+    planoConta('5.6.03','Projetos missionários','5.6','despesa','devedora',true),
+    planoConta('5.6.04','Evangelismo','5.6','despesa','devedora',true),
+    planoConta('5.7','Assistência social','5','despesa','devedora'),
+    planoConta('5.7.01','Cestas básicas','5.7','despesa','devedora',true),
+    planoConta('5.7.02','Medicamentos e saúde','5.7','despesa','devedora',true),
+    planoConta('5.7.03','Auxílios emergenciais','5.7','despesa','devedora',true),
+    planoConta('5.8','Manutenção e patrimônio','5','despesa','devedora'),
+    planoConta('5.8.01','Manutenção predial','5.8','despesa','devedora',true),
+    planoConta('5.8.02','Manutenção de equipamentos','5.8','despesa','devedora',true),
+    planoConta('5.8.03','Pequenas aquisições patrimoniais','5.8','despesa','devedora',true),
+    planoConta('5.8.04','Depreciação','5.8','despesa','devedora',true),
+    planoConta('5.9','Tecnologia, comunicação e logística','5','despesa','devedora'),
+    planoConta('5.9.01','Software e sistemas','5.9','despesa','devedora',true),
+    planoConta('5.9.02','Comunicação e mídia','5.9','despesa','devedora',true),
+    planoConta('5.9.03','Transporte e combustível','5.9','despesa','devedora',true),
+    planoConta('5.10','Despesas financeiras','5','despesa','devedora'),
+    planoConta('5.10.01','Tarifas bancárias','5.10','despesa','devedora',true),
+    planoConta('5.10.02','Juros e encargos','5.10','despesa','devedora',true),
+    planoConta('5.11','Eventos e integração','5','despesa','devedora',true),
+    planoConta('5.12','Seguros, licenças e taxas','5','despesa','devedora',true),
+    planoConta('5.13','Projetos, obras e expansão','5','despesa','devedora',true),
+    planoConta('5.14','Congregações e campos','5','despesa','devedora',true),
+    planoConta('5.99','Outras despesas','5','despesa','devedora',true),
+    planoConta('9','CONTAS DE COMPENSAÇÃO','', 'compensacao','devedora'),
+  ];
+  if (incluirPatrimonioDetalhado) {
+    const extra = [
+      planoConta('1.2.01.006','Instrumentos musicais','1.2.01','ativo','devedora',true),
+      planoConta('1.2.01.007','Equipamentos de áudio e vídeo','1.2.01','ativo','devedora',true),
+      planoConta('1.2.01.008','Benfeitorias em imóveis','1.2.01','ativo','devedora',true),
+      planoConta('1.2.02.002','(-) Depreciação de móveis e utensílios','1.2.02','ativo','credora',true),
+      planoConta('1.2.02.003','(-) Depreciação de máquinas e equipamentos','1.2.02','ativo','credora',true),
+      planoConta('1.2.02.004','(-) Depreciação de veículos','1.2.02','ativo','credora',true),
+      planoConta('1.2.02.005','(-) Depreciação de informática','1.2.02','ativo','credora',true),
+      planoConta('2.2.02','Obrigações para aquisição de imobilizado','2.2','passivo','credora',true),
+      planoConta('5.8.05','Seguros de bens patrimoniais','5.8','despesa','devedora',true),
+      planoConta('5.8.06','Inventário e avaliação patrimonial','5.8','despesa','devedora',true),
+    ];
+    rows.push(...extra);
+  }
+  return rows.sort((a,b)=>a.codigo.localeCompare(b.codigo, 'pt-BR', { numeric:true }));
+}
+
+const PLANO_CONTAS_MODELOS = [
+  { id:'essencial', nome:'Igreja — Essencial', descricao:'Estrutura enxuta para igrejas pequenas e início da escrituração.', rows:modeloPlanoIgrejaEssencial() },
+  { id:'completo', nome:'Igreja — Completo', descricao:'Plano detalhado para financeiro, pessoal, ministérios, missões e assistência social.', rows:modeloPlanoIgrejaCompleto(false) },
+  { id:'patrimonio', nome:'Igreja — Completo com Patrimônio', descricao:'Modelo completo acrescido de contas detalhadas de bens, depreciação e obrigações patrimoniais.', rows:modeloPlanoIgrejaCompleto(true) },
+];
+
+const normalizePlanoHeader = (v='') => String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const parsePlanoBool = (v) => ['s','sim','true','1','analitica','analítica'].includes(normalizePlanoHeader(v));
+const parseDelimitedText = (text='') => {
+  const first=(String(text).split(/\r?\n/).find(Boolean)||'');
+  const delim=(first.match(/;/g)||[]).length >= (first.match(/,/g)||[]).length ? ';' : ',';
+  const rows=[]; let row=[]; let cell=''; let quoted=false;
+  const src=String(text).replace(/^\uFEFF/,'');
+  for(let i=0;i<src.length;i+=1){const ch=src[i];if(ch==='"'){if(quoted&&src[i+1]==='"'){cell+='"';i+=1;}else quoted=!quoted;}else if(ch===delim&&!quoted){row.push(cell);cell='';}else if((ch==='\n'||ch==='\r')&&!quoted){if(ch==='\r'&&src[i+1]==='\n')i+=1;row.push(cell);cell='';if(row.some(x=>String(x).trim()))rows.push(row);row=[];}else cell+=ch;}
+  row.push(cell); if(row.some(x=>String(x).trim()))rows.push(row); return rows;
+};
+const planoRowsFromMatrix = (matrix=[]) => {
+  if(!matrix.length) return [];
+  const headers=matrix[0].map(normalizePlanoHeader);
+  const aliases={codigo:['codigo','codigo da conta'],nome:['conta','nome','nome da conta'],pai:['conta superior','codigo superior','conta pai','pai'],tipo:['tipo','grupo','grupo contabil'],natureza:['natureza'],analitica:['analitica','conta analitica','aceita lancamentos'],referencial:['conta referencial','codigo referencial'],observacoes:['observacoes','descricao complementar']};
+  const idx=(key)=>{for(const a of aliases[key]){const n=headers.indexOf(a);if(n>=0)return n;}return -1;};
+  const ic=idx('codigo'),inm=idx('nome'),ip=idx('pai'),it=idx('tipo'),inat=idx('natureza'),ia=idx('analitica'),ir=idx('referencial'),io=idx('observacoes');
+  return matrix.slice(1).filter(r=>r.some(v=>String(v??'').trim())).map(r=>({codigo:String(r[ic]??'').trim(),nome:String(r[inm]??'').trim(),conta_pai_codigo:ip>=0?String(r[ip]??'').trim():'',tipo:it>=0?normalizePlanoHeader(r[it]).replaceAll(' ','_'):'',natureza:inat>=0?normalizePlanoHeader(r[inat]):'',analitica:ia>=0?parsePlanoBool(r[ia]):true,conta_referencial_codigo:ir>=0?String(r[ir]??'').trim():'',observacoes:io>=0?String(r[io]??'').trim():''}));
+};
+const validatePlanoImport = (rows=[], existing=[]) => {
+  const errors=[]; const validTipos=new Set(CONTA_TIPO_OPTIONS.map(o=>o.value)); const validNaturezas=new Set(CONTA_NATUREZA_OPTIONS.map(o=>o.value));
+  const batchCodes=new Set(); const known=new Set(existing.map(x=>String(x.codigo)));
+  rows.forEach((r,i)=>{const line=i+2;if(!r.codigo)errors.push(`Linha ${line}: código obrigatório.`);if(!r.nome)errors.push(`Linha ${line}: conta obrigatória.`);if(r.codigo&&batchCodes.has(r.codigo))errors.push(`Linha ${line}: código ${r.codigo} duplicado no arquivo.`);if(r.codigo)batchCodes.add(r.codigo);if(!validTipos.has(r.tipo))errors.push(`Linha ${line}: grupo contábil inválido (${r.tipo||'vazio'}).`);if(!validNaturezas.has(r.natureza))errors.push(`Linha ${line}: natureza inválida (${r.natureza||'vazio'}).`);});
+  rows.forEach((r,i)=>{if(r.conta_pai_codigo&&!batchCodes.has(r.conta_pai_codigo)&&!known.has(r.conta_pai_codigo))errors.push(`Linha ${i+2}: conta superior ${r.conta_pai_codigo} não existe no arquivo nem no plano atual.`);if(r.conta_pai_codigo===r.codigo)errors.push(`Linha ${i+2}: uma conta não pode ser superior de si mesma.`);});
+  const parents=new Set(rows.map(r=>r.conta_pai_codigo).filter(Boolean)); rows.forEach((r,i)=>{if(r.analitica&&parents.has(r.codigo))errors.push(`Linha ${i+2}: a conta ${r.codigo} está marcada como analítica, mas possui contas filhas.`);});
+  return [...new Set(errors)];
+};
+const planoTemplateCsv = () => rowsToCsv([
+  {codigo:'1',conta:'ATIVO',superior:'',tipo:'ativo',natureza:'devedora',analitica:'Não',referencial:'',observacoes:'Conta sintética'},
+  {codigo:'1.1',conta:'Ativo Circulante',superior:'1',tipo:'ativo',natureza:'devedora',analitica:'Não',referencial:'',observacoes:''},
+  {codigo:'1.1.01',conta:'Caixa',superior:'1.1',tipo:'ativo',natureza:'devedora',analitica:'Sim',referencial:'',observacoes:'Exemplo de conta analítica'},
+], [{key:'codigo',label:'Código'},{key:'conta',label:'Conta'},{key:'superior',label:'Conta superior'},{key:'tipo',label:'Tipo'},{key:'natureza',label:'Natureza'},{key:'analitica',label:'Analítica'},{key:'referencial',label:'Conta referencial'},{key:'observacoes',label:'Observações'}]);
+
+function PlanoContasContabilPage() {
+  const tenant=React.useContext(TenantContext);
+  const access=usePermissions();
+  const contas=useTable('contabil_plano_contas',{order:'codigo',ascending:true});
+  const referencias=useTable('contabil_contas_referenciais',{order:'codigo',ascending:true});
+  const {toasts,push,close}=useToasts();
+  const [q,setQ]=useState(''); const [view,setView]=useState('arvore'); const [expanded,setExpanded]=useState(new Set(['1','2','3','4','5','9']));
+  const [modal,setModal]=useState(null); const [modelModal,setModelModal]=useState(false); const [importPreview,setImportPreview]=useState(null); const [cloneModal,setCloneModal]=useState(false); const [suggestModal,setSuggestModal]=useState(null); const fileRef=useRef(null); const [saving,setSaving]=useState(false); const [empresas,setEmpresas]=useState([]);
+  const canCreate=access.can('contabilidade','create'), canUpdate=access.can('contabilidade','update'), canDelete=access.can('contabilidade','delete');
+  const rows=(contas.rows||[]).slice().sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo),'pt-BR',{numeric:true}));
+  const byId=useMemo(()=>new Map(rows.map(r=>[r.id,r])),[rows]);
+  const children=useMemo(()=>{const m=new Map();rows.forEach(r=>{const k=r.conta_pai_id||'root';if(!m.has(k))m.set(k,[]);m.get(k).push(r);});return m;},[rows]);
+  const filtered=useMemo(()=>{if(!q.trim())return rows;const t=normalizePlanoHeader(q);return rows.filter(r=>normalizePlanoHeader(`${r.codigo} ${r.nome}`).includes(t));},[rows,q]);
+  useEffect(()=>{if(tenant?.isMaster){supabase.from('empresas').select('id,nome').order('nome').then(({data})=>setEmpresas(data||[]));}},[tenant?.isMaster]);
+  const refOptions=(referencias.rows||[]).map(r=>({value:r.id,label:`${r.codigo} — ${r.nome}`}));
+  const parentOptions=rows.filter(r=>(!modal?.id||r.id!==modal.id)&&!r.analitica).map(r=>({value:r.id,label:`${r.codigo} — ${r.nome}`}));
+  const accountFields=[
+    {name:'codigo',label:'Código da conta',required:true,placeholder:'Ex.: 5.3.01'}, {name:'nome',label:'Nome da conta',required:true}, {name:'conta_pai_id',label:'Conta superior',type:'select',options:parentOptions}, {name:'tipo',label:'Grupo contábil',type:'select',options:CONTA_TIPO_OPTIONS,required:true}, {name:'natureza',label:'Natureza',type:'select',options:CONTA_NATUREZA_OPTIONS,required:true}, {name:'analitica',label:'Conta analítica (aceita lançamentos)',type:'checkbox',defaultValue:true}, {name:'conta_referencial_id',label:'Conta referencial ECF',type:'select',options:refOptions}, {name:'vigencia_inicio',label:'Início da vigência',type:'date'}, {name:'vigencia_fim',label:'Fim da vigência',type:'date'}, {name:'ativo',label:'Ativa',type:'checkbox',defaultValue:true}, {name:'observacoes',label:'Observações',type:'textarea',full:true}
+  ];
+  const saveAccount=async(form)=>{setSaving(true);const payload={...form,empresa_id:tenant.empresaId};for(const k of ['conta_pai_id','conta_referencial_id','vigencia_inicio','vigencia_fim'])if(!payload[k])payload[k]=null;let error;if(modal?.id)({error}=await supabase.from('contabil_plano_contas').update(payload).eq('id',modal.id));else{const {data:u}=await supabase.auth.getUser();payload.created_by=u?.user?.id||null;({error}=await supabase.from('contabil_plano_contas').insert(payload));}setSaving(false);if(error)return push(error.message,'error');push('Conta salva com sucesso.');setModal(null);contas.reload();};
+  const deleteAccount=async(r)=>{if(!confirm(`Excluir ${r.codigo} — ${r.nome}?`))return;const {error}=await supabase.from('contabil_plano_contas').delete().eq('id',r.id);if(error)return push(error.message,'error');push('Conta excluída.');contas.reload();};
+  const toggleAccount=async(r)=>{const {error}=await supabase.from('contabil_plano_contas').update({ativo:r.ativo===false}).eq('id',r.id);if(error)return push(error.message,'error');push(r.ativo===false?'Conta reativada.':'Conta inativada.');contas.reload();};
+  const applyRows=async(rowsToApply,mode='mesclar')=>{const ordered=[...(rowsToApply||[])].sort((a,b)=>{const da=String(a.codigo||'').split('.').length,db=String(b.codigo||'').split('.').length;return da-db||String(a.codigo).localeCompare(String(b.codigo),'pt-BR',{numeric:true});});setSaving(true);const {data,error}=await supabase.rpc('contabil_importar_plano_contas',{p_empresa_id:tenant.empresaId,p_contas:ordered,p_modo:mode});setSaving(false);if(error){push(error.message,'error');return false;}push(`${data?.inseridas??0} conta(s) incluída(s); ${data?.ignoradas??0} existente(s) preservada(s).`);await contas.reload();return true;};
+  const onImportFile=async(file)=>{if(!file)return;try{let matrix;if(file.name.toLowerCase().endsWith('.csv'))matrix=parseDelimitedText(await file.text());else matrix=await readXlsxFile(file);const parsed=planoRowsFromMatrix(matrix);const errors=validatePlanoImport(parsed,rows);setImportPreview({fileName:file.name,rows:parsed,errors});}catch(e){push(`Não foi possível ler o arquivo: ${e.message}`,'error');}finally{if(fileRef.current)fileRef.current.value='';}};
+  const exportPlan=()=>downloadTextFile(`plano-contas-${new Date().toISOString().slice(0,10)}.csv`,rowsToCsv(rows.map(r=>({codigo:r.codigo,conta:r.nome,superior:byId.get(r.conta_pai_id)?.codigo||'',tipo:r.tipo,natureza:r.natureza,analitica:r.analitica?'Sim':'Não',referencial:(referencias.rows||[]).find(x=>x.id===r.conta_referencial_id)?.codigo||'',observacoes:r.observacoes||''})),[{key:'codigo',label:'Código'},{key:'conta',label:'Conta'},{key:'superior',label:'Conta superior'},{key:'tipo',label:'Tipo'},{key:'natureza',label:'Natureza'},{key:'analitica',label:'Analítica'},{key:'referencial',label:'Conta referencial'},{key:'observacoes',label:'Observações'}]));
+  const clonePlan=async(dest,mode)=>{setSaving(true);const {data,error}=await supabase.rpc('contabil_clonar_plano_contas',{p_empresa_origem:tenant.empresaId,p_empresa_destino:dest,p_modo:mode});setSaving(false);if(error)return push(error.message,'error');push(`Plano clonado: ${data?.inseridas??0} conta(s) incluída(s).`);setCloneModal(false);};
+  const buildSuggestions=async()=>{const [cd,tr,tc]=await Promise.all([supabase.from('categorias_despesas').select('id,nome,conta_contabil_id').eq('empresa_id',tenant.empresaId),supabase.from('tipos_receita').select('id,nome,conta_contabil_id').eq('empresa_id',tenant.empresaId),supabase.from('tipos_caixa').select('id,nome,conta_contabil_id').eq('empresa_id',tenant.empresaId)]);const tokenize=v=>normalizePlanoHeader(v).split(' ').filter(x=>x.length>2&&!['despesas','despesa','receitas','receita','conta'].includes(x));const score=(a,b)=>{const A=tokenize(a),B=tokenize(b);if(!A.length||!B.length)return 0;const common=A.filter(x=>B.some(y=>x===y||x.includes(y)||y.includes(x))).length;return common/Math.max(A.length,B.length);};const make=(table,label,items,tipo)=>items.filter(x=>!x.conta_contabil_id).map(x=>{const candidates=rows.filter(c=>c.analitica&&c.ativo!==false&&c.tipo===tipo).map(c=>({c,s:score(x.nome,c.nome)})).sort((a,b)=>b.s-a.s);return candidates[0]?.s>=0.45?{table,label,id:x.id,nome:x.nome,conta:candidates[0].c,score:candidates[0].s,selected:true}:null;}).filter(Boolean);setSuggestModal([...make('categorias_despesas','Despesa',cd.data||[],'despesa'),...make('tipos_receita','Receita',tr.data||[],'receita'),...make('tipos_caixa','Caixa/Banco',tc.data||[],'ativo')]);};
+  const applySuggestions=async()=>{const chosen=(suggestModal||[]).filter(x=>x.selected);setSaving(true);for(const s of chosen){const {error}=await supabase.from(s.table).update({conta_contabil_id:s.conta.id}).eq('id',s.id);if(error){setSaving(false);return push(error.message,'error');}}setSaving(false);push(`${chosen.length} vínculo(s) aplicado(s). Revise-os em Vínculos financeiros.`);setSuggestModal(null);};
+  const treeRows=()=>{if(q.trim())return filtered.map(r=>({r,depth:0}));const out=[];const walk=(pid,depth)=>{(children.get(pid)||[]).sort((a,b)=>a.codigo.localeCompare(b.codigo,'pt-BR',{numeric:true})).forEach(r=>{out.push({r,depth});if(expanded.has(r.codigo))walk(r.id,depth+1);});};walk('root',0);return out;};
+  const visible=view==='arvore'?treeRows():filtered.map(r=>({r,depth:0}));
+  return <div className="contabilPlanoEstruturado">
+    <ToastStack toasts={toasts} close={close}/>
+    <div className="infoBox"><b>Plano estruturado:</b> use um modelo interno, importe XLSX/CSV ou mantenha seu plano atual. Modelos nunca substituem contas existentes sem confirmação e os vínculos referenciais ECF continuam separados.</div>
+    <div className="toolbar"><div><h2 style={{margin:0}}>Plano de Contas Contábil</h2><span className="muted smallText">{rows.length} contas cadastradas</span></div><div className="row planoToolbarActions">
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar código ou conta…" style={{minWidth:210}}/>
+      <button className="secondary smallBtn" onClick={()=>setView(view==='arvore'?'tabela':'arvore')}>{view==='arvore'?'Exibir tabela':'Exibir árvore'}</button>
+      {canCreate&&<button onClick={()=>setModal('new')}>+ Nova conta</button>}
+      {canCreate&&<button className="secondary" onClick={()=>setModelModal(true)}>Modelos</button>}
+      {canCreate&&<button className="secondary" onClick={()=>fileRef.current?.click()}>Importar plano</button>}
+      <button className="secondary" onClick={()=>downloadTextFile('modelo-importacao-plano-contas.csv',planoTemplateCsv())}>Planilha-modelo</button>
+      <button className="secondary" onClick={exportPlan}>Exportar</button>
+      {tenant?.isMaster&&canCreate&&<button className="secondary" onClick={()=>setCloneModal(true)}>Clonar plano</button>}
+      {canUpdate&&<button className="secondary" onClick={buildSuggestions}>Sugerir vínculos</button>}
+      <input ref={fileRef} type="file" accept=".xlsx,.csv" style={{display:'none'}} onChange={e=>onImportFile(e.target.files?.[0])}/>
+    </div></div>
+    <div className="tablewrap planoContasTable"><table><thead><tr><th>Código</th><th>Conta</th><th>Grupo</th><th>Natureza</th><th>Tipo</th><th>Referencial</th><th>Situação</th><th className="center">Ações</th></tr></thead><tbody>{contas.loading?<tr><td colSpan="8" className="center">Carregando…</td></tr>:visible.length===0?<tr><td colSpan="8" className="center muted">Nenhuma conta encontrada.</td></tr>:visible.map(({r,depth})=>{const hasChildren=(children.get(r.id)||[]).length>0;const ref=(referencias.rows||[]).find(x=>x.id===r.conta_referencial_id);return <tr key={r.id}><td><b>{r.codigo}</b></td><td><div style={{paddingLeft:view==='arvore'?depth*20:0}} className="planoContaNome">{view==='arvore'&&hasChildren?<button type="button" className="treeToggle" onClick={()=>setExpanded(prev=>{const n=new Set(prev);n.has(r.codigo)?n.delete(r.codigo):n.add(r.codigo);return n;})}>{expanded.has(r.codigo)?'▾':'▸'}</button>:view==='arvore'?<span className="treeSpacer"/>:null}<span>{r.nome}</span></div></td><td>{CONTA_TIPO_OPTIONS.find(o=>o.value===r.tipo)?.label||r.tipo}</td><td>{CONTA_NATUREZA_OPTIONS.find(o=>o.value===r.natureza)?.label||r.natureza}</td><td>{r.analitica?'Analítica':'Sintética'}</td><td>{ref?`${ref.codigo} — ${ref.nome}`:'—'}</td><td>{r.ativo===false?'Inativa':'Ativa'}</td><td className="center"><div className="actionsInline">{canCreate&&<button className="smallBtn secondary" onClick={()=>setModal({...r,id:null,codigo:'',nome:`${r.nome} — cópia`,conta_pai_id:r.conta_pai_id})}>Duplicar</button>}{canCreate&&!r.analitica&&<button className="smallBtn secondary" onClick={()=>setModal({conta_pai_id:r.id,tipo:r.tipo,natureza:r.natureza,analitica:true,ativo:true})}>+ Filha</button>}{canUpdate&&<button className="smallBtn secondary" onClick={()=>setModal(r)}>Editar</button>}{canUpdate&&<button className={`smallBtn ${r.ativo===false?'green':'red'}`} onClick={()=>toggleAccount(r)}>{r.ativo===false?'Reativar':'Inativar'}</button>}{canDelete&&<button className="smallBtn red" onClick={()=>deleteAccount(r)}>Excluir</button>}</div></td></tr>;})}</tbody></table></div>
+    {modal&&<Modal title={modal==='new'?'Nova conta contábil':modal.id?`Editar ${modal.codigo}`:'Nova conta derivada'} onClose={()=>setModal(null)} wide><EntityForm fields={accountFields} initial={modal==='new'?null:modal} onCancel={()=>setModal(null)} onSave={saveAccount} saving={saving}/></Modal>}
+    {modelModal&&<Modal title="Modelos internos de plano de contas" onClose={()=>setModelModal(false)} wide><div className="modelCards">{PLANO_CONTAS_MODELOS.map(m=><div className="card" key={m.id}><h3>{m.nome}</h3><p className="muted">{m.descricao}</p><p><b>{m.rows.length}</b> contas</p><div className="row"><button disabled={saving} onClick={async()=>{if(await applyRows(m.rows,'vazio'))setModelModal(false);}}>Usar em plano vazio</button><button className="secondary" disabled={saving} onClick={async()=>{if(confirm('Mesclar este modelo sem substituir contas já cadastradas?')&&await applyRows(m.rows,'mesclar'))setModelModal(false);}}>Mesclar</button></div></div>)}</div><div className="alert warn" style={{marginTop:12}}>Os modelos são estruturas gerenciais/contábeis editáveis e devem ser validados pelo contador responsável antes do uso fiscal.</div></Modal>}
+    {importPreview&&<Modal title={`Conferir importação — ${importPreview.fileName}`} onClose={()=>setImportPreview(null)} wide><div className={importPreview.errors.length?'alert error':'alert success'}>{importPreview.errors.length?`${importPreview.errors.length} inconsistência(s) encontrada(s). Corrija o arquivo antes de importar.`:`Arquivo válido: ${importPreview.rows.length} conta(s) prontas para conferência.`}</div>{importPreview.errors.length>0&&<ul className="importErrors">{importPreview.errors.slice(0,20).map((e,i)=><li key={i}>{e}</li>)}</ul>}<div className="tablewrap importPreviewTable"><table><thead><tr><th>Código</th><th>Conta</th><th>Superior</th><th>Grupo</th><th>Natureza</th><th>Analítica</th></tr></thead><tbody>{importPreview.rows.slice(0,50).map((r,i)=><tr key={`${r.codigo}-${i}`}><td>{r.codigo}</td><td>{r.nome}</td><td>{r.conta_pai_codigo||'—'}</td><td>{r.tipo}</td><td>{r.natureza}</td><td>{r.analitica?'Sim':'Não'}</td></tr>)}</tbody></table></div><div className="modalActions"><button className="secondary" onClick={()=>setImportPreview(null)}>Cancelar</button><button disabled={saving||importPreview.errors.length>0} onClick={async()=>{if(await applyRows(importPreview.rows,'mesclar'))setImportPreview(null);}}>Importar e mesclar</button></div></Modal>}
+    {cloneModal&&<ClonePlanoModal empresas={empresas.filter(e=>e.id!==tenant.empresaId)} saving={saving} onClose={()=>setCloneModal(false)} onClone={clonePlan}/>} 
+    {suggestModal&&<Modal title="Sugestões de vínculos financeiros" onClose={()=>setSuggestModal(null)} wide><div className="infoBox">As sugestões usam semelhança de nomes e <b>não são aplicadas automaticamente</b>. Confira cada correspondência.</div>{suggestModal.length===0?<div className="empty">Nenhuma sugestão segura encontrada para cadastros sem vínculo.</div>:<div className="tablewrap"><table><thead><tr><th>Aplicar</th><th>Origem</th><th>Cadastro financeiro</th><th>Conta sugerida</th><th>Confiança</th></tr></thead><tbody>{suggestModal.map((s,i)=><tr key={`${s.table}-${s.id}`}><td><input type="checkbox" checked={s.selected} onChange={e=>setSuggestModal(prev=>prev.map((x,j)=>j===i?{...x,selected:e.target.checked}:x))}/></td><td>{s.label}</td><td>{s.nome}</td><td>{s.conta.codigo} — {s.conta.nome}</td><td>{Math.round(s.score*100)}%</td></tr>)}</tbody></table></div>}<div className="modalActions"><button className="secondary" onClick={()=>setSuggestModal(null)}>Cancelar</button><button disabled={saving||!suggestModal.some(s=>s.selected)} onClick={applySuggestions}>Aplicar selecionados</button></div></Modal>}
+  </div>;
+}
+
+function ClonePlanoModal({empresas,saving,onClose,onClone}){const [dest,setDest]=useState('');const [mode,setMode]=useState('vazio');return <Modal title="Clonar plano para outra empresa" onClose={onClose}><div className="field"><label>Empresa de destino</label><select value={dest} onChange={e=>setDest(e.target.value)}><option value="">Selecione…</option>{empresas.map(e=><option key={e.id} value={e.id}>{e.nome}</option>)}</select></div><div className="field"><label>Modo</label><select value={mode} onChange={e=>setMode(e.target.value)}><option value="vazio">Somente se o destino estiver vazio</option><option value="mesclar">Mesclar sem substituir códigos existentes</option></select></div><div className="alert warn">A clonagem copia a estrutura das contas, não copia saldos, lançamentos, exercícios nem vínculos referenciais ECF.</div><div className="modalActions"><button className="secondary" onClick={onClose}>Cancelar</button><button disabled={!dest||saving} onClick={()=>onClone(dest,mode)}>Clonar estrutura</button></div></Modal>}
 
 function ExerciciosContabeisPage() {
   return (

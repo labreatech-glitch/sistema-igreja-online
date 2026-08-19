@@ -5993,3 +5993,6 @@ tbody tr:hover td{background:#eef6fb!important}
   .appShell,.shellMain,.shellPage,.card,.tablewrap{background:#fff!important;box-shadow:none!important}
   table th{background:#f1f5f9!important;color:#111827!important}
 }
+
+/* v2.42.0 — Plano de contas estruturado */
+.planoToolbarActions{flex-wrap:wrap;justify-content:flex-end}.planoContasTable td{vertical-align:middle}.planoContaNome{display:flex;align-items:center;gap:5px;min-width:220px}.treeToggle{width:24px;height:24px;min-width:24px;padding:0!important;border-radius:6px!important;background:transparent!important;color:var(--text,#0f172a)!important;border:1px solid transparent!important}.treeToggle:hover{background:rgba(15,23,42,.05)!important}.treeSpacer{width:24px;min-width:24px}.modelCards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.modelCards .card{padding:16px}.importErrors{max-height:180px;overflow:auto;margin:10px 0;padding-left:22px;color:#991b1b}.importPreviewTable{max-height:380px;overflow:auto}.modalActions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}@media(max-width:1050px){.modelCards{grid-template-columns:1fr}.planoToolbarActions{justify-content:flex-start}.planoContasTable{overflow-x:auto}}
